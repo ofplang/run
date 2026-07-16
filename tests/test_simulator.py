@@ -1,0 +1,412 @@
+"""Tests for the simulated execution backend (`ofplang.run.simulator`).
+
+These exercise the physical model and the dispatch contract (dev-notes design.md
+D10-D18): resource occupation and release, spot / object effects, the validating-
+oracle preconditions (D16), status-only observation (D18), the two-stage clock
+advance (D11), and a happy-path end-to-end run (D17). The environments are built
+inline so the tests are self-contained.
+"""
+
+from __future__ import annotations
+
+import textwrap
+
+import pytest
+
+from ofplang.run.simulator import (
+    ClockError,
+    Environment,
+    MissingObject,
+    RelayNotSupported,
+    ResourceBusy,
+    Simulator,
+    SpotConflict,
+    UnknownReference,
+    environment_from_dict,
+    load_environment,
+)
+
+# A minimal source -> transport -> target environment, mirroring the shape of
+# ofplang-schedule's `simple` example (§5): two devices with one spot each, a
+# single transporter, and one route.
+SIMPLE_ENV = {
+    "time": {"unit": "second"},
+    "devices": [
+        {"id": "station_0", "spots": ["core"]},
+        {"id": "station_1", "spots": ["core"]},
+    ],
+    "transporters": [{"id": "transport"}],
+    "transports": [
+        {"transporter": "transport", "from": "station_0.core", "to": "station_1.core", "duration": 1},
+    ],
+    "processes": {
+        # `source` has no id -> mode "0"; produces an Object at station_0.core.
+        "source": {
+            "modes": [
+                {"devices": ["station_0"], "duration": 2, "output_spots": {"source_out": "station_0.core"}},
+            ]
+        },
+        # `target` consumes an Object at station_1.core; no output.
+        "target": {
+            "modes": [
+                {"devices": ["station_1"], "duration": 2, "input_spots": {"target_in": "station_1.core"}},
+            ]
+        },
+        # In-place transform: reads and writes the same spot.
+        "cook": {
+            "modes": [
+                {
+                    "id": "fast",
+                    "devices": ["station_0"],
+                    "duration": 3,
+                    "input_spots": {"in": "station_0.core"},
+                    "output_spots": {"out": "station_0.core"},
+                },
+            ]
+        },
+        # Pure Data: duration only, no device / spot (D12).
+        "compute": {"modes": [{"id": "v1", "duration": 5}]},
+    },
+}
+
+
+def make_sim() -> Simulator:
+    return Simulator(SIMPLE_ENV)
+
+
+# -- environment loading ---------------------------------------------------
+
+def test_environment_from_dict_shape():
+    env = environment_from_dict(SIMPLE_ENV)
+    assert env.time_unit == "second"
+    assert env.devices["station_0"] == ("core",)
+    assert env.spots == {"station_0.core", "station_1.core"}
+    assert env.transporters == {"transport"}
+    assert env.transports[("transport", "station_0.core", "station_1.core")] == 1
+    # Auto-assigned vs explicit mode ids (§5.5).
+    assert set(env.processes["source"].modes) == {"0"}
+    assert set(env.processes["cook"].modes) == {"fast"}
+    assert env.processes["compute"].modes["v1"].devices == ()
+
+
+def test_load_environment_from_file(tmp_path):
+    path = tmp_path / "env.yaml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            time:
+              unit: minute
+            devices:
+              - id: dev_0
+                spots: [a, b]
+            processes:
+              noop:
+                modes:
+                  - duration: 4
+            """
+        ),
+        encoding="utf-8",
+    )
+    env = load_environment(path)
+    assert isinstance(env, Environment)
+    assert env.time_unit == "minute"
+    assert env.spots == {"dev_0.a", "dev_0.b"}
+    assert env.processes["noop"].modes["0"].duration == 4
+
+
+# -- processing ------------------------------------------------------------
+
+def test_processing_happy_path_produces_object():
+    sim = make_sim()
+    uid = sim.dispatch_processing("source", "0")
+    assert sim.state(uid) == {"status": "running"}
+    assert sim.spot_state("station_0.core") is None  # not produced until completion
+
+    sim.advance(2)
+    assert sim.now == 2
+    assert sim.state(uid) == {"status": "completed"}
+    # A fresh opaque object now rests in the output spot.
+    assert sim.spot_state("station_0.core") is not None
+
+
+def test_processing_duration_override():
+    # The mode's own duration is 2; an override injects a different one (D13).
+    sim = make_sim()
+    uid = sim.dispatch_processing("source", "0", duration=10)
+    (event,) = sim._advance(50)
+    assert event.time == 10 and event.uuid == uid
+
+
+def test_processing_in_place_transform_keeps_spot():
+    sim = make_sim()
+    obj = sim.place("station_0.core")  # seed material
+    uid = sim.dispatch_processing("cook", "fast")  # in-place: input == output spot
+    sim.advance(3)
+    assert sim.state(uid) == {"status": "completed"}
+    held = sim.spot_state("station_0.core")
+    # Still occupied, but with a regenerated id (identity is not tracked, D15).
+    assert held is not None and held != obj
+
+
+def test_processing_missing_input_is_error():
+    sim = make_sim()
+    with pytest.raises(MissingObject):
+        sim.dispatch_processing("cook", "fast")  # station_0.core is empty
+
+
+def test_processing_output_occupied_is_error():
+    sim = make_sim()
+    sim.place("station_0.core")  # occupy the output spot of `source`
+    with pytest.raises(SpotConflict):
+        sim.dispatch_processing("source", "0")
+
+
+def test_processing_device_busy_is_error():
+    sim = make_sim()
+    sim.dispatch_processing("source", "0")  # occupies station_0
+    with pytest.raises(ResourceBusy):
+        # `cook` also needs station_0; it is busy until `source` completes.
+        sim.dispatch_processing("cook", "fast")
+
+
+def test_pure_data_processing_occupies_nothing():
+    sim = make_sim()
+    uid = sim.dispatch_processing("compute", "v1")
+    assert sim.spot_state() == {}  # no spot touched
+    sim.advance(5)
+    assert sim.state(uid) == {"status": "completed"}
+
+
+def test_unknown_process_and_mode():
+    sim = make_sim()
+    with pytest.raises(UnknownReference):
+        sim.dispatch_processing("nope", "0")
+    with pytest.raises(UnknownReference):
+        sim.dispatch_processing("source", "9")
+
+
+# -- transport -------------------------------------------------------------
+
+def test_transport_happy_path_moves_object():
+    sim = make_sim()
+    obj = sim.place("station_0.core")
+    uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+    # Both endpoint devices and the transporter are occupied during the move.
+    with pytest.raises(ResourceBusy):
+        sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+
+    sim.advance(1)  # table duration is 1
+    assert sim.state(uid) == {"status": "completed"}
+    assert sim.spot_state("station_0.core") is None  # source freed
+    assert sim.spot_state("station_1.core") == obj  # same id carried over
+
+
+def test_transport_duration_from_table():
+    sim = make_sim()
+    sim.place("station_0.core")
+    uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+    (event,) = sim._advance(100)
+    assert event.time == 1  # from the transport table, not overridden
+
+
+def test_transport_missing_source_is_error():
+    sim = make_sim()
+    with pytest.raises(MissingObject):
+        sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+
+
+def test_transport_destination_occupied_is_error():
+    sim = make_sim()
+    sim.place("station_0.core")
+    sim.place("station_1.core")
+    with pytest.raises(SpotConflict):
+        sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+
+
+def test_transport_unknown_route_is_error():
+    sim = make_sim()
+    sim.place("station_1.core")
+    # station_1.core -> station_0.core has no table entry: that move is impossible.
+    with pytest.raises(UnknownReference):
+        sim.dispatch_transport("transport", "station_1.core", "station_0.core")
+
+
+def test_transport_unknown_spot_is_error():
+    sim = make_sim()
+    with pytest.raises(UnknownReference):
+        sim.dispatch_transport("transport", "station_0.core", "nowhere.core")
+
+
+def test_same_spot_transport_is_noop():
+    sim = make_sim()
+    obj = sim.place("station_0.core")
+    # A same-spot move needs no transporter and has duration 0 (§5.4 / §6.4).
+    uid = sim.dispatch_transport(None, "station_0.core", "station_0.core")
+    sim.advance(0)
+    assert sim.state(uid) == {"status": "completed"}
+    assert sim.spot_state("station_0.core") == obj  # unchanged
+
+
+def test_real_transport_requires_transporter():
+    sim = make_sim()
+    sim.place("station_0.core")
+    with pytest.raises(ValueError):
+        sim.dispatch_transport(None, "station_0.core", "station_1.core")
+
+
+def test_transporter_busy_across_independent_devices():
+    # A dedicated env: two disjoint device pairs sharing one transporter, so a
+    # second move conflicts on the transporter alone (not on any device).
+    env = {
+        "time": {"unit": "second"},
+        "devices": [
+            {"id": "a", "spots": ["s"]},
+            {"id": "b", "spots": ["s"]},
+            {"id": "c", "spots": ["s"]},
+            {"id": "d", "spots": ["s"]},
+        ],
+        "transporters": [{"id": "arm"}],
+        "transports": [
+            {"transporter": "arm", "from": "a.s", "to": "b.s", "duration": 2},
+            {"transporter": "arm", "from": "c.s", "to": "d.s", "duration": 2},
+        ],
+        "processes": {},
+    }
+    sim = Simulator(env)
+    sim.place("a.s")
+    sim.place("c.s")
+    sim.dispatch_transport("arm", "a.s", "b.s")  # holds the arm
+    with pytest.raises(ResourceBusy):
+        sim.dispatch_transport("arm", "c.s", "d.s")  # devices free, arm busy
+
+
+# -- relay -----------------------------------------------------------------
+
+def test_relay_is_rejected():
+    sim = make_sim()
+    with pytest.raises(RelayNotSupported):
+        sim.dispatch_relay("station_0.core")
+
+
+# -- clock advance ---------------------------------------------------------
+
+def test_advance_reaches_until_without_events():
+    sim = make_sim()
+    events = sim._advance(7)  # nothing dispatched
+    assert events == []
+    assert sim.now == 7
+
+
+def test_advance_does_not_return_early_on_event():
+    # A completion at t=2 does not stop advance short of `until` (D11).
+    sim = make_sim()
+    sim.dispatch_processing("source", "0")  # completes at 2
+    sim.advance(10)
+    assert sim.now == 10
+
+
+def test_advance_backwards_is_error():
+    sim = make_sim()
+    sim.advance(5)
+    with pytest.raises(ClockError):
+        sim.advance(4)
+
+
+def test_advance_orders_events_by_completion_time():
+    # Two ops on different devices, different durations; events come out in
+    # completion order.
+    sim = make_sim()
+    slow = sim.dispatch_processing("source", "0", duration=8)  # station_0, ends 8
+    # A second op on station_1 via a same-spot no-op transport (needs material).
+    sim.place("station_1.core")
+    quick = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=3)
+    events = sim._advance(20)
+    assert [e.uuid for e in events] == [quick, slow]
+    assert [e.time for e in events] == [3, 8]
+
+
+def test_advance_ties_are_deterministic_in_dispatch_order():
+    # Two independent same-spot no-ops ending at the same time complete in the
+    # order they were dispatched.
+    sim = make_sim()
+    sim.place("station_0.core")
+    sim.place("station_1.core")
+    first = sim.dispatch_transport(None, "station_0.core", "station_0.core", duration=4)
+    second = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=4)
+    events = sim._advance(4)
+    assert [e.uuid for e in events] == [first, second]
+
+
+# -- observation & placement ----------------------------------------------
+
+def test_observe_returns_all_statuses():
+    sim = make_sim()
+    a = sim.dispatch_processing("source", "0")  # ends 2
+    sim.place("station_1.core")
+    b = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=5)
+    sim.advance(2)
+    obs = sim.observe()
+    assert obs[a] == {"status": "completed"}
+    assert obs[b] == {"status": "running"}
+
+
+def test_state_unknown_operation_is_error():
+    sim = make_sim()
+    with pytest.raises(UnknownReference):
+        sim.state("op-999")
+
+
+def test_place_onto_occupied_is_error():
+    sim = make_sim()
+    sim.place("station_0.core")
+    with pytest.raises(SpotConflict):
+        sim.place("station_0.core")
+
+
+def test_place_unknown_spot_is_error():
+    sim = make_sim()
+    with pytest.raises(UnknownReference):
+        sim.place("ghost.core")
+
+
+def test_remove_empty_spot_is_error():
+    sim = make_sim()
+    with pytest.raises(MissingObject):
+        sim.remove("station_0.core")
+
+
+def test_place_with_explicit_id_then_remove():
+    sim = make_sim()
+    sim.place("station_0.core", obj_id="plate_42")
+    assert sim.spot_state("station_0.core") == "plate_42"
+    assert sim.remove("station_0.core") == "plate_42"
+    assert sim.spot_state("station_0.core") is None
+
+
+# -- end-to-end (happy path, D17) -----------------------------------------
+
+def test_end_to_end_source_transport_target():
+    """Drive the full `simple` chain: source produces an Object, a transport
+    carries it, target consumes it -- the happy-path integration the first
+    simulator milestone exists to support (D17)."""
+    sim = make_sim()
+
+    # source runs on station_0 and leaves an Object at station_0.core.
+    src = sim.dispatch_processing("source", "0")
+    sim.advance(2)
+    assert sim.state(src) == {"status": "completed"}
+    obj = sim.spot_state("station_0.core")
+    assert obj is not None
+
+    # transport carries it to station_1.core.
+    mv = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+    sim.advance(3)  # dispatched at t=2, table duration 1 -> done by t=3
+    assert sim.state(mv) == {"status": "completed"}
+    assert sim.spot_state("station_0.core") is None
+    assert sim.spot_state("station_1.core") == obj
+
+    # target consumes it; the spot is emptied on completion.
+    tgt = sim.dispatch_processing("target", "0")
+    sim.advance(5)
+    assert sim.state(tgt) == {"status": "completed"}
+    assert sim.spot_state() == {}  # nothing left resting anywhere
