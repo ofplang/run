@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ofplang-run"
+version = "0.0.0"
+description = "Object-flow programming language v0 runner"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+# Standalone command; the umbrella `ofp` CLI (separate repo) exposes this as
+# `ofp run`.
+ofp-run = "ofplang.run.cli:main"
+
+# `ofplang` is a PEP 420 namespace shared across the org's repos (validate,
+# schedule, run, …); this distribution provides only the `ofplang.run` package
+# under it.
+[tool.setuptools.packages.find]
+include = ["ofplang*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
