@@ -26,7 +26,14 @@ def test_missing_subcommand_is_usage_error():
     assert exc.value.code == EXIT_USAGE
 
 
-def test_run_is_stubbed(capsys):
-    # The `run` handler is a placeholder for now; it reports "not implemented".
-    assert main(["run", "plan.yaml"]) == EXIT_USAGE
-    assert "not implemented" in capsys.readouterr().err
+def test_run_requires_env():
+    # `run` needs --env; omitting it is an argparse usage error (exit 2).
+    with pytest.raises(SystemExit) as exc:
+        main(["run", "plan.yaml"])
+    assert exc.value.code == EXIT_USAGE
+
+
+def test_run_missing_plan_file_is_usage_error(capsys):
+    # A plan path that does not exist is an input (usage) error, not a failure.
+    assert main(["run", "does_not_exist.yaml", "--env", "nope.yaml"]) == EXIT_USAGE
+    assert "cannot read plan" in capsys.readouterr().err

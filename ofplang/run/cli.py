@@ -1,12 +1,12 @@
 """Command-line interface for ofplang.run.
 
-Thin presentation layer over the library (to be). Planned subcommand:
+Thin presentation layer over the library. Subcommand:
 
-    ofp-run run <plan> [...]      # drive an execution plan to completion
+    ofp-run run <plan> --env <env> [-o OUT]   # replay a plan on the simulator
 
-All real logic will live in the library (`ofplang.run.runner` /
-`ofplang.run.simulator`) so the CLI cannot drift from it. This file is currently
-a scaffold: the parser shape is in place but the command handler is a stub.
+All real logic lives in the library (`ofplang.run.runner` / `ofplang.run.simulator`)
+so the CLI cannot drift from it; this file only parses arguments, reports errors,
+and maps outcomes to exit codes.
 
 Exit codes:
     0  success (a plan ran to completion)
@@ -18,6 +18,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+import yaml
+
+from ofplang.run.runner import Runner, RunnerError, load_document, serialize_document
+from ofplang.run.simulator import SimulatorError
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -28,17 +34,44 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ofp-run", description="Run ofplang v0 execution plans.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    r = sub.add_parser("run", help="drive an execution plan to completion")
+    r = sub.add_parser("run", help="replay an execution plan on the simulator")
     r.add_argument("plan", metavar="PLAN", help="execution plan YAML (from ofp-schedule)")
+    r.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
+    r.add_argument(
+        "-o", "--output", metavar="OUT", help="write the resulting status YAML here (default: stdout)"
+    )
 
     return parser
 
 
 def _cmd_run(args) -> int:
-    # Placeholder: the runner is not implemented yet. Kept as a stub so the CLI
-    # shape and exit-code contract are exercised while the library is built out.
-    print("ofp-run: 'run' is not implemented yet", file=sys.stderr)
-    return EXIT_USAGE
+    # Read the inputs. A missing or malformed plan / environment is an input
+    # (usage) error, not an execution failure.
+    try:
+        plan = load_document(args.plan)
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"ofp-run: cannot read plan {args.plan!r}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        runner = Runner(plan, args.env)  # constructing the runner loads the environment
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"ofp-run: cannot read environment {args.env!r}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    # Drive the plan. A backend rejection (an inconsistent plan) or an activity
+    # that never completes is an execution failure.
+    try:
+        status = runner.run()
+    except (SimulatorError, RunnerError) as exc:
+        print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+
+    text = serialize_document(status)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
