@@ -76,6 +76,7 @@ class RollingRunner:
         running_task_margin: int = 0,
         random_seed: int | None = None,
         poll_interval: int | None = None,
+        duration_model=None,
         max_ticks: int = 100_000,
     ):
         self.workflow_path = str(workflow_path)
@@ -92,7 +93,24 @@ class RollingRunner:
         # default). An integer -> poll every that many ticks: the realistic mode
         # where completion is only seen at a poll and its time is estimated (D22).
         self.poll_interval = poll_interval
+        # Optional duration variance (D23): fn(activity, planned_duration) -> actual.
+        # None means every operation runs for its planned duration.
+        self.duration_model = duration_model
         self.max_ticks = max_ticks
+
+        # Variance is only coherent under fixed-interval polling (an off-plan finish
+        # cannot be observed by event-boundary advance), and needs a positive
+        # running-task margin so a successor of an overrunning operation is not
+        # dispatched onto a still-busy resource (D23). The margin is the caller's to
+        # set (ideally >= poll_interval); the runner only validates it.
+        if duration_model is not None:
+            if poll_interval is None:
+                raise RunnerError("duration variance requires poll_interval (fixed-interval polling)")
+            if running_task_margin < 1:
+                raise RunnerError(
+                    "duration variance requires running_task_margin >= 1 "
+                    "(ideally >= poll_interval, so an overrun defers its successors)"
+                )
 
         self.log = CommitLog()
         self.now = 0
@@ -177,21 +195,27 @@ class RollingRunner:
         same-spot no-op as bookkeeping) and add it to the committed history."""
         kind = activity["kind"]
         start = self.now
-        duration = int(activity["end"]) - int(activity["start"])  # reproduce planned timing
-        end = start + duration
+        planned = int(activity["end"]) - int(activity["start"])
 
-        # A same-spot transport is a physical no-op: no backend operation, completed
-        # at once (D14/D19). It is still a committed leg, so it is recorded (the
-        # scheduler pins the chain by it on the next replan).
+        # A same-spot transport is a physical no-op: no backend operation, no
+        # variance, completed at once (D14/D19). It is still a committed leg, so it
+        # is recorded (the scheduler pins the chain by it on the next replan).
         if kind == "transport" and activity.get("from_spot") == activity.get("to_spot"):
-            self.log.add(Committed(activity, kind, "completed", start, end, uuid=None))
+            self.log.add(Committed(activity, kind, "completed", start, start + planned, uuid=None))
             return
 
+        # The backend runs the *actual* duration (the variance model perturbs the
+        # plan, D23). The committed record's `end` is the *planned* expected finish:
+        # the runner does not know the actual until the op is observed complete, so
+        # it reports the plan and lets `_poll` overwrite `end` with the poll time.
+        actual = planned if self.duration_model is None else max(0, int(self.duration_model(activity, planned)))
+        end = start + planned
+
         if kind == "processing":
-            uuid = self.sim.dispatch_processing(activity["process"], activity["mode"], duration=duration)
+            uuid = self.sim.dispatch_processing(activity["process"], activity["mode"], duration=actual)
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(
-                activity.get("transporter"), activity["from_spot"], activity["to_spot"], duration=duration
+                activity.get("transporter"), activity["from_spot"], activity["to_spot"], duration=actual
             )
         else:  # pragma: no cover - schema guarantees processing/transport/relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
