@@ -27,18 +27,22 @@ REROUTE_ENV = str(FIXTURES / "reroute.env.yaml")
 # simple: source (2) -> transport (1) -> target (2); event-boundary makespan 5.
 
 
-def test_event_boundary_default_is_exact():
-    status = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0).run()
+def test_default_is_fixed_interval():
+    # Fixed-interval polling is the standard/default (interval 1). Interval 1 lines
+    # up with the integer event times, so there is no drift here.
+    runner = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0)
+    assert runner.poll_interval == 1
+    status = runner.run()
+    assert status["now"] == 5
+
+
+def test_event_boundary_mode_is_exact():
+    # poll_interval=None selects event-boundary advance: exact times (retained for
+    # tests / the deterministic ideal).
+    status = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0, poll_interval=None).run()
     assert status["now"] == 5
     transport = next(a for a in status["activities"] if a["kind"] == "transport")
     assert transport["end"] == 3  # exact
-
-
-def test_fine_poll_matches_exact():
-    # A poll interval of 1 lines up with the integer event times, so there is no
-    # drift: the run is identical to the event-boundary case.
-    status = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0, poll_interval=1).run()
-    assert status["now"] == 5
 
 
 def test_coarse_poll_drifts_deterministically():

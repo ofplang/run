@@ -61,9 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--poll-interval",
         type=int,
+        default=1,
         metavar="D",
-        help="poll every D time units (fixed-interval, with completion-time estimation); "
-        "default: advance to plan event boundaries (exact)",
+        help="poll every D time units (fixed-interval, with completion-time estimation; default 1)",
     )
     r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
 

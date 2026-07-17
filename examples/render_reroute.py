@@ -49,8 +49,9 @@ def main() -> None:
 
     # 2. The actual run: drive the workflow while station_1 goes down mid-run, so
     #    the runner re-routes. The final execution status is the schedule as it
-    #    actually happened (target on station_2).
-    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), random_seed=0)
+    #    actually happened (target on station_2). Event-boundary advance
+    #    (poll_interval=None) keeps this about re-routing, with exact times.
+    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=None)
     runner.sim.schedule_device_down(DOWN_AT, DOWN_DEVICE)
     final = runner.run()
     # The status carries no solver objective; label the chart with its makespan.

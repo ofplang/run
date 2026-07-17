@@ -15,9 +15,10 @@ What this layer covers, added incrementally:
 * rolling-horizon core (D9/D20): the replan loop above.
 * re-routing (D21): when a device goes down, the environment scheduled against is
   reduced (its process modes dropped) so the scheduler re-routes pending work.
-* poll modes (D22): `poll_interval=None` advances to plan event boundaries
-  (exact, deterministic, the default); an integer polls every that many units and
-  estimates each completion time as the observing poll -- the realistic mode.
+* poll modes (D22): fixed-interval polling is the standard -- an integer
+  `poll_interval` (default 1) polls every that many units and estimates each
+  completion time as the observing poll. `poll_interval=None` advances to plan
+  event boundaries instead (exact, deterministic), retained for tests.
 * duration variance (D23): an optional `duration_model` perturbs the dispatched
   duration (the backend runs the actual, the runner reports the planned expected
   end until it observes completion). Variance requires fixed-interval polling and
@@ -83,7 +84,7 @@ class RollingRunner:
         *,
         running_task_margin: int = 0,
         random_seed: int | None = None,
-        poll_interval: int | None = None,
+        poll_interval: int | None = 1,
         duration_model=None,
         max_ticks: int = 100_000,
     ):
@@ -97,9 +98,11 @@ class RollingRunner:
         self.interface = interface or {}
         self.margin = running_task_margin
         self.seed = random_seed
-        # None -> advance to plan event boundaries (deterministic, exact times, the
-        # default). An integer -> poll every that many ticks: the realistic mode
-        # where completion is only seen at a poll and its time is estimated (D22).
+        # Fixed-interval polling is the standard mode (D22): an integer polls every
+        # that many ticks, seeing a completion only at a poll and estimating its
+        # time. Default 1 (the finest interval). `poll_interval=None` selects
+        # event-boundary advance instead -- deterministic and exact, retained for
+        # tests.
         self.poll_interval = poll_interval
         # Optional duration variance (D23): fn(activity, planned_duration) -> actual.
         # None means every operation runs for its planned duration.
@@ -216,7 +219,12 @@ class RollingRunner:
         # plan, D23). The committed record's `end` is the *planned* expected finish:
         # the runner does not know the actual until the op is observed complete, so
         # it reports the plan and lets `_poll` overwrite `end` with the poll time.
-        actual = planned if self.duration_model is None else max(0, int(self.duration_model(activity, planned)))
+        # A processing duration must stay positive (§5.5); a transport may be zero.
+        if self.duration_model is None:
+            actual = planned
+        else:
+            floor = 1 if kind == "processing" else 0
+            actual = max(floor, int(self.duration_model(activity, planned)))
         end = start + planned
 
         if kind == "processing":

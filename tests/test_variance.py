@@ -82,9 +82,12 @@ def test_variance_is_deterministic():
 
 
 def test_variance_requires_poll_interval():
+    # Variance with event-boundary advance (poll_interval=None) is incoherent -- an
+    # off-plan finish can't be observed -- so it is rejected.
     with pytest.raises(RunnerError):
         RollingRunner(
-            SIMPLE_WF, SIMPLE_ENV, running_task_margin=2, duration_model=_transport_overruns_to(5)
+            SIMPLE_WF, SIMPLE_ENV, poll_interval=None, running_task_margin=2,
+            duration_model=_transport_overruns_to(5),
         )
 
 
@@ -100,3 +103,25 @@ def test_no_model_is_unaffected():
     # Without a model the run is exactly the no-variance fixed-interval case.
     status = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0, poll_interval=2).run()
     assert status["now"] == 6
+
+
+REROUTE_ENV = str(FIXTURES / "reroute.env.yaml")
+
+
+def test_variance_composes_with_reroute():
+    # Variance and re-routing compose: station_1 goes down (target re-routes to
+    # station_2) while every transport overruns (planned + 3). The run still
+    # completes on the re-routed device.
+    def model(activity, planned):
+        return planned + 3 if activity["kind"] == "transport" else planned
+
+    runner = RollingRunner(
+        SIMPLE_WF, REROUTE_ENV, random_seed=0, poll_interval=2, running_task_margin=2, duration_model=model
+    )
+    runner.sim.schedule_device_down(3, "station_1")
+    status = runner.run()
+
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert status["now"] == 16
+    target = next(a for a in status["activities"] if a.get("process") == "target")
+    assert target["input_spots"]["target_in"] == "station_2.core"
