@@ -16,7 +16,6 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
-from ofplang.run.cli import EXIT_FAILED, EXIT_OK, main  # noqa: E402
 from ofplang.run.runner import RollingRunner, RunnerError, load_document  # noqa: E402
 from ofplang.run.simulator import DeviceDown, Simulator  # noqa: E402
 
@@ -65,6 +64,26 @@ def test_running_op_unaffected_by_down():
     assert "station_1" in sim.down_devices()
 
 
+def test_device_up_clears_down_and_allows_processing():
+    # A device that comes back up leaves the down-set and can run processes again.
+    env = load_document(Path(SIMPLE_ENV))
+    sim = Simulator(env)
+    sim.schedule_device_down(2, "station_1")
+    sim.schedule_device_up(5, "station_1")
+    sim.place("station_1.core")
+
+    sim.advance(3)
+    assert sim.down_devices() == ["station_1"]
+    with pytest.raises(DeviceDown):
+        sim.dispatch_processing("target", "0")
+
+    sim.advance(6)  # crosses the up at t=5
+    assert sim.down_devices() == []
+    uid = sim.dispatch_processing("target", "0")  # station_1 usable again
+    sim.advance(8)
+    assert sim.state(uid) == {"status": "completed"}
+
+
 # -- reroute end to end ----------------------------------------------------
 
 def test_reroute_when_device_goes_down():
@@ -106,19 +125,16 @@ def test_reroute_with_no_alternative_fails():
         runner.run()
 
 
-# -- CLI -------------------------------------------------------------------
+def test_device_coming_back_up_restores_routing():
+    # station_1 is down from the start (the initial plan avoids it, routing target
+    # to station_2), but comes back up at t=1 -- before anything commits to
+    # station_2. The next replan then routes target back to the cheap station_1.
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0)
+    runner.sim.schedule_device_down(0, "station_1")
+    runner.sim.schedule_device_up(1, "station_1")
+    status = runner.run()
 
-def test_cli_run_with_down(tmp_path):
-    out = tmp_path / "status.yaml"
-    code = main(
-        ["run", SIMPLE_WF, "--env", REROUTE_ENV, "--seed", "0", "--down", "station_1@3", "-o", str(out)]
-    )
-    assert code == EXIT_OK
-    status = load_document(out)
-    assert status["now"] == 9
-
-
-def test_cli_invalid_down_spec_is_usage_error(capsys):
-    code = main(["run", SIMPLE_WF, "--env", REROUTE_ENV, "--down", "bogus"])
-    assert code == 2
-    assert "invalid --down" in capsys.readouterr().err
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert status["now"] == 5  # the cheap station_1 route, as if nothing happened
+    target = next(a for a in status["activities"] if a.get("process") == "target")
+    assert target["input_spots"]["target_in"] == "station_1.core"

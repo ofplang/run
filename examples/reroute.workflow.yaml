@@ -1,0 +1,41 @@
+# A minimal v0 workflow for the re-routing example: `source` produces one Sample
+# and `target` consumes it, joined by a single Object-bearing arc (one transport).
+spec_version: "0.0"
+
+types:
+  Sample:
+    domain: object
+
+processes:
+
+  source:
+    kind: atomic
+    outputs:
+      source_out: { type: Sample, phase: data }
+    objects:
+      create: [outputs.source_out]
+
+  target:
+    kind: atomic
+    inputs:
+      target_in: { type: Sample, phase: data }
+    objects:
+      consume: [inputs.target_in]
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: SampleSource
+          process: source
+
+        - id: SampleTarget
+          process: target
+          state:
+            target_in:
+              from: SampleSource.source_out
+      returns: {}
+
+entry: main
