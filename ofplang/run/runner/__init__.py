@@ -4,9 +4,10 @@ Built on top of the simulator. Two entry points:
 
 * `Runner` (milestone 2a) -- replay a given execution plan (§6) with no
   replanning; see `runner.Runner`.
-* `RollingRunner` (milestone 2b-1) -- drive a workflow to completion by
-  replanning each tick via `ofplang.schedule` (dev-notes design.md D9/D20);
-  see `rolling.RollingRunner`.
+* `RollingRunner` (rolling-horizon) -- drive a workflow to completion by
+  replanning each tick via `ofplang.schedule`, with device-down re-routing,
+  event-boundary or fixed-interval polling, and optional duration variance
+  (dev-notes design.md D9/D20-D23); see `rolling.RollingRunner`.
 """
 
 from __future__ import annotations

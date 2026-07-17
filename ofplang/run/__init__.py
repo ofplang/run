@@ -1,18 +1,17 @@
 """ofplang.run -- runner for Object-flow Programming Language v0.
 
-The runner consumes an execution plan (the artefact produced by
-`ofplang.schedule`, spec §6) and drives its activities to completion against an
-execution backend, emitting an execution status/document as it progresses.
+Drives ofplang v0 work to completion against an execution backend, emitting an
+execution status/document (spec §6/§7) as it progresses. Two layers:
 
-Two layers are planned and will land incrementally:
+* ``ofplang.run.simulator`` -- a physical-only simulated backend that stands in
+  for real hardware, so the runner can be driven end to end without a lab.
+* ``ofplang.run.runner`` -- the runner. `RollingRunner` drives a workflow by
+  replanning each tick via `ofplang.schedule` (re-routing on device faults,
+  event-boundary or fixed-interval polling, optional duration variance);
+  `Runner` replays a pre-made execution plan (§6) with no replanning.
 
-* ``ofplang.run.simulator`` -- a simulated execution backend used to test the
-  runner end to end without real hardware (built first).
-* ``ofplang.run.runner`` -- the runner itself, which walks a plan and dispatches
-  its activities to a backend (built on top of the simulator).
-
-Nothing is implemented yet; this package is a scaffold. Public exports will be
-added here as each layer lands.
+The `ofp-run` CLI (`ofplang.run.cli`) exposes both: `run` (rolling-horizon) and
+`replay`. Design rationale is recorded in dev-notes (D9-D23).
 """
 
 from __future__ import annotations

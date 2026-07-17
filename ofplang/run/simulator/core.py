@@ -1,11 +1,11 @@
-"""The simulated execution backend (dev-notes design.md D10-D18).
+"""The simulated execution backend (dev-notes design.md D10-D21).
 
 `Simulator` stands in for real hardware so the runner can be driven end to end
 without a lab. It knows only the physical world (D10): devices, spots,
 transporters, and opaque timed operations. It does not know workflows or plans --
 the runner keeps that provenance.
 
-Contract (D14/D15), summarised:
+Contract (D14/D15/D21), summarised:
 
 * Construct from an environment (§5); the simulator reads it itself.
 * `dispatch_processing` / `dispatch_transport` register an operation that runs
@@ -19,14 +19,20 @@ Contract (D14/D15), summarised:
 * `advance(until)` moves the virtual clock forward to ``until``, always reaching
   it (no early return on an event); the runner decides how far to advance (D11).
   Each `advance` accumulates its completion events into `_history`.
+* `schedule_device_down` / `schedule_device_up` register timed faults; a down
+  device rejects new processing but still serves transports, and operations
+  already running on it are unaffected (D21). `down_devices` reports the current
+  set (the runner polls it to trigger re-routing).
 
 The simulator is a *validating oracle* (D16): every dispatch checks its physical
-preconditions (inputs present, outputs / destinations free, resources idle) and
-raises if a runner drives an inconsistent plan. A valid plan never trips these.
+preconditions (inputs present, outputs / destinations free, resources idle, the
+device not down) and raises if a runner drives an inconsistent plan. A valid plan
+never trips these.
 
-Scope: this first cut models correct behaviour only -- no duration variance and
-no device up/down (D13/D17). Variance is injected externally by passing a
-`duration` to a dispatch; faults come in a later milestone.
+Scope: duration variance is injected externally by passing a `duration` to a
+dispatch, not built in (D13). A down device only blocks new processing (D21);
+fully stranding a device (FAILED / CANCELLED) and Data value computation remain
+out of scope (D12/D13).
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ from .errors import (
 
 @dataclass(frozen=True)
 class Event:
-    """A completion event, returned by `_advance` for tests / debugging (D18).
+    """A completion event, surfaced via `_history` for tests / debugging (D18).
 
     Marks that operation `uuid` (of kind `kind`) finished at virtual time `time`.
     """

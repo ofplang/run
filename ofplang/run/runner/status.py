@@ -3,8 +3,10 @@ scheduler each tick.
 
 The status is the runner's committed history rendered as a §6 document: `now`,
 the `interface` boundary constraint (§6.8) carried through unchanged, and one
-activity entry per committed record marked `completed` / `running` at its actual
-times. Relays are **not** emitted -- the scheduler regenerates them from the
+activity entry per committed record marked `completed` / `running`. A completed
+record's `end` is its observed finish; a running record's `end` is the planned
+expected finish (the runner does not know the actual until it observes
+completion). Relays are **not** emitted -- the scheduler regenerates them from the
 committed transport legs (§7). Pending work is omitted; the scheduler re-derives
 it from the workflow.
 """

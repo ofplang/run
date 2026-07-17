@@ -2,10 +2,14 @@
 
 Thin presentation layer over the library. Subcommands:
 
-    ofp-run run <workflow> --env <env> [--interface <doc>] [--seed N] [-o OUT]
-        drive a workflow to completion by replanning (rolling-horizon, 2b-1)
+    ofp-run run <workflow> --env <env>
+        [--interface <doc>] [--seed N] [--margin M] [--poll-interval D] [-o OUT]
+        drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
-        replay a given execution plan on the simulator (2a)
+        replay a given execution plan on the simulator
+
+Device up/down and duration variance are simulator/scenario concerns driven from
+Python (a callback / the sim's fault API), not exposed on the CLI.
 
 All real logic lives in the library (`ofplang.run.runner` / `ofplang.run.simulator`)
 so the CLI cannot drift from it; this file only parses arguments, reports errors,

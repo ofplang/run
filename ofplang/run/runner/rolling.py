@@ -1,20 +1,28 @@
-"""Rolling-horizon runner (spec §7; dev-notes D9/D20 milestone 2b-1).
+"""Rolling-horizon runner (spec §7; dev-notes D9/D20-D23).
 
 Drives a workflow to completion by replanning as it goes. Each tick it renders
 its committed history as an execution status (§6/§7), calls the scheduler for a
 fresh plan, dispatches the pending activities that can start now, then advances
 the virtual clock and polls the backend. It repeats until the scheduler returns a
-plan with no pending work.
+plan with no pending work. Every tick feeds the committed history (completed /
+running activities, `now`, the `interface` boundary) back to the scheduler, which
+fixes it and re-optimises the rest -- the replan round-trip (D9). Only committed
+history is stable across replans (D9); pending identities may be regenerated each
+replan, so pending work is always re-read from the fresh plan.
 
-Milestone 2b-1 is happy-path: no device faults and no duration variance, so the
-run follows the plan and the clock steps to planned event boundaries -- actual
-times equal planned times. What 2b-1 exercises is the *round-trip*: every tick
-the committed history (completed / running activities, `now`, the `interface`
-boundary) is fed back to the scheduler, which fixes it and re-optimises the rest
-(D9). Device up/down, re-routing and completion-time estimation are 2b-2.
+What this layer covers, added incrementally:
 
-Only committed history is stable across replans (D9); pending identities may be
-regenerated each replan, so pending work is always re-read from the fresh plan.
+* rolling-horizon core (D9/D20): the replan loop above.
+* re-routing (D21): when a device goes down, the environment scheduled against is
+  reduced (its process modes dropped) so the scheduler re-routes pending work.
+* poll modes (D22): `poll_interval=None` advances to plan event boundaries
+  (exact, deterministic, the default); an integer polls every that many units and
+  estimates each completion time as the observing poll -- the realistic mode.
+* duration variance (D23): an optional `duration_model` perturbs the dispatched
+  duration (the backend runs the actual, the runner reports the planned expected
+  end until it observes completion). Variance requires fixed-interval polling and
+  a positive running-task margin (so an overrun's successors are not dispatched
+  onto a still-busy resource).
 """
 
 from __future__ import annotations
