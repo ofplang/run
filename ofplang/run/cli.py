@@ -54,6 +54,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
     r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
+    r.add_argument(
+        "--poll-interval",
+        type=int,
+        metavar="D",
+        help="poll every D time units (fixed-interval, with completion-time estimation); "
+        "default: advance to plan event boundaries (exact)",
+    )
     r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
 
     # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
@@ -97,7 +104,12 @@ def _cmd_run(args) -> int:
         interface = doc.get("interface") if isinstance(doc, dict) else None
 
     runner = RollingRunner(
-        args.workflow, args.env, interface, running_task_margin=args.margin, random_seed=args.seed
+        args.workflow,
+        args.env,
+        interface,
+        running_task_margin=args.margin,
+        random_seed=args.seed,
+        poll_interval=args.poll_interval,
     )
     try:
         status = runner.run()

@@ -75,6 +75,7 @@ class RollingRunner:
         *,
         running_task_margin: int = 0,
         random_seed: int | None = None,
+        poll_interval: int | None = None,
         max_ticks: int = 100_000,
     ):
         self.workflow_path = str(workflow_path)
@@ -87,6 +88,10 @@ class RollingRunner:
         self.interface = interface or {}
         self.margin = running_task_margin
         self.seed = random_seed
+        # None -> advance to plan event boundaries (deterministic, exact times, the
+        # default). An integer -> poll every that many ticks: the realistic mode
+        # where completion is only seen at a poll and its time is estimated (D22).
+        self.poll_interval = poll_interval
         self.max_ticks = max_ticks
 
         self.log = CommitLog()
@@ -130,14 +135,15 @@ class RollingRunner:
             self._last_time = plan.get("time")
 
             # 2. Pending work is what carries no status (relays are scheduler-derived
-            #    and never dispatched, §7).
+            #    and never dispatched, §7). The run is done when there is neither
+            #    unstarted work nor anything still running.
             pending = [
                 a
                 for a in plan.get("activities", [])
                 if a.get("status") in (None, "pending") and a.get("kind") != "relay"
             ]
-            if not pending:
-                break  # everything is committed -> done
+            if not pending and not self.log.running():
+                break
 
             # 3. Dispatch everything that can start now. Pending is optimised at/after
             #    `now`, so these are the entries at exactly `now`; their predecessors
@@ -147,26 +153,24 @@ class RollingRunner:
                 if int(act["start"]) <= self.now:
                     self._commit_start(act)
 
-            # 4. Advance to the next event boundary: the earliest future pending start
-            #    or running-operation finish.
-            future = [int(a["start"]) for a in pending if int(a["start"]) > self.now]
-            future += [r.end for r in self.log.running() if r.end > self.now]
-            if not future:
-                # Only now-work this tick (e.g. same-spot no-ops); settle and replan.
-                self.sim.advance(self.now)
-                self._poll()
-                continue
-            self.now = min(future)
-            self.sim.advance(self.now)
-            self._poll()
-
-        # Drain any operations still running when the last work was dispatched.
-        while self.log.running():
-            self.now = max(r.end for r in self.log.running())
+            # 4. Advance the clock, then poll. The advance policy is the only thing
+            #    that differs between the two modes (D22).
+            self.now = self._next_time(pending)
             self.sim.advance(self.now)
             self._poll()
 
         return build_status(self.log.records(), self.now, self.interface, self._last_time)
+
+    def _next_time(self, pending: list[dict]) -> int:
+        """The virtual time to advance to next. In fixed-interval mode, one poll
+        interval on; in event-boundary mode, the earliest future pending start or
+        running-operation finish (or `now` if there is none, letting a settle pass
+        clear zero-duration work)."""
+        if self.poll_interval is not None:
+            return self.now + self.poll_interval
+        future = [int(a["start"]) for a in pending if int(a["start"]) > self.now]
+        future += [r.end for r in self.log.running() if r.end > self.now]
+        return min(future) if future else self.now
 
     def _commit_start(self, activity: dict) -> None:
         """Start a pending activity now: dispatch it to the backend (or record a
@@ -194,10 +198,17 @@ class RollingRunner:
         self.log.add(Committed(activity, kind, "running", start, end, uuid=uuid))
 
     def _poll(self) -> None:
-        """Mark running operations the backend reports as finished (status-only, D18)."""
+        """Mark running operations the backend reports as finished (status-only, D18).
+
+        The completion time is recorded as the current poll time `now`. In
+        event-boundary mode `now` is exactly the planned end (we advanced to it); in
+        fixed-interval mode it is the poll at which completion was first seen -- an
+        upper bound on the true finish, the best a poll-only observer can know (D22).
+        """
         for rec in self.log.running():
             if rec.uuid is not None and self.sim.state(rec.uuid)["status"] == "completed":
                 rec.status = "completed"
+                rec.end = self.now
 
     @staticmethod
     def _failure_message(report) -> str:
