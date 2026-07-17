@@ -203,6 +203,21 @@ def test_empty_plan_produces_empty_status():
     assert status["now"] == 0
 
 
+def test_history_confirms_actual_times_match_plan():
+    # Genuine actual-vs-planned check: read the backend's completion history (real
+    # event times, via _history) and confirm each dispatched activity finished when
+    # the plan said it would -- evidence the run matched the plan, not just that the
+    # runner echoed the plan's times into the status. The runner's own main loop
+    # never touches these times (it only calls advance).
+    runner = Runner(PLAN_A, ENV)
+    runner.run()
+    actual = {e.uuid: e.time for e in runner.sim._history()}
+    dispatched = [r for r in runner._records if r.dispatched]
+    assert len(dispatched) == 3  # source, transport, target (no bookkeeping in PLAN_A)
+    for rec in dispatched:
+        assert actual[rec.uuid] == rec.end  # finished exactly when planned
+
+
 def test_status_round_trips_through_yaml():
     status = Runner(PLAN_A, ENV).run()
     text = serialize_document(status)

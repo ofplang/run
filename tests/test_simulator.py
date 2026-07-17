@@ -133,7 +133,8 @@ def test_processing_duration_override():
     # The mode's own duration is 2; an override injects a different one (D13).
     sim = make_sim()
     uid = sim.dispatch_processing("source", "0", duration=10)
-    (event,) = sim._advance(50)
+    sim.advance(50)
+    (event,) = sim._history()
     assert event.time == 10 and event.uuid == uid
 
 
@@ -205,7 +206,8 @@ def test_transport_duration_from_table():
     sim = make_sim()
     sim.place("station_0.core")
     uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
-    (event,) = sim._advance(100)
+    sim.advance(100)
+    (event,) = sim._history()
     assert event.time == 1  # from the transport table, not overridden
 
 
@@ -292,8 +294,8 @@ def test_relay_is_rejected():
 
 def test_advance_reaches_until_without_events():
     sim = make_sim()
-    events = sim._advance(7)  # nothing dispatched
-    assert events == []
+    sim.advance(7)  # nothing dispatched
+    assert sim._history() == []
     assert sim.now == 7
 
 
@@ -320,7 +322,8 @@ def test_advance_orders_events_by_completion_time():
     # A second op on station_1 via a same-spot no-op transport (needs material).
     sim.place("station_1.core")
     quick = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=3)
-    events = sim._advance(20)
+    sim.advance(20)
+    events = sim._history()
     assert [e.uuid for e in events] == [quick, slow]
     assert [e.time for e in events] == [3, 8]
 
@@ -333,8 +336,21 @@ def test_advance_ties_are_deterministic_in_dispatch_order():
     sim.place("station_1.core")
     first = sim.dispatch_transport(None, "station_0.core", "station_0.core", duration=4)
     second = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=4)
-    events = sim._advance(4)
-    assert [e.uuid for e in events] == [first, second]
+    sim.advance(4)
+    assert [e.uuid for e in sim._history()] == [first, second]
+
+
+def test_history_accumulates_across_advances():
+    # _history is cumulative: every advance appends its completion events, so the
+    # main loop only ever calls advance while a test reads the full run log.
+    sim = make_sim()
+    a = sim.dispatch_processing("source", "0")  # ends 2
+    sim.place("station_1.core")
+    b = sim.dispatch_transport(None, "station_1.core", "station_1.core", duration=5)  # ends 5
+    sim.advance(2)
+    assert [e.uuid for e in sim._history()] == [a]
+    sim.advance(5)
+    assert [(e.uuid, e.time) for e in sim._history()] == [(a, 2), (b, 5)]
 
 
 # -- observation & placement ----------------------------------------------

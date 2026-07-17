@@ -15,9 +15,10 @@ Contract (D14/D15), summarised:
   string id (D15), sim-generated unless supplied to `place`.
 * `observe` / `state` report only an operation's ``status`` (running / completed),
   never times -- faithful to a real backend's blind polling (D18). Exact event
-  times are available only via `_advance`, for tests and debugging.
+  times are available only via `_history`, for tests and debugging.
 * `advance(until)` moves the virtual clock forward to ``until``, always reaching
   it (no early return on an event); the runner decides how far to advance (D11).
+  Each `advance` accumulates its completion events into `_history`.
 
 The simulator is a *validating oracle* (D16): every dispatch checks its physical
 preconditions (inputs present, outputs / destinations free, resources idle) and
@@ -109,6 +110,11 @@ class Simulator:
 
         # Operation registry (running and completed), keyed by id.
         self._ops: dict[str, _Op] = {}
+
+        # Accumulated completion events, appended by every `advance`. Production
+        # code never reads this; it is the privileged debug / test channel that
+        # carries times (`_history`), keeping `observe` / `state` status-only (D18).
+        self._history_events: list[Event] = []
 
         # Monotonic counters for opaque, unstable ids (D15). Deterministic so
         # tests are reproducible; nothing may read meaning from the values.
@@ -353,16 +359,27 @@ class Simulator:
 
     def advance(self, until: int) -> None:
         """Advance the virtual clock to `until`, applying every completion on the
-        way (production entry point). Always reaches `until` -- it never returns
-        early on an event, mirroring a real backend where only polling reveals
-        completion (D11). The events themselves are discarded here."""
-        self._advance(until)
+        way (the sole clock entry point for production / the runner). Always
+        reaches `until` -- it never returns early on an event, mirroring a real
+        backend where only polling reveals completion (D11). The completion events
+        are accumulated into the history (see `_history`) rather than returned, so
+        the main loop only ever sees `advance` while tests can still inspect what
+        happened."""
+        self._history_events.extend(self._advance(until))
+
+    def _history(self) -> list[Event]:
+        """Debug / test channel: the completion events accumulated by every
+        `advance` since construction, in order (a copy). This is where actual event
+        *times* live (D18 keeps `observe` / `state` status-only); a test reads it to
+        verify a run went as planned, without the main loop ever handling times."""
+        return list(self._history_events)
 
     def _advance(self, until: int) -> list[Event]:
-        """Advance to `until`, returning the completion events in order (for tests /
-        debugging, D18). Steps internally to each next completion time (<= `until`),
-        applies it, and repeats; when no completion remains within reach, jumps the
-        clock to `until` and stops."""
+        """Internal clock engine: advance to `until`, returning this call's
+        completion events in order. Not called directly outside `advance` (its
+        events would bypass the history); use `advance` + `_history` instead. Steps
+        to each next completion time (<= `until`), applies it, and repeats; when no
+        completion remains within reach, jumps the clock to `until` and stops."""
         if until < self._clock:
             raise ClockError(f"cannot advance to {until}, clock is at {self._clock}")
 
