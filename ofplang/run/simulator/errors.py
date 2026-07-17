@@ -47,6 +47,15 @@ class MissingObject(SimulatorError):
     """
 
 
+class DeviceDown(SimulatorError):
+    """A processing operation was dispatched to a device that is down.
+
+    A down device (spec §7 re-routing) cannot run processes -- but transports to
+    and from it, and operations already running on it, are unaffected (dev-notes
+    D21). Fully-unavailable devices that strand material are out of scope (D13).
+    """
+
+
 class RelayNotSupported(SimulatorError):
     """A relay was dispatched.
 

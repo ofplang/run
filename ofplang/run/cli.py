@@ -54,6 +54,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
     r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
+    r.add_argument(
+        "--down",
+        action="append",
+        default=[],
+        metavar="DEV@T",
+        help="take a device down at a virtual time (repeatable), e.g. station_1@3",
+    )
     r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
 
     # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
@@ -99,6 +106,15 @@ def _cmd_run(args) -> int:
     runner = RollingRunner(
         args.workflow, args.env, interface, running_task_margin=args.margin, random_seed=args.seed
     )
+
+    # Optional scenario faults: `--down DEV@T` takes a device down at virtual time T.
+    for spec in args.down:
+        device, sep, when = spec.partition("@")
+        if not sep or not when.isdigit() or not device:
+            print(f"ofp-run: invalid --down {spec!r}; expected DEVICE@TIME", file=sys.stderr)
+            return EXIT_USAGE
+        runner.sim.schedule_device_down(int(when), device)
+
     try:
         status = runner.run()
     except (SimulatorError, RunnerError) as exc:

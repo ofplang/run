@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from .environment import Environment, device_of, environment_from_dict, load_environment
 from .errors import (
     ClockError,
+    DeviceDown,
     MissingObject,
     RelayNotSupported,
     ResourceBusy,
@@ -116,6 +117,12 @@ class Simulator:
         # carries times (`_history`), keeping `observe` / `state` status-only (D18).
         self._history_events: list[Event] = []
 
+        # Devices currently down, and the timed fault schedule that drives them
+        # (D21). A down device cannot run processes; transports and running ops are
+        # unaffected. Faults are applied lazily as the clock reaches their time.
+        self._down: set[str] = set()
+        self._faults: list[dict] = []
+
         # Monotonic counters for opaque, unstable ids (D15). Deterministic so
         # tests are reproducible; nothing may read meaning from the values.
         self._next_op = 0
@@ -188,9 +195,14 @@ class Simulator:
         out_spots = tuple(m.output_spots.values())
         inputs = set(in_spots)
 
-        # Preconditions (D16, the validating oracle). Devices idle; every input
-        # spot holds material; every output spot is free -- unless it is also one
-        # of this operation's own input spots (an in-place transform, §5.5).
+        # Preconditions (D16, the validating oracle). No device is down (a down
+        # device cannot run processes, D21); devices idle; every input spot holds
+        # material; every output spot is free -- unless it is also one of this
+        # operation's own input spots (an in-place transform, §5.5).
+        self._apply_faults()
+        for d in m.devices:
+            if d in self._down:
+                raise DeviceDown(f"device is down: {d}")
         self._require_devices_free(m.devices)
         for s in in_spots:
             if s not in self._spot_holds:
@@ -355,6 +367,43 @@ class Simulator:
             raise UnknownReference(f"unknown spot: {spot}")
         return self._spot_holds.get(spot)
 
+    # -- device faults (D21) ----------------------------------------------
+
+    def schedule_device_down(self, time: int, device: str) -> None:
+        """Register that `device` goes down at virtual time `time` -- it can no
+        longer run processes from then on (transports and running ops are
+        unaffected, D21). Registered via this method rather than the constructor so
+        the environment (what exists) and the fault scenario (what happens) stay
+        separate concerns."""
+        self._register_fault(time, device, "down")
+
+    def schedule_device_up(self, time: int, device: str) -> None:
+        """Register that `device` comes back up at virtual time `time`."""
+        self._register_fault(time, device, "up")
+
+    def _register_fault(self, time: int, device: str, action: str) -> None:
+        if device not in self._env.devices:
+            raise UnknownReference(f"unknown device: {device}")
+        self._faults.append({"time": int(time), "device": device, "action": action, "applied": False})
+
+    def down_devices(self) -> list[str]:
+        """The devices currently down (a sorted copy). The runner polls this each
+        tick and reduces the environment it schedules against accordingly."""
+        self._apply_faults()
+        return sorted(self._down)
+
+    def _apply_faults(self) -> None:
+        """Apply every scheduled fault whose time has been reached, in time order.
+        Idempotent (each fault applies once); called from `down_devices`, from a
+        processing dispatch, and at the end of each advance."""
+        for fault in sorted(self._faults, key=lambda f: f["time"]):
+            if not fault["applied"] and fault["time"] <= self._clock:
+                if fault["action"] == "down":
+                    self._down.add(fault["device"])
+                else:
+                    self._down.discard(fault["device"])
+                fault["applied"] = True
+
     # -- time advance (D11/D15) -------------------------------------------
 
     def advance(self, until: int) -> None:
@@ -401,6 +450,8 @@ class Simulator:
             for op in due:
                 self._complete(op)
                 events.append(Event(time=next_end, uuid=op.uuid, kind=op.kind))
+        # Apply any device faults whose time the clock has now reached (D21).
+        self._apply_faults()
         return events
 
     def _complete(self, op: _Op) -> None:

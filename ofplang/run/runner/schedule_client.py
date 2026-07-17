@@ -18,7 +18,7 @@ from .runner import RunnerError
 
 def replan(
     workflow_path,
-    environment_path,
+    environment,
     status_document: dict,
     *,
     running_task_margin: int = 0,
@@ -27,9 +27,11 @@ def replan(
 ):
     """Run the scheduler on `status_document` and return its `ScheduleReport`.
 
-    The status is written to a temp file (the scheduler reads a document path) and
-    removed afterward. Raises `RunnerError` with guidance if `ofplang.schedule` is
-    not importable.
+    `environment` is either a path to an environment file, or an environment dict
+    (e.g. a reduced environment when devices are down, D21) which is written to a
+    temp file. The status is likewise written to a temp file (the scheduler reads
+    document paths); both temps are removed afterward. Raises `RunnerError` with
+    guidance if `ofplang.schedule` is not importable.
     """
     try:
         from ofplang.schedule.scheduler.api import schedule as _schedule
@@ -39,19 +41,27 @@ def replan(
             "sibling repo (e.g. `pip install -e ../ofplang-schedule`)"
         ) from exc
 
-    # Serialize the status to a temp file, schedule against it, then clean up.
-    fd, path = tempfile.mkstemp(suffix=".status.yaml")
-    os.close(fd)
-    try:
+    temps: list[str] = []
+
+    def _to_file(document: dict, suffix: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+        temps.append(path)
         with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(status_document, f, sort_keys=False, allow_unicode=True)
+            yaml.safe_dump(document, f, sort_keys=False, allow_unicode=True)
+        return path
+
+    try:
+        env_path = _to_file(environment, ".env.yaml") if isinstance(environment, dict) else environment
+        status_path = _to_file(status_document, ".status.yaml")
         return _schedule(
             workflow_path,
-            environment_path,
-            document_path=path,
+            env_path,
+            document_path=status_path,
             running_task_margin=running_task_margin,
             random_seed=random_seed,
             max_time_seconds=max_time_seconds,
         )
     finally:
-        os.unlink(path)
+        for path in temps:
+            os.unlink(path)

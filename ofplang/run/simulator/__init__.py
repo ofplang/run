@@ -23,6 +23,7 @@ from .environment import (
 )
 from .errors import (
     ClockError,
+    DeviceDown,
     MissingObject,
     RelayNotSupported,
     ResourceBusy,
@@ -46,5 +47,6 @@ __all__ = [
     "SpotConflict",
     "MissingObject",
     "RelayNotSupported",
+    "DeviceDown",
     "ClockError",
 ]

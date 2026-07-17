@@ -19,11 +19,49 @@ regenerated each replan, so pending work is always re-read from the fresh plan.
 
 from __future__ import annotations
 
+import copy
+
 from ..simulator import Simulator
+from .loader import load_document
 from .provenance import Committed, CommitLog
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
+
+
+def _normalize_mode_ids(environment: dict) -> dict:
+    """Return a copy of `environment` with an explicit `id` on every process mode
+    that lacks one.
+
+    This must happen before any reduction: dropping a mode renumbers the remaining
+    position-based ids, so a reduced-env plan's mode id would no longer map to the
+    same physical mode in the backend's full environment. Pinning ids up front
+    keeps the id -> mode mapping stable across reduction (D21). Ids are `m<i>`
+    rather than the bare position, because a mode id must be a v0 identifier
+    (§8.1) and so cannot start with a digit.
+    """
+    env = copy.deepcopy(environment)
+    for process in (env.get("processes") or {}).values():
+        for i, mode in enumerate(process.get("modes") or []):
+            if mode.get("id") is None:
+                mode["id"] = f"m{i}"
+    return env
+
+
+def _reduce_environment(environment: dict, down: set[str]) -> dict:
+    """Return a copy of `environment` with every process mode that uses a down
+    device removed, keeping the device/spot/transport definitions (spec §7, D21).
+
+    Dropping only the modes is how a re-route is triggered: committed transports to
+    a down device's spot stay valid, and a re-transport can still route through it,
+    but no new processing is scheduled there.
+    """
+    reduced = copy.deepcopy(environment)
+    for process in (reduced.get("processes") or {}).values():
+        process["modes"] = [
+            mode for mode in (process.get("modes") or []) if not (set(mode.get("devices") or []) & down)
+        ]
+    return reduced
 
 
 class RollingRunner:
@@ -41,7 +79,11 @@ class RollingRunner:
     ):
         self.workflow_path = str(workflow_path)
         self.environment_path = str(environment_path)
-        self.sim = Simulator(environment_path)  # the backend reads the environment itself
+        # Keep the environment as a dict too: when devices go down we schedule
+        # against a reduced copy of it (D21), while the backend keeps the full one.
+        # Mode ids are pinned up front so they stay stable when modes are dropped.
+        self._environment = _normalize_mode_ids(load_document(environment_path))
+        self.sim = Simulator(self._environment)  # the backend reads the environment itself
         self.interface = interface or {}
         self.margin = running_task_margin
         self.seed = random_seed
@@ -66,11 +108,18 @@ class RollingRunner:
             if self.ticks > self.max_ticks:
                 raise RunnerError("exceeded max ticks (possible non-termination)")
 
-            # 1. Render committed history as a status and replan.
+            # 1. Discover which devices are down and schedule against the normalized
+            #    environment reflecting it: the full env when nothing is down, or a
+            #    reduced copy (down devices' process modes dropped) that triggers a
+            #    re-route (D21). Always the normalized dict, so the scheduler and the
+            #    backend agree on mode ids. Committed history is fed back so it is
+            #    fixed and the rest re-optimised.
+            down = set(self.sim.down_devices())
+            environment = _reduce_environment(self._environment, down) if down else self._environment
             status_doc = build_status(self.log.records(), self.now, self.interface)
             report = replan(
                 self.workflow_path,
-                self.environment_path,
+                environment,
                 status_doc,
                 running_task_margin=self.margin,
                 random_seed=self.seed,
