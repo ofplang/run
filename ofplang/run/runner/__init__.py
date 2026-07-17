@@ -1,21 +1,23 @@
 """The runner: drive an execution plan to completion (spec §6/§7).
 
-Built on top of the simulator. This layer reads an execution plan (§6), replays
-its activities against an execution backend (the simulator, or later real
-hardware), and emits an execution status/document reflecting the run.
+Built on top of the simulator. Two entry points:
 
-Milestone 2a (implemented): replay a given plan with no replanning -- see
-`runner.Runner`. Milestone 2b (planned): the rolling-horizon replanning loop
-(dev-notes design.md D19).
+* `Runner` (milestone 2a) -- replay a given execution plan (§6) with no
+  replanning; see `runner.Runner`.
+* `RollingRunner` (milestone 2b-1) -- drive a workflow to completion by
+  replanning each tick via `ofplang.schedule` (dev-notes design.md D9/D20);
+  see `rolling.RollingRunner`.
 """
 
 from __future__ import annotations
 
 from .loader import load_document, serialize_document
+from .rolling import RollingRunner
 from .runner import Runner, RunnerError
 
 __all__ = [
     "Runner",
+    "RollingRunner",
     "RunnerError",
     "load_document",
     "serialize_document",

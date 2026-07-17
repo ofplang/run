@@ -270,7 +270,7 @@ def test_cli_runs_plan_to_file(tmp_path, capsys):
     plan_path.write_text(serialize_document(PLAN_A), encoding="utf-8")
     out_path = tmp_path / "status.yaml"
 
-    code = main(["run", str(plan_path), "--env", str(env_path), "-o", str(out_path)])
+    code = main(["replay", str(plan_path), "--env", str(env_path), "-o", str(out_path)])
     assert code == EXIT_OK
 
     status = load_document(out_path)
@@ -297,6 +297,6 @@ def test_cli_reports_failure_on_inconsistent_plan(tmp_path, capsys):
     }
     plan_path.write_text(serialize_document(bad), encoding="utf-8")
 
-    code = main(["run", str(plan_path), "--env", str(env_path)])
+    code = main(["replay", str(plan_path), "--env", str(env_path)])
     assert code == EXIT_FAILED
     assert "execution failed" in capsys.readouterr().err

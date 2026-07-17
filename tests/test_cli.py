@@ -29,11 +29,17 @@ def test_missing_subcommand_is_usage_error():
 def test_run_requires_env():
     # `run` needs --env; omitting it is an argparse usage error (exit 2).
     with pytest.raises(SystemExit) as exc:
-        main(["run", "plan.yaml"])
+        main(["run", "workflow.yaml"])
     assert exc.value.code == EXIT_USAGE
 
 
-def test_run_missing_plan_file_is_usage_error(capsys):
-    # A plan path that does not exist is an input (usage) error, not a failure.
+def test_run_missing_workflow_is_usage_error(capsys):
+    # A workflow path that does not exist is an input (usage) error, not a failure.
     assert main(["run", "does_not_exist.yaml", "--env", "nope.yaml"]) == EXIT_USAGE
+    assert "workflow not found" in capsys.readouterr().err
+
+
+def test_replay_missing_plan_is_usage_error(capsys):
+    # `replay` reads a plan; a missing plan file is a usage error.
+    assert main(["replay", "does_not_exist.yaml", "--env", "nope.yaml"]) == EXIT_USAGE
     assert "cannot read plan" in capsys.readouterr().err

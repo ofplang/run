@@ -1,0 +1,9 @@
+# Execution document carrying the interface boundary constraint (§6.8) for
+# interface_load.workflow.yaml: the sample starts on the loader, the result is
+# delivered to the output rack. No `now`/started activities -> an initial plan.
+interface:
+  inputs:
+    sample: loader.stage
+  outputs:
+    result: output.slot
+activities: []

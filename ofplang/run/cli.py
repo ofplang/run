@@ -1,16 +1,19 @@
 """Command-line interface for ofplang.run.
 
-Thin presentation layer over the library. Subcommand:
+Thin presentation layer over the library. Subcommands:
 
-    ofp-run run <plan> --env <env> [-o OUT]   # replay a plan on the simulator
+    ofp-run run <workflow> --env <env> [--interface <doc>] [--seed N] [-o OUT]
+        drive a workflow to completion by replanning (rolling-horizon, 2b-1)
+    ofp-run replay <plan> --env <env> [-o OUT]
+        replay a given execution plan on the simulator (2a)
 
 All real logic lives in the library (`ofplang.run.runner` / `ofplang.run.simulator`)
 so the CLI cannot drift from it; this file only parses arguments, reports errors,
 and maps outcomes to exit codes.
 
 Exit codes:
-    0  success (a plan ran to completion)
-    1  execution failed (an activity errored, or the plan is infeasible)
+    0  success (the workflow / plan ran to completion)
+    1  execution failed (an activity errored, or a replan is infeasible)
     2  usage / input error
 """
 
@@ -22,7 +25,13 @@ from pathlib import Path
 
 import yaml
 
-from ofplang.run.runner import Runner, RunnerError, load_document, serialize_document
+from ofplang.run.runner import (
+    RollingRunner,
+    Runner,
+    RunnerError,
+    load_document,
+    serialize_document,
+)
 from ofplang.run.simulator import SimulatorError
 
 EXIT_OK = 0
@@ -31,46 +40,91 @@ EXIT_USAGE = 2
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ofp-run", description="Run ofplang v0 execution plans.")
+    parser = argparse.ArgumentParser(prog="ofp-run", description="Run ofplang v0 workflows / plans.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    r = sub.add_parser("run", help="replay an execution plan on the simulator")
-    r.add_argument("plan", metavar="PLAN", help="execution plan YAML (from ofp-schedule)")
+    # `run` -- rolling-horizon: drive a workflow to completion, replanning as it goes.
+    r = sub.add_parser("run", help="drive a workflow to completion (rolling-horizon)")
+    r.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
     r.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
     r.add_argument(
-        "-o", "--output", metavar="OUT", help="write the resulting status YAML here (default: stdout)"
+        "--interface",
+        metavar="DOC",
+        help="execution document carrying the interface boundary constraint (§6.8)",
     )
+    r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
+    r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
+    r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
+
+    # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
+    p = sub.add_parser("replay", help="replay an execution plan on the simulator")
+    p.add_argument("plan", metavar="PLAN", help="execution plan YAML (from ofp-schedule)")
+    p.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
+    p.add_argument("-o", "--output", metavar="OUT", help="write the resulting status YAML here (default: stdout)")
 
     return parser
 
 
-def _cmd_run(args) -> int:
-    # Read the inputs. A missing or malformed plan / environment is an input
-    # (usage) error, not an execution failure.
+def _read_document(path, what: str) -> tuple[dict | None, int | None]:
+    """Load a YAML document, returning (doc, None) or (None, EXIT_USAGE) on error."""
     try:
-        plan = load_document(args.plan)
+        return load_document(path), None
     except (OSError, yaml.YAMLError) as exc:
-        print(f"ofp-run: cannot read plan {args.plan!r}: {exc}", file=sys.stderr)
-        return EXIT_USAGE
-    try:
-        runner = Runner(plan, args.env)  # constructing the runner loads the environment
-    except (OSError, yaml.YAMLError) as exc:
-        print(f"ofp-run: cannot read environment {args.env!r}: {exc}", file=sys.stderr)
-        return EXIT_USAGE
+        print(f"ofp-run: cannot read {what} {str(path)!r}: {exc}", file=sys.stderr)
+        return None, EXIT_USAGE
 
-    # Drive the plan. A backend rejection (an inconsistent plan) or an activity
-    # that never completes is an execution failure.
+
+def _emit(status: dict, output) -> None:
+    text = serialize_document(status)
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+
+
+def _cmd_run(args) -> int:
+    # Inputs must exist; a missing file is a usage error, not a failure.
+    for label, path in (("workflow", args.workflow), ("environment", args.env)):
+        if not Path(path).is_file():
+            print(f"ofp-run: {label} not found: {path!r}", file=sys.stderr)
+            return EXIT_USAGE
+
+    interface = None
+    if args.interface:
+        doc, err = _read_document(args.interface, "interface document")
+        if err is not None:
+            return err
+        interface = doc.get("interface") if isinstance(doc, dict) else None
+
+    runner = RollingRunner(
+        args.workflow, args.env, interface, running_task_margin=args.margin, random_seed=args.seed
+    )
     try:
         status = runner.run()
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    text = serialize_document(status)
-    if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
+    _emit(status, args.output)
+    return EXIT_OK
+
+
+def _cmd_replay(args) -> int:
+    plan, err = _read_document(args.plan, "plan")
+    if err is not None:
+        return err
+    if not Path(args.env).is_file():
+        print(f"ofp-run: environment not found: {args.env!r}", file=sys.stderr)
+        return EXIT_USAGE
+
+    runner = Runner(plan, args.env)
+    try:
+        status = runner.run()
+    except (SimulatorError, RunnerError) as exc:
+        print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+
+    _emit(status, args.output)
     return EXIT_OK
 
 
@@ -85,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "replay":
+        return _cmd_replay(args)
     return EXIT_USAGE  # pragma: no cover - argparse enforces a subcommand
 
 

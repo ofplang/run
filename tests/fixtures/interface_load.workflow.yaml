@@ -1,0 +1,39 @@
+# v0 workflow fixture with an Object-bearing *entry input* (copied from
+# ofplang-schedule examples). `main` takes an entry input `sample` and returns a
+# final output `result`; where they sit is a boundary constraint given by the
+# `interface` of the execution document (SPEC §6.8), which the runner supplies.
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  heat:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      transform: [inputs.plate, outputs.out]
+
+  main:
+    kind: composite
+    inputs:
+      sample: { type: Plate, phase: data }
+    outputs:
+      result: { type: Plate, phase: data }
+    body:
+      nodes:
+        - id: Heat
+          process: heat
+          state:
+            plate:
+              from: inputs.sample
+      returns:
+        result:
+          from: Heat.out
+
+entry: main
