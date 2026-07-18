@@ -1,0 +1,75 @@
+# Pure-Data workflow fixture: a device-less Pure-Data process sits in the middle
+# of an Object chain and constrains execution order without moving any material.
+#
+#   sample --(object)--> Measure --(object)--> Finish
+#                           |                     ^
+#                           +--reading(data)-->Analyze--score(data)--+
+#
+# `Measure` (an Object process) transforms the entry plate and emits a Pure Data
+# `reading`. `Analyze` is a device-less Pure-Data-only process: it consumes
+# `reading` via a `bind` (a precedence edge, not a transport) and emits `score`.
+# `Finish` (an Object process) consumes the transported plate and also binds
+# `score`. So Analyze must run after Measure (Pure Data in from its producer) and
+# Finish must run after Analyze (Pure Data out to its consumer), even though
+# nothing is transported to or from Analyze and it holds no device or spot.
+spec_version: "0.0"
+
+types:
+  Plate:   { domain: object }
+  Reading: { domain: data }
+  Score:   { domain: data }
+
+processes:
+
+  # Object process: transforms the plate in place and emits a Pure Data reading.
+  measure:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate_out: { type: Plate,   phase: data }
+      reading:   { type: Reading, phase: data }
+    objects:
+      transform: [inputs.plate, outputs.plate_out]
+
+  # Device-less Pure-Data-only process: no Object ports, so it occupies nothing.
+  analyze:
+    kind: atomic
+    inputs:
+      reading: { type: Reading, phase: data }
+    outputs:
+      score: { type: Score, phase: data }
+
+  # Object process gated by the Pure Data `score` (a precedence-only dependency).
+  finish:
+    kind: atomic
+    inputs:
+      plate_in: { type: Plate, phase: data }
+      go:       { type: Score, phase: data }
+    objects:
+      consume: [inputs.plate_in]
+
+  main:
+    kind: composite
+    inputs:
+      sample: { type: Plate, phase: data }        # Object-bearing entry input
+    outputs: {}
+    body:
+      nodes:
+        - id: Measure
+          process: measure
+          state:
+            plate: { from: inputs.sample }
+        - id: Analyze
+          process: analyze
+          bind:
+            reading: { from: Measure.reading }     # Pure Data arc -> precedence only
+        - id: Finish
+          process: finish
+          state:
+            plate_in: { from: Measure.plate_out }  # Object arc -> transport
+          bind:
+            go: { from: Analyze.score }            # Pure Data arc -> precedence only
+      returns: {}
+
+entry: main

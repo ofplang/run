@@ -1,0 +1,70 @@
+time:
+  unit: second
+interface:
+  inputs:
+    sample: loader.stage
+outcome: optimal
+objective:
+  kind: makespan
+  value: 11
+activities:
+- kind: transport
+  start: 0
+  end: 2
+  from_spot: loader.stage
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: sample
+    to:
+      node:
+      - Measure
+      port: plate
+- kind: processing
+  start: 2
+  end: 6
+  process: measure
+  mode: '0'
+  node:
+  - Measure
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+  output_spots:
+    plate_out: reader.stage
+- kind: transport
+  start: 6
+  end: 8
+  from_spot: reader.stage
+  to_spot: printer.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Measure
+      port: plate_out
+    to:
+      node:
+      - Finish
+      port: plate_in
+- kind: processing
+  start: 7
+  end: 7
+  process: analyze
+  mode: mean_v1
+  node:
+  - Analyze
+- kind: processing
+  start: 8
+  end: 11
+  process: finish
+  mode: '0'
+  node:
+  - Finish
+  devices:
+  - printer
+  input_spots:
+    plate_in: printer.stage

@@ -178,6 +178,19 @@ def test_pure_data_processing_occupies_nothing():
     assert sim.state(uid) == {"status": "completed"}
 
 
+def test_pure_data_zero_duration_processing_settles_at_dispatch():
+    # A device-less Pure-Data process may take zero time (ofplang-schedule now
+    # allows a device-less mode duration of 0, §5.5). It occupies nothing and
+    # completes as soon as the clock is advanced to its dispatch time -- like a
+    # same-spot transport, no clock movement is needed to settle it.
+    sim = make_sim()
+    uid = sim.dispatch_processing("compute", "v1", duration=0)
+    assert sim.state(uid) == {"status": "running"}  # not yet settled
+    assert sim.spot_state() == {}  # no spot touched
+    sim.advance(0)  # settle at the current time, without advancing the clock
+    assert sim.state(uid) == {"status": "completed"}
+
+
 def test_unknown_process_and_mode():
     sim = make_sim()
     with pytest.raises(UnknownReference):
