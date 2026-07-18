@@ -24,6 +24,11 @@ What this layer covers, added incrementally:
   end until it observes completion). Variance requires fixed-interval polling and
   a positive running-task margin (so an overrun's successors are not dispatched
   onto a still-busy resource).
+* failure stop (D25): when a poll observes an operation `failed` (an injected
+  capability failure, configured on the simulator), the run stops -- it dispatches
+  no more work and only waits for what is still running to finish (no abort signal
+  is sent). The final status marks the failed activity `failed` and the work that
+  never started `cancelled`; `self.failed` is set (the CLI maps it to exit 1).
 """
 
 from __future__ import annotations
@@ -128,10 +133,24 @@ class RollingRunner:
         self.ticks = 0  # number of replan cycles (a test asserts >1: history round-trips)
         self._last_time = None  # `time` section echoed from the most recent plan
 
+        # Failure handling (D25). When an operation is observed `failed`, the runner
+        # stops: it dispatches no more work and only waits for what is still running
+        # to finish (no abort signal is sent). `failed` marks the overall run as
+        # failed; `_stopping` gates the loop; `_last_pending` remembers the last
+        # plan's pending (non-relay) activities so they can be reported `cancelled`.
+        self.failed = False
+        self._stopping = False
+        self._last_pending: list[dict] = []
+
     def run(self) -> dict:
         """Drive to completion and return the final execution status (§6/§7). Raises
         `RunnerError` if a replan produces no plan (infeasible) or the run cannot
-        progress; `SimulatorError` propagates if the backend rejects a dispatch."""
+        progress; `SimulatorError` propagates if the backend rejects a dispatch.
+
+        On an activity failure the run stops rather than raising: it dispatches no
+        more work, waits for what is still running to finish, and returns a final
+        status with the failed activity `failed` and the abandoned work `cancelled`
+        (D25). `self.failed` records that this happened (the CLI maps it to exit 1)."""
         # Seed the boundary inputs: the entry Objects sit on their interface spots
         # at the start of the run (§6.8).
         for _port, spot in (self.interface.get("inputs") or {}).items():
@@ -142,53 +161,74 @@ class RollingRunner:
             if self.ticks > self.max_ticks:
                 raise RunnerError("exceeded max ticks (possible non-termination)")
 
-            # 1. Discover which devices are down and schedule against the normalized
-            #    environment reflecting it: the full env when nothing is down, or a
-            #    reduced copy (down devices' process modes dropped) that triggers a
-            #    re-route (D21). Always the normalized dict, so the scheduler and the
-            #    backend agree on mode ids. Committed history is fed back so it is
-            #    fixed and the rest re-optimised.
-            down = set(self.sim.down_devices())
-            environment = _reduce_environment(self._environment, down) if down else self._environment
-            status_doc = build_status(self.log.records(), self.now, self.interface)
-            report = replan(
-                self.workflow_path,
-                environment,
-                status_doc,
-                running_task_margin=self.margin,
-                random_seed=self.seed,
-            )
-            if not report.ok:
-                raise RunnerError(self._failure_message(report))
-            plan = report.plan
-            self._last_time = plan.get("time")
+            if not self._stopping:
+                # Normal tick: replan and dispatch what can start now.
+                pending = self._replan_and_dispatch()
+                # The run is done when there is neither unstarted work nor anything
+                # still running.
+                if not pending and not self.log.running():
+                    break
+            else:
+                # Stopping after a failure (D25): dispatch nothing more, just drain.
+                # The run ends once nothing is left running -- we never abort a
+                # running operation, only wait for it (the user's stop policy).
+                if not self.log.running():
+                    break
+                pending = []
 
-            # 2. Pending work is what carries no status (relays are scheduler-derived
-            #    and never dispatched, §7). The run is done when there is neither
-            #    unstarted work nor anything still running.
-            pending = [
-                a
-                for a in plan.get("activities", [])
-                if a.get("status") in (None, "pending") and a.get("kind") != "relay"
-            ]
-            if not pending and not self.log.running():
-                break
-
-            # 3. Dispatch everything that can start now. Pending is optimised at/after
-            #    `now`, so these are the entries at exactly `now`; their predecessors
-            #    finished by now (we polled on the previous advance), so the backend's
-            #    preconditions hold.
-            for act in pending:
-                if int(act["start"]) <= self.now:
-                    self._commit_start(act)
-
-            # 4. Advance the clock, then poll. The advance policy is the only thing
-            #    that differs between the two modes (D22).
+            # Advance the clock, then poll. The advance policy is the only thing that
+            # differs between the two modes (D22). A poll may observe a failure and
+            # flip `_stopping`.
             self.now = self._next_time(pending)
             self.sim.advance(self.now)
             self._poll()
 
-        return build_status(self.log.records(), self.now, self.interface, self._last_time)
+        # A stopped run reports the work that never ran as cancelled (D25).
+        cancelled = self._cancelled_activities() if self._stopping else None
+        return build_status(self.log.records(), self.now, self.interface, self._last_time, cancelled)
+
+    def _replan_and_dispatch(self) -> list[dict]:
+        """One normal tick: build the status from committed history, replan, and
+        dispatch every pending activity that can start now. Returns the plan's
+        pending (non-relay) activities (also remembered for cancellation)."""
+        # Discover which devices are down and schedule against the normalized
+        # environment reflecting it: the full env when nothing is down, or a reduced
+        # copy (down devices' process modes dropped) that triggers a re-route (D21).
+        # Always the normalized dict, so the scheduler and the backend agree on mode
+        # ids. Committed history is fed back so it is fixed and the rest re-optimised.
+        down = set(self.sim.down_devices())
+        environment = _reduce_environment(self._environment, down) if down else self._environment
+        status_doc = build_status(self.log.records(), self.now, self.interface)
+        report = replan(
+            self.workflow_path,
+            environment,
+            status_doc,
+            running_task_margin=self.margin,
+            random_seed=self.seed,
+        )
+        if not report.ok:
+            raise RunnerError(self._failure_message(report))
+        plan = report.plan
+        self._last_time = plan.get("time")
+
+        # Pending work is what carries no status (relays are scheduler-derived and
+        # never dispatched, §7). Remembered so that, if a failure stops the run, the
+        # work that never started can be reported cancelled (D25).
+        pending = [
+            a
+            for a in plan.get("activities", [])
+            if a.get("status") in (None, "pending") and a.get("kind") != "relay"
+        ]
+        self._last_pending = pending
+
+        # Dispatch everything that can start now. Pending is optimised at/after
+        # `now`, so these are the entries at exactly `now`; their predecessors
+        # finished by now (we polled on the previous advance), so the backend's
+        # preconditions hold.
+        for act in pending:
+            if int(act["start"]) <= self.now:
+                self._commit_start(act)
+        return pending
 
     def _next_time(self, pending: list[dict]) -> int:
         """The virtual time to advance to next. In fixed-interval mode, one poll
@@ -244,11 +284,46 @@ class RollingRunner:
         event-boundary mode `now` is exactly the planned end (we advanced to it); in
         fixed-interval mode it is the poll at which completion was first seen -- an
         upper bound on the true finish, the best a poll-only observer can know (D22).
+
+        An operation observed `failed` (D25) is recorded `failed` and stops the run:
+        no more work is dispatched, only the still-running operations are awaited.
         """
         for rec in self.log.running():
-            if rec.uuid is not None and self.sim.state(rec.uuid)["status"] == "completed":
+            if rec.uuid is None:
+                continue
+            observed = self.sim.state(rec.uuid)["status"]
+            if observed == "completed":
                 rec.status = "completed"
                 rec.end = self.now
+            elif observed == "failed":
+                rec.status = "failed"
+                rec.end = self.now
+                self.failed = True
+                self._stopping = True
+
+    def _cancelled_activities(self) -> list[dict]:
+        """The last plan's pending activities that never started because the run
+        stopped on a failure (D25) -- the pending set minus what got committed."""
+        committed = {self._provenance_key(r.activity) for r in self.log.records()}
+        return [a for a in self._last_pending if self._provenance_key(a) not in committed]
+
+    @staticmethod
+    def _provenance_key(activity: dict):
+        """A stable identity for an activity across replans: its workflow provenance
+        (a processing's `node` path, a transport's `arc` endpoints + `seq`). Pending
+        identities are regenerated each replan, but provenance is not, so this lines
+        a committed activity up against a pending one (D9)."""
+        kind = activity.get("kind")
+        if kind == "processing":
+            return ("processing", tuple(activity.get("node") or ()))
+        # transport: identify by the logical arc it serves and its chain position.
+        arc = activity.get("arc") or {}
+
+        def endpoint(e):
+            e = e or {}
+            return (tuple(e.get("node") or ()), e.get("port"))
+
+        return ("transport", endpoint(arc.get("from")), endpoint(arc.get("to")), activity.get("seq"))
 
     @staticmethod
     def _failure_message(report) -> str:

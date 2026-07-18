@@ -121,7 +121,12 @@ def _cmd_run(args) -> int:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
+    # An activity failure stops the run without raising: the status is still emitted
+    # (it carries the failed / cancelled activities), but the run counts as failed.
     _emit(status, args.output)
+    if runner.failed:
+        print("ofp-run: execution failed: an activity failed", file=sys.stderr)
+        return EXIT_FAILED
     return EXIT_OK
 
 

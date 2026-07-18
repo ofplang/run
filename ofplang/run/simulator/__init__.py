@@ -1,4 +1,4 @@
-"""Simulated execution backend for the runner (spec §6/§7; dev-notes D10-D21).
+"""Simulated execution backend for the runner (spec §6/§7; dev-notes D10-D25).
 
 This layer stands in for real hardware so the runner can be exercised end to end:
 it accepts the same physical dispatch calls a real backend would, advances a
@@ -7,9 +7,10 @@ deterministically. It knows only the physical world (devices, spots,
 transporters, opaque timed operations) -- never workflows or plans (D10).
 
 See `core.Simulator` for the contract. It models correct physical behaviour plus
-timed device up/down (a down device blocks new processing only, D21). Duration
-variance is injected externally via a dispatch `duration` (D13); fully stranding
-a device (FAILED / CANCELLED) and Data values are out of scope (D12/D13).
+timed device up/down (a down device blocks new processing only, D21) and injected
+operation failure per capability (a failing (process, mode) / (transporter, route)
+ends `failed` with no material effect, D25). Duration variance is injected
+externally via a dispatch `duration` (D13); Data values are out of scope (D12).
 """
 
 from __future__ import annotations

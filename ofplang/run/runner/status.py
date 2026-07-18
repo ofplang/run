@@ -21,11 +21,17 @@ def build_status(
     now: int,
     interface: dict | None = None,
     time_section: dict | None = None,
+    cancelled: list[dict] | None = None,
 ) -> dict:
     """Assemble a §6 execution status from committed records at time `now`.
 
     Each record's original activity dict is copied (preserving its provenance and
     assignment echo) and stamped with the record's status and actual times.
+
+    `cancelled` (D25) are plan activities that never ran because the run stopped on
+    a failure. Each is stamped `cancelled` with a zero-length interval at `now` (it
+    reached a terminal, non-running state without executing) and appended after the
+    committed history.
     """
     activities = []
     for rec in records:
@@ -33,6 +39,12 @@ def build_status(
         entry["status"] = rec.status
         entry["start"] = rec.start
         entry["end"] = rec.end
+        activities.append(entry)
+    for act in cancelled or []:
+        entry = dict(act)  # keep its provenance / assignment echo from the last plan
+        entry["status"] = "cancelled"
+        entry["start"] = now
+        entry["end"] = now
         activities.append(entry)
 
     # Readable top-level order: time, now, interface, activities.

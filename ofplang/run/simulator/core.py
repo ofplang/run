@@ -1,4 +1,4 @@
-"""The simulated execution backend (dev-notes design.md D10-D21).
+"""The simulated execution backend (dev-notes design.md D10-D25).
 
 `Simulator` stands in for real hardware so the runner can be driven end to end
 without a lab. It knows only the physical world (D10): devices, spots,
@@ -13,9 +13,12 @@ Contract (D14/D15/D21), summarised:
   rejected (a relay is not a physical operation, D14).
 * Object identity is not tracked, but each occupied spot carries an opaque
   string id (D15), sim-generated unless supplied to `place`.
-* `observe` / `state` report only an operation's ``status`` (running / completed),
-  never times -- faithful to a real backend's blind polling (D18). Exact event
-  times are available only via `_history`, for tests and debugging.
+* `observe` / `state` report only an operation's ``status`` (running / completed /
+  failed), never times -- faithful to a real backend's blind polling (D18). Exact
+  event times are available only via `_history`, for tests and debugging.
+* `schedule_process_failure` / `schedule_transport_failure` declare that a
+  capability's operations fail instead of completing (D25); a failed operation
+  frees its resources at its end but applies no material effect.
 * `advance(until)` moves the virtual clock forward to ``until``, always reaching
   it (no early return on an event); the runner decides how far to advance (D11).
   Each `advance` accumulates its completion events into `_history`.
@@ -30,9 +33,10 @@ device not down) and raises if a runner drives an inconsistent plan. A valid pla
 never trips these.
 
 Scope: duration variance is injected externally by passing a `duration` to a
-dispatch, not built in (D13). A down device only blocks new processing (D21);
-fully stranding a device (FAILED / CANCELLED) and Data value computation remain
-out of scope (D12/D13).
+dispatch, not built in (D13). A down device only blocks new processing (D21).
+Operation failure is injected per capability (D25): a scheduled `(process, mode)`
+or `(transporter, route)` fails at its end. Data value computation remains out of
+scope (D12).
 """
 
 from __future__ import annotations
@@ -53,14 +57,16 @@ from .errors import (
 
 @dataclass(frozen=True)
 class Event:
-    """A completion event, surfaced via `_history` for tests / debugging (D18).
+    """A terminal event, surfaced via `_history` for tests / debugging (D18).
 
-    Marks that operation `uuid` (of kind `kind`) finished at virtual time `time`.
+    Marks that operation `uuid` (of kind `kind`) ended at virtual time `time` with
+    terminal `status` -- `completed` normally, or `failed` for an injected failure.
     """
 
     time: int
     uuid: str
     kind: str
+    status: str = "completed"
 
 
 @dataclass
@@ -85,7 +91,12 @@ class _Op:
     # transport: the physical hop.
     from_spot: str | None
     to_spot: str | None
-    status: str = "running"  # "running" | "completed"
+    status: str = "running"  # "running" | "completed" | "failed"
+    # Whether this operation is scheduled to fail instead of completing (D25). Set
+    # at dispatch from the failing (process, mode) / (transporter, route) sets; when
+    # the clock reaches its end it goes to `failed` (resources freed, no material
+    # effect) rather than `completed`.
+    should_fail: bool = False
 
 
 class Simulator:
@@ -128,6 +139,14 @@ class Simulator:
         # unaffected. Faults are applied lazily as the clock reaches their time.
         self._down: set[str] = set()
         self._faults: list[dict] = []
+
+        # Failure scenario (D25): capabilities whose operations fail instead of
+        # completing. A processing failure is keyed by (process, mode) and a
+        # transport failure by (transporter, from_spot, to_spot). Declared up front
+        # (like device faults, independent of dispatch); every operation dispatched
+        # for a failing capability fails at its end.
+        self._failing_processes: set[tuple[str, str]] = set()
+        self._failing_transports: set[tuple[str | None, str, str]] = set()
 
         # Monotonic counters for opaque, unstable ids (D15). Deterministic so
         # tests are reproducible; nothing may read meaning from the values.
@@ -229,6 +248,7 @@ class Simulator:
             output_spots=out_spots,
             from_spot=None,
             to_spot=None,
+            should_fail=(process, str(mode)) in self._failing_processes,
         )
 
     def dispatch_transport(
@@ -302,6 +322,7 @@ class Simulator:
             output_spots=(),
             from_spot=from_spot,
             to_spot=to_spot,
+            should_fail=(transporter, from_spot, to_spot) in self._failing_transports,
         )
 
     def dispatch_relay(self, *args, **kwargs):
@@ -326,6 +347,7 @@ class Simulator:
         output_spots,
         from_spot,
         to_spot,
+        should_fail=False,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -341,6 +363,7 @@ class Simulator:
             output_spots=tuple(output_spots),
             from_spot=from_spot,
             to_spot=to_spot,
+            should_fail=should_fail,
         )
         self._ops[op.uuid] = op
         return op.uuid
@@ -391,6 +414,34 @@ class Simulator:
         if device not in self._env.devices:
             raise UnknownReference(f"unknown device: {device}")
         self._faults.append({"time": int(time), "device": device, "action": action, "applied": False})
+
+    # -- failure scenario (D25) -------------------------------------------
+
+    def schedule_process_failure(self, process: str, mode) -> None:
+        """Declare that every processing operation for `(process, mode)` fails
+        instead of completing (D25). Like a device fault, this is a scenario set up
+        front (valid any time after construction, before or after dispatch); it is
+        keyed by the capability, not a specific operation id. The operation still
+        runs for its duration and frees its resources at the end, but ends `failed`
+        and applies no material effect."""
+        proc = self._env.processes.get(process)
+        if proc is None:
+            raise UnknownReference(f"unknown process: {process}")
+        if str(mode) not in proc.modes:
+            raise UnknownReference(f"unknown mode {mode!r} for process {process!r}")
+        self._failing_processes.add((process, str(mode)))
+
+    def schedule_transport_failure(self, transporter: str | None, from_spot: str, to_spot: str) -> None:
+        """Declare that every transport operation over `(transporter, from_spot,
+        to_spot)` fails instead of completing (D25). The counterpart to
+        `schedule_process_failure` for the transport half of the plan."""
+        if transporter is not None and transporter not in self._env.transporters:
+            raise UnknownReference(f"unknown transporter: {transporter}")
+        if from_spot not in self._env.spots:
+            raise UnknownReference(f"unknown spot: {from_spot}")
+        if to_spot not in self._env.spots:
+            raise UnknownReference(f"unknown spot: {to_spot}")
+        self._failing_transports.add((transporter, from_spot, to_spot))
 
     def down_devices(self) -> list[str]:
         """The devices currently down (a sorted copy). The runner polls this each
@@ -449,13 +500,17 @@ class Simulator:
                 self._clock = until
                 break
 
-            # Advance to that time and complete everything ending exactly then,
-            # in dispatch order so ties are deterministic.
+            # Advance to that time and settle everything ending exactly then, in
+            # dispatch order so ties are deterministic. An operation scheduled to
+            # fail (D25) ends `failed` (no material effect) instead of `completed`.
             self._clock = next_end
             due = sorted((op for op in running if op.end == next_end), key=lambda o: o.seq)
             for op in due:
-                self._complete(op)
-                events.append(Event(time=next_end, uuid=op.uuid, kind=op.kind))
+                if op.should_fail:
+                    self._fail(op)
+                else:
+                    self._complete(op)
+                events.append(Event(time=next_end, uuid=op.uuid, kind=op.kind, status=op.status))
         # Apply any device faults whose time the clock has now reached (D21).
         self._apply_faults()
         return events
@@ -497,3 +552,15 @@ class Simulator:
                 self._spot_holds[op.to_spot] = obj
 
         op.status = "completed"
+
+    def _fail(self, op: _Op) -> None:
+        """Apply an operation's failure (D25): free its resources but apply **no**
+        material effect. Inputs are left where they are and no output is produced --
+        a failed operation makes no physical progress. The spot occupancy is thus
+        exactly what it was before the operation ran (idle material rests in place),
+        which is coherent because the run stops on failure and nothing follows."""
+        for d in op.devices:
+            self._busy_devices.discard(d)
+        if op.transporter is not None:
+            self._busy_transporters.discard(op.transporter)
+        op.status = "failed"

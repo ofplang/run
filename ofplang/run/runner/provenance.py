@@ -26,9 +26,9 @@ class Committed:
 
     activity: dict
     kind: str  # "processing" | "transport"
-    status: str  # "running" | "completed"
+    status: str  # "running" | "completed" | "failed"
     start: int
-    end: int  # actual finish once completed; expected finish while running
+    end: int  # actual finish once completed / failed; expected finish while running
     uuid: str | None = None
 
 

@@ -1,0 +1,48 @@
+# Failure-scenario fixture: two independent source -> sink chains. The `bad` chain
+# is made to fail (its source fails); the `slow` chain runs long, so it is still
+# running when the failure is observed and must be waited out (drained, not
+# aborted). Everything downstream of the failure and everything not yet started is
+# cancelled. Two separate chains give both a parallel running op and abandoned
+# pending work in one run.
+spec_version: "0.0"
+
+types:
+  Sample: { domain: object }
+
+processes:
+  src_bad:
+    kind: atomic
+    outputs: { out: { type: Sample, phase: data } }
+    objects: { create: [outputs.out] }
+  sink_bad:
+    kind: atomic
+    inputs: { in: { type: Sample, phase: data } }
+    objects: { consume: [inputs.in] }
+  src_slow:
+    kind: atomic
+    outputs: { out: { type: Sample, phase: data } }
+    objects: { create: [outputs.out] }
+  sink_slow:
+    kind: atomic
+    inputs: { in: { type: Sample, phase: data } }
+    objects: { consume: [inputs.in] }
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: SrcBad
+          process: src_bad
+        - id: SinkBad
+          process: sink_bad
+          state: { in: { from: SrcBad.out } }
+        - id: SrcSlow
+          process: src_slow
+        - id: SinkSlow
+          process: sink_slow
+          state: { in: { from: SrcSlow.out } }
+      returns: {}
+
+entry: main

@@ -439,3 +439,63 @@ def test_end_to_end_source_transport_target():
     sim.advance(5)
     assert sim.state(tgt) == {"status": "completed"}
     assert sim.spot_state() == {}  # nothing left resting anywhere
+
+
+# -- injected failure (D25) ------------------------------------------------
+
+def test_processing_failure_frees_resources_and_skips_effect():
+    # A failing (process, mode) is declared up front (before dispatch). The op runs
+    # its duration, then ends `failed` -- resources freed, but no material effect.
+    sim = make_sim()
+    sim.schedule_process_failure("source", "0")
+    uid = sim.dispatch_processing("source", "0")
+    assert sim.state(uid) == {"status": "running"}
+    sim.advance(2)  # source duration 2
+    assert sim.state(uid) == {"status": "failed"}
+    assert sim.spot_state() == {}  # output NOT produced (no material effect)
+    # The failure event is visible in the history channel with its terminal status.
+    assert sim._history()[-1].status == "failed"
+    # Resources released: station_0 is free, so a fresh op dispatches without error.
+    uid2 = sim.dispatch_processing("source", "0")
+    assert sim.state(uid2) == {"status": "running"}
+
+
+def test_transport_failure_leaves_object_at_source():
+    # A failing transport does not move its object: the source keeps it and the
+    # destination stays empty, and the transporter / devices are freed.
+    sim = make_sim()
+    obj = sim.place("station_0.core")
+    sim.schedule_transport_failure("transport", "station_0.core", "station_1.core")
+    uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+    sim.advance(1)  # route duration 1
+    assert sim.state(uid) == {"status": "failed"}
+    assert sim.spot_state("station_0.core") == obj  # not moved
+    assert sim.spot_state("station_1.core") is None  # never arrived
+
+
+def test_only_the_failing_capability_fails():
+    # A failing capability does not taint others: source fails, but transport of a
+    # separately-placed object still completes normally.
+    sim = make_sim()
+    sim.schedule_process_failure("source", "0")
+    src = sim.dispatch_processing("source", "0")
+    obj = sim.place("station_1.core")  # unrelated material to move back
+    sim.advance(2)
+    assert sim.state(src) == {"status": "failed"}
+    # A non-failing transport completes and moves its object.
+    mv = sim.dispatch_transport("transport", "station_1.core", "station_1.core")  # same-spot no-op
+    sim.advance(2)
+    assert sim.state(mv) == {"status": "completed"}
+    assert sim.spot_state("station_1.core") == obj
+
+
+def test_schedule_failure_unknown_targets_error():
+    sim = make_sim()
+    with pytest.raises(UnknownReference):
+        sim.schedule_process_failure("nope", "0")
+    with pytest.raises(UnknownReference):
+        sim.schedule_process_failure("source", "9")
+    with pytest.raises(UnknownReference):
+        sim.schedule_transport_failure("nope", "station_0.core", "station_1.core")
+    with pytest.raises(UnknownReference):
+        sim.schedule_transport_failure("transport", "bad.spot", "station_1.core")
