@@ -166,3 +166,32 @@ class Contracts:
 
     def output_type(self, process: str, port: str) -> ResolvedType:
         return self.processes[process].outputs[port]
+
+
+# -- value-shape descriptor (D27, F2) ----------------------------------------
+#
+# The seam between the runner (which resolves types) and the backend (which
+# generates values, per D26 principle B). Rather than share this module's type
+# model with the simulator, the runner converts a resolved type into a neutral,
+# serialisable descriptor and passes it in the dispatch signature; the backend
+# walks the descriptor to generate a value, importing nothing from here. The
+# descriptor is the extensible wire (F4 will describe inputs the same way).
+
+
+def to_descriptor(resolved) -> dict:
+    """Convert a resolved type into a neutral value-shape descriptor. Shapes:
+
+        {"kind": "primitive", "name": "Bool" | "Int" | "Float" | "String"}
+        {"kind": "array", "element": <descriptor>}
+        {"kind": "record", "fields": {name: <descriptor>, ...}}
+
+    A nominal's value is its view record -- a record of its view fields, empty when
+    it declares no view. The domain (data / object) does not affect the value
+    shape: an object port carries a view record like a data one, its identity being
+    tracked separately by the simulator (D27)."""
+    if isinstance(resolved, Primitive):
+        return {"kind": "primitive", "name": resolved.name}
+    if isinstance(resolved, ArrayType):
+        return {"kind": "array", "element": to_descriptor(resolved.element)}
+    # Nominal -> a record of its (already resolved) view fields.
+    return {"kind": "record", "fields": {f: to_descriptor(t) for f, t in resolved.view.items()}}

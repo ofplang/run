@@ -16,8 +16,9 @@ Contract (D14/D15/D21), summarised:
 * `observe` / `state` report an operation's ``status`` (running / completed /
   failed), never times -- faithful to a real backend's blind polling (D18). Exact
   event times are available only via `_history`, for tests and debugging. A
-  completed operation dispatched with a value signature (`out_ports`) also reveals
-  its generated `outputs` -- the value seam (D26); an operation with no signature
+  completed operation dispatched with a value signature (`output_schema`) also
+  reveals its generated `outputs` -- typed default values walked from each port's
+  value-shape descriptor (the value seam, D26/D27); an operation with no signature
   stays status-only, so existing callers are unaffected.
 * `schedule_process_failure` / `schedule_transport_failure` declare that a
   capability's operations fail instead of completing (D25); a failed operation
@@ -58,6 +59,26 @@ from .errors import (
 )
 
 
+# Typed default value per built-in primitive (D27 F2), used to generate a
+# schema-conformant value from a value-shape descriptor.
+_PRIMITIVE_DEFAULTS = {"Bool": False, "Int": 0, "Float": 0.0, "String": ""}
+
+
+def _generate_value(descriptor: dict):
+    """Generate a typed default value from a neutral value-shape descriptor (D27
+    F2 -- the backend's stand-in for real computation). A primitive yields its
+    default, an array an empty list, a record a dict of its fields' defaults. The
+    descriptor format is the runner/backend seam contract (see contracts.py); the
+    backend walks it without importing the runner's type model."""
+    kind = descriptor["kind"]
+    if kind == "primitive":
+        return _PRIMITIVE_DEFAULTS[descriptor["name"]]
+    if kind == "array":
+        return []
+    # record: a dict of each view field's default.
+    return {name: _generate_value(field) for name, field in descriptor["fields"].items()}
+
+
 @dataclass(frozen=True)
 class Event:
     """A terminal event, surfaced via `_history` for tests / debugging (D18).
@@ -94,13 +115,14 @@ class _Op:
     # transport: the physical hop.
     from_spot: str | None
     to_spot: str | None
-    # Value seam (D26): the output-port signature this operation was dispatched with
-    # (None = a legacy dispatch with no signature -- then no outputs are ever
-    # attached, so `state` / `observe` stay status-only for it), and the outputs the
-    # backend generates at completion (`{port: value}`). In v0-lite the backend is
-    # the value *generator* (opaque, identifiable markers), not a computer: outputs
-    # do not depend on inputs, and dispatch carries no inputs (seam is output-only).
-    out_ports: tuple[str, ...] | None = None
+    # Value seam (D26/D27): the output signature this operation was dispatched with
+    # -- a mapping ``{port: value-shape descriptor}`` (None = a legacy dispatch with
+    # no signature; then no outputs are ever attached, so `state` / `observe` stay
+    # status-only for it) -- and the outputs the backend generates at completion
+    # (`{port: value}`). The backend is the value *generator* (D26 principle B): it
+    # walks each descriptor to a typed default (D27 F2). Outputs do not depend on
+    # inputs, and dispatch carries no inputs (the seam is output-only in v0).
+    output_schema: dict | None = None
     outputs: dict | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # Whether this operation is scheduled to fail instead of completing (D25). Set
@@ -209,19 +231,19 @@ class Simulator:
     # -- dispatch (D14/D15/D16) -------------------------------------------
 
     def dispatch_processing(
-        self, process: str, mode, duration: int | None = None, out_ports=None
+        self, process: str, mode, duration: int | None = None, output_schema=None
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
         `duration` defaults to the mode's own (override it to inject variance, D13).
         Returns the operation id.
 
-        `out_ports` is the value-seam signature (D26): the output port names this
-        operation should produce a value for at completion. When given (even empty),
-        the backend generates an opaque `outputs` dict revealed via `state` /
-        `observe`; when omitted (None), the operation carries no value and stays
-        status-only (backward compatible). Input values are not passed in v0-lite --
-        the seam is output-only.
+        `output_schema` is the value-seam signature (D26/D27): a mapping
+        ``{port: value-shape descriptor}`` the backend uses to generate a typed value
+        for each output port at completion, revealed via `state` / `observe`. When
+        given (even empty), the operation carries `outputs`; when omitted (None), it
+        stays status-only (backward compatible). Input values are not passed -- the
+        seam is output-only.
         """
         # Resolve the capability. Workflow provenance (the node) is not needed here
         # (D14) -- the environment mode alone gives devices, spots, and duration.
@@ -269,7 +291,7 @@ class Simulator:
             from_spot=None,
             to_spot=None,
             should_fail=(process, str(mode)) in self._failing_processes,
-            out_ports=None if out_ports is None else tuple(out_ports),
+            output_schema=None if output_schema is None else dict(output_schema),
         )
 
     def dispatch_transport(
@@ -369,7 +391,7 @@ class Simulator:
         from_spot,
         to_spot,
         should_fail=False,
-        out_ports=None,
+        output_schema=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -386,7 +408,7 @@ class Simulator:
             from_spot=from_spot,
             to_spot=to_spot,
             should_fail=should_fail,
-            out_ports=out_ports,
+            output_schema=output_schema,
         )
         self._ops[op.uuid] = op
         return op.uuid
@@ -582,12 +604,12 @@ class Simulator:
                     raise SpotConflict(f"destination spot occupied at arrival: {op.to_spot}")
                 self._spot_holds[op.to_spot] = obj
 
-        # Value seam (D26): a completed operation dispatched with a signature
-        # produces a value at each output port. In v0-lite the backend is a
-        # generator, not a computer -- each value is an opaque, identifiable marker
-        # (`<uuid>/<port>`), unique per operation and port, carrying no real data.
-        if op.out_ports is not None:
-            op.outputs = {port: f"{op.uuid}/{port}" for port in op.out_ports}
+        # Value seam (D26/D27): a completed operation dispatched with a signature
+        # produces a value at each output port. The backend is a generator, not a
+        # computer (D26 principle B): it walks each port's value-shape descriptor to
+        # a typed default (D27 F2). Values do not depend on inputs (output-only seam).
+        if op.output_schema is not None:
+            op.outputs = {port: _generate_value(desc) for port, desc in op.output_schema.items()}
 
         op.status = "completed"
 

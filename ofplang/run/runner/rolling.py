@@ -36,6 +36,7 @@ from __future__ import annotations
 import copy
 
 from ..simulator import Simulator
+from .contracts import Contracts, to_descriptor
 from .dataflow import from_workflow
 from .loader import load_document
 from .provenance import Committed, CommitLog
@@ -111,6 +112,14 @@ class RollingRunner:
         # v0-lite the seam is output-only: dispatch carries the output-port signature
         # so the backend generates values; inputs are not passed (D26).
         self.dataflow = from_workflow(self.workflow_path)
+        # Resolved port types (D27 F1): used to build each processing's output value
+        # signature so the backend can generate typed values (F2). Precompute the
+        # per-process output descriptors ({port: value-shape descriptor}).
+        self.contracts = Contracts.from_workflow(self.workflow_path)
+        self._output_schemas = {
+            name: {port: to_descriptor(rt) for port, rt in pc.outputs.items()}
+            for name, pc in self.contracts.processes.items()
+        }
         self.values = ValueStore()
         self.outputs: dict = {}
 
@@ -289,12 +298,12 @@ class RollingRunner:
         end = start + planned
 
         if kind == "processing":
-            # Pass the output-port signature (D26) so the backend generates a value
-            # for each output at completion. The node path keys the dataflow view and
-            # matches the plan's `node` (both from the scheduler's flattener).
-            out_ports = self.dataflow.out_ports.get(tuple(activity["node"]), ())
+            # Pass the output value signature (D26/D27) so the backend generates a
+            # typed value for each output port at completion: the resolved
+            # value-shape descriptors of this process's outputs.
+            output_schema = self._output_schemas.get(activity["process"], {})
             uuid = self.sim.dispatch_processing(
-                activity["process"], activity["mode"], duration=actual, out_ports=out_ports
+                activity["process"], activity["mode"], duration=actual, output_schema=output_schema
             )
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(

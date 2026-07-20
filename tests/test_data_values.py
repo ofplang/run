@@ -47,7 +47,9 @@ def test_value_layer_produces_whole_workflow_output(poll_interval):
     assert set(runner.outputs) == {"final_score"}
     produced = runner.values.get(("Az", "A"), "score")  # the nested producer's value
     assert runner.outputs["final_score"] == produced     # the return follows it out
-    assert produced.endswith("/score")                   # an identifiable backend marker
+    # `Score` declares no view, so its typed value is an empty record (F2 typed
+    # defaults; view-ful types are exercised in test_typed_values_are_view_shaped).
+    assert produced == {}
 
     # Every value-producing processing recorded its outputs in the store; `Finish`
     # produces nothing (empty signature), so it records nothing.
@@ -57,8 +59,22 @@ def test_value_layer_produces_whole_workflow_output(poll_interval):
     assert (("Az", "A"), "score") in snapshot
 
 
+def test_typed_values_are_view_shaped():
+    # With view-ful Pure Data types, the backend generates non-empty records shaped
+    # by each type's view schema (F2 typed defaults). `final_score` is a `Score`
+    # (view {value: Float, ok: Bool}) returned from the nested analyze.
+    runner = RollingRunner(
+        str(FIXTURES / "typed_returns.workflow.yaml"), ENV, _interface(), random_seed=0,
+    )
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert runner.outputs == {"final_score": {"value": 0.0, "ok": False}}
+    # The intermediate reading is a view record too.
+    assert runner.values.get(("Measure",), "reading") == {"mean": 0.0, "n": 0}
+
+
 def test_value_layer_is_deterministic():
-    # The opaque markers are deterministic, so both poll modes agree on the output.
+    # Typed defaults are deterministic, so both poll modes agree on the output.
     a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)
     b = RollingRunner(WF, ENV, _interface(), poll_interval=1, random_seed=0)
     a.run()
@@ -112,7 +128,10 @@ def test_values_survive_reroute():
     runner.sim.schedule_device_down(3, "station_1")
     status = runner.run()
     assert status["now"] == 9  # re-routed makespan
-    assert runner.values.get(("SampleSource",), "source_out") == "op-0/source_out"
+    # The value keys are workflow node paths, unaffected by the re-route; `Sample`
+    # declares no view, so the produced value is an empty record.
+    assert runner.values.has(("SampleSource",), "source_out")
+    assert runner.values.get(("SampleSource",), "source_out") == {}
 
 
 def test_values_under_duration_variance():

@@ -17,6 +17,7 @@ from ofplang.run.runner.contracts import (
     Nominal,
     Primitive,
     is_object_bearing,
+    to_descriptor,
 )
 from ofplang.run.runner.runner import RunnerError
 
@@ -109,6 +110,24 @@ def test_unknown_type_raises(tmp_path):
     )
     with pytest.raises(RunnerError):
         Contracts.from_workflow(doc)
+
+
+def test_to_descriptor_produces_neutral_value_shape(tmp_path):
+    # The dispatch-signature wire (D27 F2): a resolved type -> a neutral, serialisable
+    # value-shape descriptor the backend can walk without the type model.
+    c = _contracts(tmp_path)
+    assert to_descriptor(c.output_type("p", "score")) == {"kind": "primitive", "name": "Float"}
+    assert to_descriptor(c.input_type("p", "flags")) == {
+        "kind": "array",
+        "element": {"kind": "primitive", "name": "Bool"},
+    }
+    # A nominal -> a record of its view fields (an object nominal too; domain does
+    # not affect the value shape).
+    assert to_descriptor(c.input_type("p", "r")) == {
+        "kind": "record",
+        "fields": {"mean": {"kind": "primitive", "name": "Float"}, "n": {"kind": "primitive", "name": "Int"}},
+    }
+    assert to_descriptor(c.output_type("p", "tube")) == {"kind": "record", "fields": {}}  # no view
 
 
 def test_resolves_a_real_fixture(tmp_path):

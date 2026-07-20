@@ -1,24 +1,18 @@
-# Value-flow example workflow (see examples/render_data_flow.py): a nested
-# composite with a non-empty `returns`, so a run produces a whole-workflow output
-# that flows through a nested composite boundary. It pairs with data_flow.env.yaml
-# and data_flow.document.yaml (the interface). Structure:
+# Like nested_returns.workflow.yaml, but the Pure Data types carry view schemas,
+# so the typed values the backend generates are non-empty records (dev-notes D27
+# F2). Reuses the pure_data environment and interface (same processes/ports/spots;
+# the environment is untyped, so adding view fields does not affect scheduling).
 #
 #   sample --(object)--> Measure --(object)------> Finish
 #                           |                        ^
 #                           +--reading(data)--> Analyzer{A} --score(data)--+
 #                                                    |
 #                                       returns final_score <-- Analyzer.a_score
-#
-# `Analyzer` is a composite wrapping the device-less `analyze`: main binds its
-# `a_reading` from Measure.reading, and returns its `a_score` both to Finish (as a
-# Pure Data gate) and as the workflow's `final_score` output. The runner must
-# route the value across the composite boundary and surface it as a final output.
 spec_version: "0.0"
 
 types:
-  Plate: { domain: object }
-  # Pure Data types with flat view schemas (§7.4): the backend generates a typed
-  # value shaped by these fields, so the trace shows non-empty records.
+  Plate:   { domain: object }
+  # Pure Data types with flat view schemas (§7.4): the contract-visible fields.
   Reading:
     domain: data
     view:
@@ -32,7 +26,6 @@ types:
 
 processes:
 
-  # Object process: transforms the plate in place and emits a Pure Data reading.
   measure:
     kind: atomic
     inputs:
@@ -43,7 +36,6 @@ processes:
     objects:
       transform: [inputs.plate, outputs.plate_out]
 
-  # Device-less Pure-Data-only process: reading -> score.
   analyze:
     kind: atomic
     inputs:
@@ -51,7 +43,6 @@ processes:
     outputs:
       score: { type: Score, phase: data }
 
-  # Object process gated by the Pure Data score.
   finish:
     kind: atomic
     inputs:
@@ -60,7 +51,6 @@ processes:
     objects:
       consume: [inputs.plate_in]
 
-  # Composite wrapping analyze: forwards its input inward and returns its score.
   analyzer:
     kind: composite
     inputs:
@@ -79,9 +69,9 @@ processes:
   main:
     kind: composite
     inputs:
-      sample: { type: Plate, phase: data }        # Object-bearing entry input
+      sample: { type: Plate, phase: data }
     outputs:
-      final_score: { type: Score, phase: data }   # Pure Data whole-workflow output
+      final_score: { type: Score, phase: data }
     body:
       nodes:
         - id: Measure

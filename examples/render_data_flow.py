@@ -10,9 +10,10 @@ the `returns`.
 
 This prints a text trace of that flow -- each activity's assembled inputs and the
 outputs the backend produced, then the final whole-workflow outputs -- so the
-otherwise-internal value layer is visible. In v0-lite values are opaque, uniquely
-identifiable markers (`<op-id>/<port>`), not typed view values, so the trace shows
-routing and provenance rather than real data.
+otherwise-internal value layer is visible. The backend generates typed default
+values shaped by each type's view schema (§7.4): a `Reading` becomes
+`{mean: 0.0, n: 0}`, a `Score` `{value: 0.0, ok: false}`. (Entry inputs are still
+seeded with placeholder markers; real supplied inputs are a later stage.)
 
 Run it:
 
@@ -54,7 +55,7 @@ def main() -> None:
 
     df = runner.dataflow
     lines: list[str] = []
-    lines.append("value flow (producer -> consumer, v0-lite opaque markers)")
+    lines.append("value flow (producer -> consumer, typed view values)")
     lines.append("=" * 58)
 
     # Boundary seeds: the whole-workflow entry inputs the runner supplied.

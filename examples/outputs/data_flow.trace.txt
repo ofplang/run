@@ -1,4 +1,4 @@
-value flow (producer -> consumer, v0-lite opaque markers)
+value flow (producer -> consumer, typed view values)
 ==========================================================
 entry inputs (seeded at the boundary):
   sample       = dummy:@entry/sample
@@ -6,13 +6,13 @@ entry inputs (seeded at the boundary):
 activities (assembled inputs -> produced outputs):
   Measure [measure]
       in : {'plate': 'dummy:@entry/sample'}
-      out: {'plate_out': 'op-1/plate_out', 'reading': 'op-1/reading'}
+      out: {'plate_out': {}, 'reading': {'mean': 0.0, 'n': 0}}
   Az/A [analyze]
-      in : {'reading': 'op-1/reading'}
-      out: {'score': 'op-2/score'}
+      in : {'reading': {'mean': 0.0, 'n': 0}}
+      out: {'score': {'value': 0.0, 'ok': False}}
   Finish [finish]
-      in : {'plate_in': 'op-1/plate_out', 'go': 'op-2/score'}
+      in : {'plate_in': {}, 'go': {'value': 0.0, 'ok': False}}
       out: (none)
 
 whole-workflow outputs (returns):
-  final_score  = op-2/score   <- Az/A.score
+  final_score  = {'value': 0.0, 'ok': False}   <- Az/A.score
