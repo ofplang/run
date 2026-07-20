@@ -88,7 +88,8 @@ def default_device_model(process, mode, inputs, output_schema, definition):
     (``outputs.P: inputs.Q``) through from ``inputs[Q]`` -- so an identity-preserving
     object pass-through keeps its view value with no per-process code. It performs no
     genuine computation; a real / custom device model does that on top (e.g. call
-    this, then overwrite the computed outputs).
+    this, then overwrite the computed outputs). (`objects.transform` Array ops are
+    not yet handled -- see the commented sketch below.)
 
     Reading the process's ``objects.map`` (and inputs) makes this default
     workflow-structure- and input-dependent -- a deliberate change from the pure,
@@ -101,6 +102,27 @@ def default_device_model(process, mode, inputs, output_schema, definition):
         # `objects.map` keys/values are namespaced paths (`outputs.P` / `inputs.Q`);
         # strip the namespace to the bare port name.
         outputs[out_ref.split(".", 1)[1]] = inputs[in_ref.split(".", 1)[1]]
+
+    # --- objects.transform (Array structural ops, §14.4) -- NOT YET SUPPORTED ---
+    # Sketch for future work, kept commented until we support it. v0 has three
+    # Array transform kinds; at the value (view) level an Array<T> is a list, so
+    # each is just a list reshape (the simulator handles the Object identities
+    # physically). Each entry is `{kind, inputs: {role: inputs.*}, outputs: {role:
+    # outputs.*}}`. Uncomment to enable.
+    #
+    # def _port(ref):
+    #     return ref.split(".", 1)[1]
+    # for entry in ((definition or {}).get("objects") or {}).get("transform") or []:
+    #     ins = {role: inputs[_port(ref)] for role, ref in (entry.get("inputs") or {}).items()}
+    #     outs = entry.get("outputs") or {}
+    #     if entry.get("kind") == "array_uncons":     # Array<T> -> T (head) + Array<T> (tail)
+    #         outputs[_port(outs["head"])] = ins["xs"][0]
+    #         outputs[_port(outs["tail"])] = ins["xs"][1:]
+    #     elif entry.get("kind") == "array_cons":     # T (head) + Array<T> (tail) -> Array<T> (xs)
+    #         outputs[_port(outs["xs"])] = [ins["head"], *ins["tail"]]
+    #     elif entry.get("kind") == "array_reverse":  # Array<T> -> Array<T> reversed
+    #         outputs[_port(outs["ys"])] = list(reversed(ins["xs"]))
+
     return outputs
 
 
