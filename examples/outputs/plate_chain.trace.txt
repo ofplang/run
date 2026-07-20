@@ -1,0 +1,11 @@
+plate chain (Int carried alongside an Object)
+==============================================
+job (whole-workflow inputs) : {'start': 42, 'sample': {'barcode': 'ABC'}}
+
+per-step values (device model: next = current + 1, plate carried through):
+  S1.next  = 43
+  S1.plate = {'barcode': 'ABC'}
+  S2.next  = 44
+  S2.plate = {'barcode': 'ABC'}
+
+whole-workflow outputs      : {'result': 44, 'plate_final': {'barcode': 'ABC'}}

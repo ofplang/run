@@ -1,0 +1,58 @@
+# Like count_chain, but (1) the counter is a bare `Int` (no nominal type), and
+# (2) each step also carries a `Plate` Object through -- the same plate in and out
+# (an in-place transform), so its input and output ports share the name `plate`
+# (input and output port names are separate namespaces, spec §1.5). The counter's
+# input and output are named `current` / `next` instead, because they are distinct
+# values (before / after the count-up). A step takes `current` and `plate` and
+# returns `next` (= current + 1) and the same `plate`. This shows a Pure Data value
+# and an Object-bearing value flowing together; pairs with plate_chain.env.yaml and
+# plate_chain.document.yaml (the interface pins the plate's boundary spots).
+spec_version: "0.0"
+
+types:
+  # An Object type with a view; its view value (barcode) is carried through the
+  # chain unchanged, while its identity is tracked by the simulator.
+  Plate:
+    domain: object
+    view:
+      barcode: { type: String }
+
+processes:
+  step:
+    kind: atomic
+    inputs:
+      current: { type: Int,   phase: data }
+      plate:   { type: Plate, phase: data }
+    outputs:
+      next:  { type: Int,   phase: data }
+      plate: { type: Plate, phase: data }        # same name as the input: same plate
+    objects:
+      transform: [inputs.plate, outputs.plate]   # same plate in and out
+
+  main:
+    kind: composite
+    inputs:
+      start:  { type: Int,   phase: data }
+      sample: { type: Plate, phase: data }
+    outputs:
+      result:      { type: Int,   phase: data }
+      plate_final: { type: Plate, phase: data }
+    body:
+      nodes:
+        - id: S1
+          process: step
+          state:
+            plate: { from: inputs.sample }   # Object arc
+          bind:
+            current: { from: inputs.start }   # Pure Data arc
+        - id: S2
+          process: step
+          state:
+            plate: { from: S1.plate }
+          bind:
+            current: { from: S1.next }
+      returns:
+        result:      { from: S2.next }
+        plate_final: { from: S2.plate }
+
+entry: main
