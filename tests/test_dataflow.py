@@ -46,7 +46,7 @@ processes:
     outputs:
       plate_out: {type: Sample, phase: data}
       reading: {type: Reading, phase: data}
-    objects: {transform: [inputs.plate, outputs.plate_out]}
+    objects: {map: {outputs.plate_out: inputs.plate}}
   analyze:
     kind: atomic
     inputs: {reading: {type: Reading, phase: data}}
@@ -57,7 +57,7 @@ processes:
       plate_in: {type: Sample, phase: data}
       go: {type: Reading, phase: data}
     outputs: {done: {type: Sample, phase: data}}
-    objects: {transform: [inputs.plate_in, outputs.done]}
+    objects: {map: {outputs.done: inputs.plate_in}}
   analyzer:
     kind: composite
     inputs: {a_in: {type: Reading, phase: data}}

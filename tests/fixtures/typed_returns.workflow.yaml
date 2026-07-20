@@ -39,7 +39,8 @@ processes:
       plate_out: { type: Plate,   phase: data }
       reading:   { type: Reading, phase: data }
     objects:
-      transform: [inputs.plate, outputs.plate_out]
+      map:
+        outputs.plate_out: inputs.plate
 
   analyze:
     kind: atomic

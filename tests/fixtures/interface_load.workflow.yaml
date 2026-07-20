@@ -17,7 +17,8 @@ processes:
     outputs:
       out: { type: Plate, phase: data }
     objects:
-      transform: [inputs.plate, outputs.out]
+      map:
+        outputs.out: inputs.plate
 
   main:
     kind: composite

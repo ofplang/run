@@ -27,7 +27,8 @@ processes:
       next:  { type: Int,   phase: data }
       plate: { type: Plate, phase: data }        # same name as the input: same plate
     objects:
-      transform: [inputs.plate, outputs.plate]   # same plate in and out
+      map:
+        outputs.plate: inputs.plate   # same physical plate in and out (identity preserved)
 
   main:
     kind: composite

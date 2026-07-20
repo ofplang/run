@@ -41,7 +41,8 @@ processes:
       plate_out: { type: Plate,   phase: data }
       reading:   { type: Reading, phase: data }
     objects:
-      transform: [inputs.plate, outputs.plate_out]
+      map:
+        outputs.plate_out: inputs.plate
 
   # Device-less Pure-Data-only process: reading -> score.
   analyze:
