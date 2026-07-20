@@ -16,6 +16,7 @@ from ofplang.run.runner.contracts import (
     Contracts,
     Nominal,
     Primitive,
+    conforms,
     is_object_bearing,
     to_descriptor,
 )
@@ -128,6 +129,68 @@ def test_to_descriptor_produces_neutral_value_shape(tmp_path):
         "fields": {"mean": {"kind": "primitive", "name": "Float"}, "n": {"kind": "primitive", "name": "Int"}},
     }
     assert to_descriptor(c.output_type("p", "tube")) == {"kind": "record", "fields": {}}  # no view
+
+
+# -- conformance (F3) --------------------------------------------------------
+
+
+def test_conforms_primitives_with_bool_int_float_distinctions():
+    assert conforms(True, Primitive("Bool"))
+    assert not conforms(1, Primitive("Bool"))          # int is not Bool
+    assert conforms(3, Primitive("Int"))
+    assert not conforms(True, Primitive("Int"))        # bool is not Int
+    assert not conforms(3.0, Primitive("Int"))         # float is not Int
+    assert conforms(3.0, Primitive("Float"))
+    assert conforms(3, Primitive("Float"))             # int accepted for Float (JSON-lenient)
+    assert not conforms(True, Primitive("Float"))      # bool is not Float
+    assert conforms("x", Primitive("String"))
+    assert not conforms(1, Primitive("String"))
+
+
+def test_conforms_arrays_check_elements():
+    t = ArrayType(Primitive("Int"))
+    assert conforms([], t)                 # empty conforms
+    assert conforms([1, 2, 3], t)
+    assert not conforms([1, "x"], t)       # a bad element
+    assert not conforms("nope", t)         # not a list
+    # Nested arrays.
+    assert conforms([[1], [2, 3]], ArrayType(ArrayType(Primitive("Int"))))
+
+
+def test_conforms_records_need_exactly_the_view_fields():
+    reading = Nominal("Reading", "data", {"mean": Primitive("Float"), "n": Primitive("Int")})
+    assert conforms({"mean": 0.0, "n": 0}, reading)
+    assert conforms({"mean": 1, "n": 2}, reading)        # int ok for Float
+    assert not conforms({"mean": 0.0}, reading)          # missing field
+    assert not conforms({"mean": 0.0, "n": 0, "x": 1}, reading)  # extra field
+    assert not conforms({"mean": "bad", "n": 0}, reading)        # bad field value
+    assert not conforms(["mean", "n"], reading)          # not a dict
+
+
+def test_conforms_empty_view_and_object_nominal():
+    # A no-view nominal requires an empty dict; object nominals are checked the same
+    # way (view only -- identity is not part of the value).
+    assert conforms({}, Nominal("Tube", "object", {}))
+    assert not conforms({"x": 1}, Nominal("Tube", "object", {}))
+    plate = Nominal("Plate96", "object", {"well_count": Primitive("Int")})
+    assert conforms({"well_count": 96}, plate)
+    assert not conforms({"well_count": 96.0}, plate)     # float is not Int
+
+
+def test_conforms_nested_record_with_array_field():
+    t = Nominal("Batch", "data", {"labels": ArrayType(Primitive("String")), "size": Primitive("Int")})
+    assert conforms({"labels": ["a", "b"], "size": 2}, t)
+    assert not conforms({"labels": [1], "size": 2}, t)
+
+
+def test_generated_defaults_conform(tmp_path):
+    # The values F2's backend generates (schema defaults) satisfy the checker -- the
+    # generator and checker agree.
+    c = _contracts(tmp_path)
+    assert conforms(0.0, c.output_type("p", "score"))
+    assert conforms([], c.input_type("p", "flags"))
+    assert conforms({"mean": 0.0, "n": 0}, c.input_type("p", "r"))
+    assert conforms({}, c.output_type("p", "tube"))
 
 
 def test_resolves_a_real_fixture(tmp_path):

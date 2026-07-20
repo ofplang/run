@@ -84,6 +84,40 @@ def is_object_bearing(resolved) -> bool:
     return resolved.domain == "object"  # Nominal
 
 
+def conforms(value, resolved) -> bool:
+    """Whether `value` conforms to `resolved` as a view value (D27, F3).
+
+    A value is the type's view projection, so conformance is checked structurally:
+      - a primitive is a Python scalar of its kind -- Bool is `bool`, Int is `int`
+        (not `bool`), Float is `int`/`float` (not `bool`, JSON-lenient), String is `str`;
+      - an Array is a list whose every element conforms to the element type;
+      - a nominal is a dict with *exactly* the view field names, each conforming to
+        its field type (an empty view requires `{}`). Object nominals are checked the
+        same way -- only the view projection; their identity is the simulator's concern.
+    This is the checker primitive; F4 wires it where external values (a supplied job,
+    routed inputs) can actually be non-conformant. The runner's own generated defaults
+    (F2) always conform."""
+    if isinstance(resolved, Primitive):
+        name = resolved.name
+        if name == "Bool":
+            return isinstance(value, bool)
+        if name == "Int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if name == "Float":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if name == "String":
+            return isinstance(value, str)
+        return False  # not a v0 primitive
+    if isinstance(resolved, ArrayType):
+        return isinstance(value, list) and all(conforms(item, resolved.element) for item in value)
+    # Nominal: the value is its view record -- exactly the view fields, each conforming.
+    if not isinstance(value, dict):
+        return False
+    if set(value) != set(resolved.view):
+        return False
+    return all(conforms(value[field], field_type) for field, field_type in resolved.view.items())
+
+
 # -- resolution --------------------------------------------------------------
 
 
