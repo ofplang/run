@@ -241,23 +241,45 @@ def test_device_model_computes_outputs_from_inputs():
     # the capability (process, mode), the inputs, and the output schema.
     seen = []
 
-    def model(process, mode, inputs, output_schema):
-        seen.append((process, mode, dict(inputs), sorted(output_schema)))
+    def model(process, mode, inputs, output_schema, definition):
+        seen.append((process, mode, dict(inputs), sorted(output_schema), definition))
         return {port: inputs.get("seed", 0) + 1 for port in output_schema}
 
     sim = make_sim(model)
-    uid = sim.dispatch_processing("source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41})
+    uid = sim.dispatch_processing(
+        "source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41}, definition={"kind": "atomic"}
+    )
     sim.advance(2)
     assert sim.state(uid)["outputs"] == {"source_out": 42}  # computed, not the default 0
-    assert seen == [("source", "0", {"seed": 41}, ["source_out"])]
+    # The model is handed the capability, inputs, output schema, and the raw process
+    # definition, which the simulator passes through unchanged.
+    assert seen == [("source", "0", {"seed": 41}, ["source_out"], {"kind": "atomic"})]
 
 
 def test_device_model_left_default_when_absent():
-    # Without a model the backend still generates input-independent typed defaults.
+    # Without a model the backend uses the built-in default: a typed default for an
+    # unmapped output (source_out is not in any objects.map here).
     sim = make_sim()  # no device model
     uid = sim.dispatch_processing("source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41})
     sim.advance(2)
     assert sim.state(uid)["outputs"] == {"source_out": 0}
+
+
+def test_default_device_model_defaults_and_carries_mapped_objects():
+    # The built-in default (D27): type defaults for every output, plus carrying each
+    # Object output declared in the process's objects.map through from its input.
+    from ofplang.run.simulator import default_device_model
+
+    output_schema = {"y": _INT, "plate": {"kind": "record", "fields": {"barcode": _STRING}}}
+    definition = {"objects": {"map": {"outputs.plate": "inputs.plate"}}}
+    inputs = {"x": 5, "plate": {"barcode": "ABC"}}
+    # y is unmapped -> its type default (0); plate is mapped -> carried from inputs.
+    assert default_device_model("step", "0", inputs, output_schema, definition) == {
+        "y": 0, "plate": {"barcode": "ABC"},
+    }
+    # No objects.map (or no definition) -> pure type defaults.
+    assert default_device_model("p", "0", {}, {"y": _INT}, {"kind": "atomic"}) == {"y": 0}
+    assert default_device_model("p", "0", {}, {"y": _INT}, None) == {"y": 0}
 
 
 def test_processing_in_place_transform_keeps_spot():

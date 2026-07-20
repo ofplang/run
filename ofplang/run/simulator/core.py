@@ -17,8 +17,8 @@ Contract (D14/D15/D21), summarised:
   failed), never times -- faithful to a real backend's blind polling (D18). Exact
   event times are available only via `_history`, for tests and debugging. A
   completed operation dispatched with a value signature (`output_schema`) also
-  reveals its generated `outputs` -- typed default values walked from each port's
-  value-shape descriptor (the value seam, D26/D27); an operation with no signature
+  reveals its generated `outputs`, from the injected device model or the built-in
+  `default_device_model` (the value seam, D26/D27); an operation with no signature
   stays status-only, so existing callers are unaffected.
 * `schedule_process_failure` / `schedule_transport_failure` declare that a
   capability's operations fail instead of completing (D25); a failed operation
@@ -79,6 +79,31 @@ def _generate_value(descriptor: dict):
     return {name: _generate_value(field) for name, field in descriptor["fields"].items()}
 
 
+def default_device_model(process, mode, inputs, output_schema, definition):
+    """The simulator's built-in device model (D27): used when no device model is
+    injected, and a convenient base for a custom one to build on.
+
+    It fills every output with a typed default (walking its value-shape descriptor),
+    then carries each Object-bearing output declared in the process's ``objects.map``
+    (``outputs.P: inputs.Q``) through from ``inputs[Q]`` -- so an identity-preserving
+    object pass-through keeps its view value with no per-process code. It performs no
+    genuine computation; a real / custom device model does that on top (e.g. call
+    this, then overwrite the computed outputs).
+
+    Reading the process's ``objects.map`` (and inputs) makes this default
+    workflow-structure- and input-dependent -- a deliberate change from the pure,
+    input-independent type defaults it replaced (D27). Only the default *model* is
+    workflow-aware; the simulator's physical core still never interprets the
+    definition. A custom `device_model` replaces this entirely."""
+    outputs = {port: _generate_value(desc) for port, desc in output_schema.items()}
+    object_map = ((definition or {}).get("objects") or {}).get("map") or {}
+    for out_ref, in_ref in object_map.items():
+        # `objects.map` keys/values are namespaced paths (`outputs.P` / `inputs.Q`);
+        # strip the namespace to the bare port name.
+        outputs[out_ref.split(".", 1)[1]] = inputs[in_ref.split(".", 1)[1]]
+    return outputs
+
+
 @dataclass(frozen=True)
 class Event:
     """A terminal event, surfaced via `_history` for tests / debugging (D18).
@@ -121,9 +146,8 @@ class _Op:
     # status-only for it) -- and the outputs the backend generates at completion
     # (`{port: value}`). The backend is the value *generator* (D26 principle B): it
     # walks each descriptor to a typed default (D27 F2). `inputs` are the input
-    # values passed at dispatch (D27 F4); an installed device model computes the
-    # outputs from them (F4b), otherwise outputs stay input-independent typed
-    # defaults.
+    # values passed at dispatch (D27 F4); the device model (injected, or the
+    # built-in `default_device_model`) computes the outputs from them (F4b).
     output_schema: dict | None = None
     inputs: dict | None = None
     outputs: dict | None = None
@@ -131,6 +155,13 @@ class _Op:
     # device model (D27 F4b); None for a transport.
     process: str | None = None
     mode: str | None = None
+    # The raw process definition (the workflow's `processes.<name>` sub-mapping:
+    # kind / inputs / outputs / objects), passed through to the device model so it
+    # can act on the process's declared structure (e.g. carry an object output from
+    # its `objects.map` input). The runner supplies it at dispatch (D27 F4b /
+    # principle A: the backend receives the process definition part per dispatch);
+    # the simulator itself does not interpret it.
+    definition: dict | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # Whether this operation is scheduled to fail instead of completing (D25). Set
     # at dispatch from the failing (process, mode) / (transporter, route) sets; when
@@ -153,11 +184,14 @@ class Simulator:
             self._env = load_environment(environment)
 
         # Optional device model (D27 F4b): a callback
-        # `device_model(process, mode, inputs, output_schema) -> {port: value}` the
-        # backend calls at completion to compute a signed operation's outputs from
-        # its inputs -- the pluggable stand-in for real device computation (a real
-        # backend plugs a real model here). None means outputs are input-independent
-        # typed defaults (F2). It only affects signed processing operations.
+        # `device_model(process, mode, inputs, output_schema, definition) -> {port:
+        # value}` the backend calls at completion to compute a signed operation's
+        # outputs from its inputs -- the pluggable stand-in for real device
+        # computation (a real backend plugs a real model here). `definition` is the
+        # raw process definition (its declared kind/inputs/outputs/objects), so a
+        # model can act on the process structure. None means the built-in
+        # `default_device_model` (typed defaults + `objects.map` object pass-through)
+        # is used. Affects signed processing only.
         self._device_model = device_model
 
         # Virtual clock, in the integer ticks of the environment's time unit (§4.1).
@@ -246,7 +280,7 @@ class Simulator:
     # -- dispatch (D14/D15/D16) -------------------------------------------
 
     def dispatch_processing(
-        self, process: str, mode, duration: int | None = None, output_schema=None, inputs=None
+        self, process: str, mode, duration: int | None = None, output_schema=None, inputs=None, definition=None
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -258,8 +292,10 @@ class Simulator:
         for each output port at completion, revealed via `state` / `observe`. When
         given (even empty), the operation carries `outputs`; when omitted (None), it
         stays status-only (backward compatible). `inputs` (``{port: value}``, D27 F4)
-        are the input values; an installed device model computes the outputs from
-        them (F4b), otherwise outputs are input-independent typed defaults.
+        are the input values the device model (injected, or `default_device_model`)
+        computes the outputs from (F4b). `definition` (the raw process definition) is
+        passed through to the device model unchanged; the simulator does not
+        interpret it (only the device model does).
         """
         # Resolve the capability. Workflow provenance (the node) is not needed here
         # (D14) -- the environment mode alone gives devices, spots, and duration.
@@ -311,6 +347,7 @@ class Simulator:
             inputs=None if inputs is None else dict(inputs),
             process=process,
             mode=str(mode),
+            definition=definition,
         )
 
     def dispatch_transport(
@@ -414,6 +451,7 @@ class Simulator:
         inputs=None,
         process=None,
         mode=None,
+        definition=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -434,6 +472,7 @@ class Simulator:
             inputs=inputs,
             process=process,
             mode=mode,
+            definition=definition,
         )
         self._ops[op.uuid] = op
         return op.uuid
@@ -630,15 +669,12 @@ class Simulator:
                 self._spot_holds[op.to_spot] = obj
 
         # Value seam (D26/D27): a completed operation dispatched with a signature
-        # produces a value at each output port. If a device model is installed it
-        # computes the outputs from the inputs (D27 F4b -- the stand-in for real
-        # device computation); otherwise the backend generates input-independent
-        # typed defaults by walking each port's value-shape descriptor (D27 F2).
+        # produces a value at each output port, via a device model -- the injected
+        # one, or the built-in `default_device_model` (typed defaults + object
+        # pass-through from `objects.map`) when none was injected (D27 F4b).
         if op.output_schema is not None:
-            if self._device_model is not None:
-                op.outputs = self._device_model(op.process, op.mode, op.inputs or {}, op.output_schema)
-            else:
-                op.outputs = {port: _generate_value(desc) for port, desc in op.output_schema.items()}
+            model = self._device_model if self._device_model is not None else default_device_model
+            op.outputs = model(op.process, op.mode, op.inputs or {}, op.output_schema, op.definition)
 
         op.status = "completed"
 

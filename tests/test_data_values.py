@@ -103,7 +103,7 @@ COUNT_WF = str(FIXTURES / "count_chain.workflow.yaml")
 COUNT_ENV = str(FIXTURES / "count_chain.env.yaml")
 
 
-def _echo_inc(process, mode, inputs, output_schema):
+def _echo_inc(process, mode, inputs, output_schema, definition):
     """A device model for `inc`: echo the input `x` to every output port."""
     return {port: inputs["x"] for port in output_schema}
 
@@ -122,18 +122,45 @@ def test_device_model_propagates_job_value_end_to_end():
     assert runner.values.get(("S2",), "y") == {"value": 42}
 
 
-def test_without_device_model_outputs_are_defaults():
-    # No model -> outputs are input-independent typed defaults; the job value does
-    # not reach the output (Count's view default is {value: 0}).
+def test_device_model_receives_the_process_definition():
+    # The runner passes each process's raw definition (kind/inputs/outputs/objects)
+    # to the device model, so a model can act on the declared structure (D27 F4b).
+    seen = {}
+
+    def capture(process, mode, inputs, output_schema, definition):
+        seen[process] = definition
+        return {port: inputs["x"] for port in output_schema}  # echo the Count
+
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, job={"start": {"value": 1}}, device_model=capture, random_seed=0)
+    runner.run()
+    assert "inc" in seen
+    definition = seen["inc"]
+    assert definition["kind"] == "atomic"
+    assert set(definition["inputs"]) == {"x"} and set(definition["outputs"]) == {"y"}
+
+
+def test_without_device_model_computed_outputs_are_defaults():
+    # No model -> the built-in default applies. `inc` declares no objects.map, so its
+    # outputs are type defaults; the job value is not computed through (result is the
+    # Count view default {value: 0}).
     runner = RollingRunner(COUNT_WF, COUNT_ENV, job={"start": {"value": 42}}, random_seed=0)
     runner.run()
     assert runner.outputs == {"result": {"value": 0}}
 
 
+def test_default_carries_mapped_object_without_a_device_model():
+    # The built-in default carries a mapped Object output even with no device model:
+    # measure's plate_out is `objects.map: {outputs.plate_out: inputs.plate}`, so the
+    # supplied plate flows through to it (its view value, {barcode: "XY"}).
+    runner = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": "XY"}}, random_seed=0)
+    runner.run()
+    assert runner.values.get(("Measure",), "plate_out") == {"barcode": "XY"}
+
+
 def test_device_model_output_is_contract_checked():
     # A model that returns a non-conformant value is caught at poll (the F4a
     # conformance check, now live under a device model).
-    def bad_model(process, mode, inputs, output_schema):
+    def bad_model(process, mode, inputs, output_schema, definition):
         return {port: "not-an-int-record" for port in output_schema}
 
     runner = RollingRunner(COUNT_WF, COUNT_ENV, device_model=bad_model, random_seed=0)

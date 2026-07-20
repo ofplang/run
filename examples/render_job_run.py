@@ -41,7 +41,7 @@ ENVIRONMENT = HERE / "count_chain.env.yaml"
 JOB = {"start": {"value": 42}}
 
 
-def inc_model(process, mode, inputs, output_schema):
+def inc_model(process, mode, inputs, output_schema, definition):
     """A device model for `inc`: each output Count is the input Count plus one.
 
     It computes outputs from inputs (F4b), the dummy stand-in for what a real device

@@ -15,7 +15,7 @@ externally via a dispatch `duration` (D13); Data values are out of scope (D12).
 
 from __future__ import annotations
 
-from .core import Event, Simulator
+from .core import Event, Simulator, default_device_model
 from .environment import (
     Environment,
     Mode,
@@ -38,6 +38,7 @@ from .errors import (
 __all__ = [
     "Simulator",
     "Event",
+    "default_device_model",
     "Environment",
     "Mode",
     "Process",

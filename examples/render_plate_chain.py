@@ -30,6 +30,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.run.runner import RollingRunner, load_document
+from ofplang.run.simulator import default_device_model
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -41,15 +42,17 @@ DOCUMENT = HERE / "plate_chain.document.yaml"
 JOB = {"start": 42, "sample": {"barcode": "ABC"}}
 
 
-def step_model(process, mode, inputs, output_schema):
-    """A device model for `step`: increment the Int, pass the Plate through.
+def step_model(process, mode, inputs, output_schema, definition):
+    """A device model built on the simulator's built-in default.
 
-    `next` is the input `current` plus one (a computed Pure Data value); `plate` is
-    the input Plate value unchanged (the same object, its view carried through)."""
-    return {
-        port: (inputs["current"] + 1 if port == "next" else inputs["plate"])
-        for port in output_schema
-    }
+    `default_device_model` already does the generic work: type defaults for every
+    output, plus carrying each Object output declared in `objects.map` through from
+    its input (so the plate pass-through needs no code here). This model only adds
+    the one genuinely computed output on top: `next = current + 1`."""
+    outputs = default_device_model(process, mode, inputs, output_schema, definition)
+    if process == "step":
+        outputs["next"] = inputs["current"] + 1
+    return outputs
 
 
 def main() -> None:

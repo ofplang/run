@@ -125,6 +125,10 @@ class RollingRunner:
             name: {port: to_descriptor(rt) for port, rt in pc.outputs.items()}
             for name, pc in self.contracts.processes.items()
         }
+        # The raw process definitions (workflow `processes.<name>`), passed to the
+        # device model at dispatch so it can act on a process's declared structure
+        # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
+        self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
         # Whole-workflow input values (F4): {entry_port: view value}. Seeded at the
         # boundary at run start; a missing entry input falls back to a typed default.
         self.job = dict(job or {})
@@ -316,6 +320,7 @@ class RollingRunner:
             uuid = self.sim.dispatch_processing(
                 activity["process"], activity["mode"], duration=actual,
                 output_schema=output_schema, inputs=inputs,
+                definition=self._process_defs.get(activity["process"]),
             )
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(
