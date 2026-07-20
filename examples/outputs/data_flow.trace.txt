@@ -1,0 +1,18 @@
+value flow (producer -> consumer, v0-lite opaque markers)
+==========================================================
+entry inputs (seeded at the boundary):
+  sample       = dummy:@entry/sample
+
+activities (assembled inputs -> produced outputs):
+  Measure [measure]
+      in : {'plate': 'dummy:@entry/sample'}
+      out: {'plate_out': 'op-1/plate_out', 'reading': 'op-1/reading'}
+  Az/A [analyze]
+      in : {'reading': 'op-1/reading'}
+      out: {'score': 'op-2/score'}
+  Finish [finish]
+      in : {'plate_in': 'op-1/plate_out', 'go': 'op-2/score'}
+      out: (none)
+
+whole-workflow outputs (returns):
+  final_score  = op-2/score   <- Az/A.score

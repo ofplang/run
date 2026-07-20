@@ -13,9 +13,12 @@ Contract (D14/D15/D21), summarised:
   rejected (a relay is not a physical operation, D14).
 * Object identity is not tracked, but each occupied spot carries an opaque
   string id (D15), sim-generated unless supplied to `place`.
-* `observe` / `state` report only an operation's ``status`` (running / completed /
+* `observe` / `state` report an operation's ``status`` (running / completed /
   failed), never times -- faithful to a real backend's blind polling (D18). Exact
-  event times are available only via `_history`, for tests and debugging.
+  event times are available only via `_history`, for tests and debugging. A
+  completed operation dispatched with a value signature (`out_ports`) also reveals
+  its generated `outputs` -- the value seam (D26); an operation with no signature
+  stays status-only, so existing callers are unaffected.
 * `schedule_process_failure` / `schedule_transport_failure` declare that a
   capability's operations fail instead of completing (D25); a failed operation
   frees its resources at its end but applies no material effect.
@@ -91,6 +94,14 @@ class _Op:
     # transport: the physical hop.
     from_spot: str | None
     to_spot: str | None
+    # Value seam (D26): the output-port signature this operation was dispatched with
+    # (None = a legacy dispatch with no signature -- then no outputs are ever
+    # attached, so `state` / `observe` stay status-only for it), and the outputs the
+    # backend generates at completion (`{port: value}`). In v0-lite the backend is
+    # the value *generator* (opaque, identifiable markers), not a computer: outputs
+    # do not depend on inputs, and dispatch carries no inputs (seam is output-only).
+    out_ports: tuple[str, ...] | None = None
+    outputs: dict | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # Whether this operation is scheduled to fail instead of completing (D25). Set
     # at dispatch from the failing (process, mode) / (transporter, route) sets; when
@@ -197,11 +208,20 @@ class Simulator:
 
     # -- dispatch (D14/D15/D16) -------------------------------------------
 
-    def dispatch_processing(self, process: str, mode, duration: int | None = None) -> str:
+    def dispatch_processing(
+        self, process: str, mode, duration: int | None = None, out_ports=None
+    ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
         `duration` defaults to the mode's own (override it to inject variance, D13).
         Returns the operation id.
+
+        `out_ports` is the value-seam signature (D26): the output port names this
+        operation should produce a value for at completion. When given (even empty),
+        the backend generates an opaque `outputs` dict revealed via `state` /
+        `observe`; when omitted (None), the operation carries no value and stays
+        status-only (backward compatible). Input values are not passed in v0-lite --
+        the seam is output-only.
         """
         # Resolve the capability. Workflow provenance (the node) is not needed here
         # (D14) -- the environment mode alone gives devices, spots, and duration.
@@ -249,6 +269,7 @@ class Simulator:
             from_spot=None,
             to_spot=None,
             should_fail=(process, str(mode)) in self._failing_processes,
+            out_ports=None if out_ports is None else tuple(out_ports),
         )
 
     def dispatch_transport(
@@ -348,6 +369,7 @@ class Simulator:
         from_spot,
         to_spot,
         should_fail=False,
+        out_ports=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -364,26 +386,35 @@ class Simulator:
             from_spot=from_spot,
             to_spot=to_spot,
             should_fail=should_fail,
+            out_ports=out_ports,
         )
         self._ops[op.uuid] = op
         return op.uuid
 
     # -- observation (D15/D18) --------------------------------------------
 
-    def observe(self) -> dict[str, dict]:
-        """Return every operation's status, keyed by id: ``{uuid: {"status": ...}}``.
+    def _op_view(self, op: _Op) -> dict:
+        """One operation's observable state. Status-only (no times, D18), except that
+        a completed operation dispatched with a value signature also reveals its
+        generated `outputs` (the value seam, D26). An operation with no signature (a
+        legacy dispatch) never carries `outputs`, so its view stays exactly
+        ``{"status": ...}`` -- backward compatible."""
+        view = {"status": op.status}
+        if op.outputs is not None:
+            view["outputs"] = op.outputs
+        return view
 
-        Status only -- no times (D18), faithful to a real backend's blind polling.
-        The dict shape leaves room to add fields (times, echoes) later.
-        """
-        return {u: {"status": op.status} for u, op in self._ops.items()}
+    def observe(self) -> dict[str, dict]:
+        """Return every operation's state, keyed by id (see `_op_view`): a
+        ``{"status": ...}`` dict, plus `outputs` for a completed value-carrying op."""
+        return {u: self._op_view(op) for u, op in self._ops.items()}
 
     def state(self, uuid: str) -> dict:
-        """Return one operation's state dict (``{"status": ...}``). Errors if unknown."""
+        """Return one operation's state dict (see `_op_view`). Errors if unknown."""
         op = self._ops.get(uuid)
         if op is None:
             raise UnknownReference(f"unknown operation: {uuid}")
-        return {"status": op.status}
+        return self._op_view(op)
 
     def spot_state(self, spot: str | None = None):
         """Debug / test helper (D15): inspect spot occupancy, which the runner does
@@ -550,6 +581,13 @@ class Simulator:
                 if op.to_spot in self._spot_holds:
                     raise SpotConflict(f"destination spot occupied at arrival: {op.to_spot}")
                 self._spot_holds[op.to_spot] = obj
+
+        # Value seam (D26): a completed operation dispatched with a signature
+        # produces a value at each output port. In v0-lite the backend is a
+        # generator, not a computer -- each value is an opaque, identifiable marker
+        # (`<uuid>/<port>`), unique per operation and port, carrying no real data.
+        if op.out_ports is not None:
+            op.outputs = {port: f"{op.uuid}/{port}" for port in op.out_ports}
 
         op.status = "completed"
 

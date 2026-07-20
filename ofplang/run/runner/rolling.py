@@ -36,11 +36,13 @@ from __future__ import annotations
 import copy
 
 from ..simulator import Simulator
+from .dataflow import from_workflow
 from .loader import load_document
 from .provenance import Committed, CommitLog
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
+from .values import ValueStore, collect_outputs, record_outputs, seed_entry
 
 
 def _normalize_mode_ids(environment: dict) -> dict:
@@ -100,6 +102,18 @@ class RollingRunner:
         # Mode ids are pinned up front so they stay stable when modes are dropped.
         self._environment = _normalize_mode_ids(load_document(environment_path))
         self.sim = Simulator(self._environment)  # the backend reads the environment itself
+
+        # Value layer (D26). The runner owns view-value routing: `dataflow` is the
+        # workflow's port-level routing view (reused from the scheduler's flattener,
+        # D26-0/D26-1, so its node paths match the plan's), and `values` stores each
+        # produced / seeded value keyed by (node, port). `outputs` holds the
+        # whole-workflow outputs, assembled from `returns` at the end of a run. In
+        # v0-lite the seam is output-only: dispatch carries the output-port signature
+        # so the backend generates values; inputs are not passed (D26).
+        self.dataflow = from_workflow(self.workflow_path)
+        self.values = ValueStore()
+        self.outputs: dict = {}
+
         self.interface = interface or {}
         self.margin = running_task_margin
         self.seed = random_seed
@@ -152,9 +166,11 @@ class RollingRunner:
         status with the failed activity `failed` and the abandoned work `cancelled`
         (D25). `self.failed` records that this happened (the CLI maps it to exit 1)."""
         # Seed the boundary inputs: the entry Objects sit on their interface spots
-        # at the start of the run (§6.8).
+        # at the start of the run (§6.8), and every entry input port gets its
+        # boundary view value seeded (D26; v0-lite dummies, later a job document).
         for _port, spot in (self.interface.get("inputs") or {}).items():
             self.sim.place(spot)
+        seed_entry(self.dataflow, self.values)
 
         while True:
             self.ticks += 1
@@ -182,6 +198,11 @@ class RollingRunner:
             self.now = self._next_time(pending)
             self.sim.advance(self.now)
             self._poll()
+
+        # Assemble the whole-workflow outputs from the produced values (D26); exposed
+        # via `self.outputs` and `self.values.snapshot()` (v0-lite: a runner-internal
+        # channel, not the §6/§7 document).
+        self.outputs = collect_outputs(self.dataflow, self.values)
 
         # A stopped run reports the work that never ran as cancelled (D25).
         cancelled = self._cancelled_activities() if self._stopping else None
@@ -268,7 +289,13 @@ class RollingRunner:
         end = start + planned
 
         if kind == "processing":
-            uuid = self.sim.dispatch_processing(activity["process"], activity["mode"], duration=actual)
+            # Pass the output-port signature (D26) so the backend generates a value
+            # for each output at completion. The node path keys the dataflow view and
+            # matches the plan's `node` (both from the scheduler's flattener).
+            out_ports = self.dataflow.out_ports.get(tuple(activity["node"]), ())
+            uuid = self.sim.dispatch_processing(
+                activity["process"], activity["mode"], duration=actual, out_ports=out_ports
+            )
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(
                 activity.get("transporter"), activity["from_spot"], activity["to_spot"], duration=actual
@@ -291,10 +318,15 @@ class RollingRunner:
         for rec in self.log.running():
             if rec.uuid is None:
                 continue
-            observed = self.sim.state(rec.uuid)["status"]
+            observed_state = self.sim.state(rec.uuid)
+            observed = observed_state["status"]
             if observed == "completed":
                 rec.status = "completed"
                 rec.end = self.now
+                # Record the values the backend produced (D26); only value-carrying
+                # processing ops report `outputs`, keyed here by their node path.
+                if "outputs" in observed_state:
+                    record_outputs(self.values, tuple(rec.activity["node"]), observed_state["outputs"])
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now

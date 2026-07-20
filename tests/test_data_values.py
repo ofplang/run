@@ -1,0 +1,139 @@
+"""Integration smoke for the value layer (dev-notes design.md D26-3).
+
+The rolling runner drives a workflow with a nested composite and a non-empty
+`returns` to completion, dispatching each processing with its output-port
+signature (the value seam) and recording the values the backend produces. This
+test checks the run completes and the whole-workflow output is assembled from the
+produced values, including one that crosses a nested composite boundary. The
+producer -> consumer *wiring* correctness is pinned by the D26-1 unit tests
+(tests/test_dataflow.py); here we confirm the pieces work together end to end.
+
+The workflow (tests/fixtures/nested_returns.workflow.yaml) reuses the pure_data
+environment/interface and returns `final_score` from an `analyze` wrapped in a
+composite, so the final output is produced inside a nested boundary.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+
+from ofplang.run.runner import RollingRunner, load_document  # noqa: E402
+
+FIXTURES = Path(__file__).parent / "fixtures"
+WF = str(FIXTURES / "nested_returns.workflow.yaml")
+ENV = str(FIXTURES / "pure_data.env.yaml")
+
+
+def _interface():
+    return load_document(FIXTURES / "pure_data.document.yaml")["interface"]
+
+
+@pytest.mark.parametrize("poll_interval", [None, 1])
+def test_value_layer_produces_whole_workflow_output(poll_interval):
+    runner = RollingRunner(WF, ENV, _interface(), poll_interval=poll_interval, random_seed=0)
+    status = runner.run()
+
+    # The run completes normally.
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert not runner.failed
+
+    # The whole-workflow output is assembled from a produced value. `final_score`
+    # is returned from `analyze`, which sits inside the `Analyzer` composite, so the
+    # value crossed a nested boundary to reach the output.
+    assert set(runner.outputs) == {"final_score"}
+    produced = runner.values.get(("Az", "A"), "score")  # the nested producer's value
+    assert runner.outputs["final_score"] == produced     # the return follows it out
+    assert produced.endswith("/score")                   # an identifiable backend marker
+
+    # Every value-producing processing recorded its outputs in the store; `Finish`
+    # produces nothing (empty signature), so it records nothing.
+    snapshot = runner.values.snapshot()
+    assert (("Measure",), "plate_out") in snapshot
+    assert (("Measure",), "reading") in snapshot
+    assert (("Az", "A"), "score") in snapshot
+
+
+def test_value_layer_is_deterministic():
+    # The opaque markers are deterministic, so both poll modes agree on the output.
+    a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)
+    b = RollingRunner(WF, ENV, _interface(), poll_interval=1, random_seed=0)
+    a.run()
+    b.run()
+    assert a.outputs == b.outputs
+
+
+# -- integration edge cases across the runner's existing behaviors -----------
+
+SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
+SIMPLE_ENV = str(FIXTURES / "simple.env.yaml")
+REROUTE_ENV = str(FIXTURES / "reroute.env.yaml")
+FAIL_WF = str(FIXTURES / "failure.workflow.yaml")
+FAIL_ENV = str(FIXTURES / "failure.env.yaml")
+
+
+def test_object_entry_and_object_return_end_to_end():
+    # An Object entry input and an Object return: the final output follows the
+    # return back to the producing atomic's recorded value.
+    interface = load_document(FIXTURES / "interface_load.document.yaml")["interface"]
+    runner = RollingRunner(
+        str(FIXTURES / "interface_load.workflow.yaml"),
+        str(FIXTURES / "interface_load.env.yaml"),
+        interface,
+        random_seed=0,
+    )
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert set(runner.outputs) == {"result"}
+    assert runner.outputs["result"] == runner.values.get(("Heat",), "out")
+    # The entry input was seeded at the boundary.
+    assert runner.values.get((), "sample").endswith("/sample")
+
+
+def test_create_workflow_records_producer_but_has_no_outputs():
+    # simple.workflow: a CREATE source, no entry input, empty returns. The run
+    # completes, the created value is recorded, and there is no whole-workflow output.
+    runner = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0)
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert runner.outputs == {}
+    assert runner.values.has(("SampleSource",), "source_out")
+    # The pure-consume target produced nothing.
+    assert not runner.values.has(("SampleTarget",), "target_in")
+
+
+def test_values_survive_reroute():
+    # A device goes down and the run re-routes (the plan and its spots change), but
+    # values are keyed by workflow node path, so the producer's value is unaffected.
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0)
+    runner.sim.schedule_device_down(3, "station_1")
+    status = runner.run()
+    assert status["now"] == 9  # re-routed makespan
+    assert runner.values.get(("SampleSource",), "source_out") == "op-0/source_out"
+
+
+def test_values_under_duration_variance():
+    # With duration variance (a running-task margin is required), the run still
+    # completes and records its produced values.
+    runner = RollingRunner(
+        SIMPLE_WF, SIMPLE_ENV, random_seed=0,
+        poll_interval=1, running_task_margin=2, duration_model=lambda a, planned: planned + 1,
+    )
+    runner.run()
+    assert runner.values.has(("SampleSource",), "source_out")
+
+
+def test_values_on_failure_are_partial():
+    # When an activity fails, the run stops: producers that completed before the
+    # failure keep their values; the failed op produces none, and abandoned pending
+    # work never records anything. (The slow chain drains, so its source completes.)
+    runner = RollingRunner(FAIL_WF, FAIL_ENV, poll_interval=None, random_seed=0)
+    runner.sim.schedule_process_failure("src_bad", "m0")
+    runner.run()
+    assert runner.failed
+    assert not runner.values.has(("SrcBad",), "out")   # failed -> no value
+    assert runner.values.has(("SrcSlow",), "out")      # completed while draining
+    assert runner.outputs == {}                        # no returns in this workflow

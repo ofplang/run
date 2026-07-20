@@ -1,0 +1,94 @@
+# Value-flow example workflow (see examples/render_data_flow.py): a nested
+# composite with a non-empty `returns`, so a run produces a whole-workflow output
+# that flows through a nested composite boundary. It pairs with data_flow.env.yaml
+# and data_flow.document.yaml (the interface). Structure:
+#
+#   sample --(object)--> Measure --(object)------> Finish
+#                           |                        ^
+#                           +--reading(data)--> Analyzer{A} --score(data)--+
+#                                                    |
+#                                       returns final_score <-- Analyzer.a_score
+#
+# `Analyzer` is a composite wrapping the device-less `analyze`: main binds its
+# `a_reading` from Measure.reading, and returns its `a_score` both to Finish (as a
+# Pure Data gate) and as the workflow's `final_score` output. The runner must
+# route the value across the composite boundary and surface it as a final output.
+spec_version: "0.0"
+
+types:
+  Plate:   { domain: object }
+  Reading: { domain: data }
+  Score:   { domain: data }
+
+processes:
+
+  # Object process: transforms the plate in place and emits a Pure Data reading.
+  measure:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate_out: { type: Plate,   phase: data }
+      reading:   { type: Reading, phase: data }
+    objects:
+      transform: [inputs.plate, outputs.plate_out]
+
+  # Device-less Pure-Data-only process: reading -> score.
+  analyze:
+    kind: atomic
+    inputs:
+      reading: { type: Reading, phase: data }
+    outputs:
+      score: { type: Score, phase: data }
+
+  # Object process gated by the Pure Data score.
+  finish:
+    kind: atomic
+    inputs:
+      plate_in: { type: Plate, phase: data }
+      go:       { type: Score, phase: data }
+    objects:
+      consume: [inputs.plate_in]
+
+  # Composite wrapping analyze: forwards its input inward and returns its score.
+  analyzer:
+    kind: composite
+    inputs:
+      a_reading: { type: Reading, phase: data }
+    outputs:
+      a_score: { type: Score, phase: data }
+    body:
+      nodes:
+        - id: A
+          process: analyze
+          bind:
+            reading: { from: inputs.a_reading }
+      returns:
+        a_score: { from: A.score }
+
+  main:
+    kind: composite
+    inputs:
+      sample: { type: Plate, phase: data }        # Object-bearing entry input
+    outputs:
+      final_score: { type: Score, phase: data }   # Pure Data whole-workflow output
+    body:
+      nodes:
+        - id: Measure
+          process: measure
+          state:
+            plate: { from: inputs.sample }
+        - id: Az
+          process: analyzer
+          bind:
+            a_reading: { from: Measure.reading }
+        - id: Finish
+          process: finish
+          state:
+            plate_in: { from: Measure.plate_out }
+          bind:
+            go: { from: Az.a_score }
+      returns:
+        final_score: { from: Az.a_score }
+
+entry: main

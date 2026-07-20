@@ -138,6 +138,87 @@ def test_processing_duration_override():
     assert event.time == 10 and event.uuid == uid
 
 
+def test_value_seam_reveals_outputs_only_when_signed_and_completed():
+    # The value seam (D26): dispatched with an `out_ports` signature, a completed
+    # operation reveals an opaque, per-port `outputs` dict; while running it stays
+    # status-only, and a dispatch with no signature is unaffected (backward compat).
+    sim = make_sim()
+    uid = sim.dispatch_processing("source", "0", out_ports=["source_out"])
+    assert sim.state(uid) == {"status": "running"}  # no outputs before completion
+
+    sim.advance(2)
+    st = sim.state(uid)
+    assert st["status"] == "completed"
+    # One identifiable marker per output port, unique to this operation.
+    assert st["outputs"] == {"source_out": f"{uid}/source_out"}
+    assert sim.observe()[uid] == st
+
+    # A legacy dispatch (no signature) never grows an `outputs` key. `cook` is an
+    # in-place transform on station_0.core, which `source` just filled.
+    other = sim.dispatch_processing("cook", "fast")  # no out_ports
+    assert sim.state(other) == {"status": "running"}
+
+
+def test_value_seam_no_outputs_on_failure():
+    # A failed operation applies no material effect (D25) and produces no outputs,
+    # even when dispatched with a signature.
+    sim = make_sim()
+    sim.schedule_process_failure("source", "0")
+    uid = sim.dispatch_processing("source", "0", out_ports=["source_out"])
+    sim.advance(2)
+    assert sim.state(uid) == {"status": "failed"}  # no `outputs` key
+
+
+def test_value_seam_empty_signature_yields_empty_outputs():
+    # A pure-consume processing (no output ports) still carries a signature, so its
+    # completed view has an explicit empty `outputs` (distinct from an unsigned op).
+    sim = make_sim()
+    sim.place("station_1.core")
+    uid = sim.dispatch_processing("target", "0", out_ports=[])
+    sim.advance(2)
+    assert sim.state(uid) == {"status": "completed", "outputs": {}}
+
+
+def test_value_seam_device_less_pure_data_op_generates_outputs():
+    # A device-less Pure Data op (no spot, no device) still generates outputs from
+    # its signature -- the value seam is independent of physical occupancy (D26).
+    sim = make_sim()
+    uid = sim.dispatch_processing("compute", "v1", out_ports=["score"])
+    sim.advance(5)
+    assert sim.state(uid) == {"status": "completed", "outputs": {"score": f"{uid}/score"}}
+
+
+def test_value_seam_zero_duration_op_reveals_outputs_after_settle():
+    # A zero-duration signed op produces its outputs once the clock settles past it.
+    sim = make_sim()
+    uid = sim.dispatch_processing("compute", "v1", duration=0, out_ports=["x"])
+    assert sim.state(uid) == {"status": "running"}  # not settled yet
+    sim.advance(0)
+    assert sim.state(uid) == {"status": "completed", "outputs": {"x": f"{uid}/x"}}
+
+
+def test_value_seam_multi_output_markers_are_distinct():
+    # Every output port gets its own identifiable marker.
+    sim = make_sim()
+    uid = sim.dispatch_processing("compute", "v1", out_ports=["a", "b", "c"])
+    sim.advance(5)
+    outputs = sim.state(uid)["outputs"]
+    assert outputs == {"a": f"{uid}/a", "b": f"{uid}/b", "c": f"{uid}/c"}
+    assert len(set(outputs.values())) == 3  # all distinct
+
+
+def test_observe_mixes_signed_and_unsigned_and_running_ops():
+    # observe() reports every op: a signed completed op carries outputs, an unsigned
+    # completed op does not, and a running op is status-only regardless.
+    sim = make_sim()
+    signed = sim.dispatch_processing("source", "0", out_ports=["source_out"])  # dur 2
+    unsigned = sim.dispatch_processing("compute", "v1")  # dur 5, no signature
+    sim.advance(2)  # source completes; compute still running
+    obs = sim.observe()
+    assert obs[signed] == {"status": "completed", "outputs": {"source_out": f"{signed}/source_out"}}
+    assert obs[unsigned] == {"status": "running"}
+
+
 def test_processing_in_place_transform_keeps_spot():
     sim = make_sim()
     obj = sim.place("station_0.core")  # seed material
