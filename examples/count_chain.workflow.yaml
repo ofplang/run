@@ -1,0 +1,42 @@
+# Pure-Data chain for the job / device-model example (see examples/render_job_run.py):
+# a `Count` value (view {value: Int}) flows from the supplied job, through two
+# device-less `inc` steps, to the returned output. With a device model that adds one
+# each step, the entry value is computed through to the final output -- demonstrating
+# a supplied input propagating through the backend. No object flow, so no interface
+# is needed; it pairs with count_chain.env.yaml.
+spec_version: "0.0"
+
+types:
+  Count:
+    domain: data
+    view:
+      value: { type: Int }
+
+processes:
+  inc:
+    kind: atomic
+    inputs:
+      x: { type: Count, phase: data }
+    outputs:
+      y: { type: Count, phase: data }
+
+  main:
+    kind: composite
+    inputs:
+      start: { type: Count, phase: data }
+    outputs:
+      result: { type: Count, phase: data }
+    body:
+      nodes:
+        - id: S1
+          process: inc
+          bind:
+            x: { from: inputs.start }
+        - id: S2
+          process: inc
+          bind:
+            x: { from: S1.y }
+      returns:
+        result: { from: S2.y }
+
+entry: main
