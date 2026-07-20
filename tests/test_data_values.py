@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
-from ofplang.run.runner import RollingRunner, load_document  # noqa: E402
+from ofplang.run.runner import RollingRunner, RunnerError, load_document  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 WF = str(FIXTURES / "nested_returns.workflow.yaml")
@@ -73,6 +73,32 @@ def test_typed_values_are_view_shaped():
     assert runner.values.get(("Measure",), "reading") == {"mean": 0.0, "n": 0}
 
 
+TYPED_WF = str(FIXTURES / "typed_returns.workflow.yaml")
+
+
+def test_job_supplies_and_defaults_entry_values():
+    # A supplied job value seeds the entry input (contract-checked); an unsupplied
+    # one falls back to a typed default. `sample` is a Plate with view {barcode}.
+    with_job = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": "ABC"}}, random_seed=0)
+    with_job.run()
+    assert with_job.values.get((), "sample") == {"barcode": "ABC"}
+
+    without_job = RollingRunner(TYPED_WF, ENV, _interface(), random_seed=0)
+    without_job.run()
+    assert without_job.values.get((), "sample") == {"barcode": ""}  # typed default
+
+
+def test_job_rejects_nonconformant_and_unknown_entries():
+    # A non-conformant job value and an unknown entry port are both rejected up front.
+    bad_value = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": 1}}, random_seed=0)
+    with pytest.raises(RunnerError):
+        bad_value.run()
+
+    unknown = RollingRunner(TYPED_WF, ENV, _interface(), job={"nope": {"barcode": "X"}}, random_seed=0)
+    with pytest.raises(RunnerError):
+        unknown.run()
+
+
 def test_value_layer_is_deterministic():
     # Typed defaults are deterministic, so both poll modes agree on the output.
     a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)
@@ -105,8 +131,9 @@ def test_object_entry_and_object_return_end_to_end():
     assert all(a["status"] == "completed" for a in status["activities"])
     assert set(runner.outputs) == {"result"}
     assert runner.outputs["result"] == runner.values.get(("Heat",), "out")
-    # The entry input was seeded at the boundary.
-    assert runner.values.get((), "sample").endswith("/sample")
+    # The entry input was seeded at the boundary as a typed default (Plate declares
+    # no view -> empty record).
+    assert runner.values.get((), "sample") == {}
 
 
 def test_create_workflow_records_producer_but_has_no_outputs():

@@ -34,6 +34,11 @@ from .runner import RunnerError
 # value is its own contract-visible projection.
 PRIMITIVES = frozenset({"Bool", "Int", "Float", "String"})
 
+# The default value per primitive, used to synthesise a runner-side typed value
+# (an unsupplied entry input, an unconnected input). Mirrors the backend's own
+# defaults in the simulator (they must agree; a test checks conformance).
+_PRIMITIVE_DEFAULTS = {"Bool": False, "Int": 0, "Float": 0.0, "String": ""}
+
 
 # -- resolved type model -----------------------------------------------------
 #
@@ -118,6 +123,19 @@ def conforms(value, resolved) -> bool:
     return all(conforms(value[field], field_type) for field, field_type in resolved.view.items())
 
 
+def default_value(resolved):
+    """A typed default value for `resolved`, mirroring the backend's generator
+    (D27 F2): a primitive's default, an empty array, or a record of its view
+    fields' defaults. Used runner-side to synthesise a value the runner is
+    responsible for -- an entry input the job did not supply, or an unconnected
+    input -- as a conformant view value (F4). The result always `conforms`."""
+    if isinstance(resolved, Primitive):
+        return _PRIMITIVE_DEFAULTS[resolved.name]
+    if isinstance(resolved, ArrayType):
+        return []
+    return {field: default_value(field_type) for field, field_type in resolved.view.items()}
+
+
 # -- resolution --------------------------------------------------------------
 
 
@@ -175,9 +193,12 @@ class Contracts:
     duplicating them per node.
     """
 
-    def __init__(self, processes: dict, types: dict) -> None:
+    def __init__(self, processes: dict, types: dict, entry: str | None = None) -> None:
         self.processes = processes
         self.types = types
+        # The entry (top composite) process name; its declared inputs are the
+        # workflow's boundary input ports (their types drive the job / seed values).
+        self.entry = entry
 
     @classmethod
     def from_workflow(cls, workflow_path) -> "Contracts":
@@ -187,13 +208,19 @@ class Contracts:
         if not isinstance(data, dict):
             raise RunnerError("workflow must be a mapping")
         registry = _build_registry(data.get("types") or {})
+        raw_processes = data.get("processes") or {}
         processes: dict = {}
-        for name, spec in (data.get("processes") or {}).items():
+        for name, spec in raw_processes.items():
             spec = spec or {}
             inputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("inputs") or {}).items()}
             outputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("outputs") or {}).items()}
             processes[name] = ProcessContract(inputs, outputs)
-        return cls(processes, registry)
+        entry = data.get("entry") or ("main" if "main" in raw_processes else None)
+        return cls(processes, registry, entry)
+
+    def entry_input_type(self, port: str) -> ResolvedType:
+        """The resolved type of an entry (boundary) input port."""
+        return self.processes[self.entry].inputs[port]
 
     def input_type(self, process: str, port: str) -> ResolvedType:
         return self.processes[process].inputs[port]

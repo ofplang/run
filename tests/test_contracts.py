@@ -17,6 +17,7 @@ from ofplang.run.runner.contracts import (
     Nominal,
     Primitive,
     conforms,
+    default_value,
     is_object_bearing,
     to_descriptor,
 )
@@ -191,6 +192,18 @@ def test_generated_defaults_conform(tmp_path):
     assert conforms([], c.input_type("p", "flags"))
     assert conforms({"mean": 0.0, "n": 0}, c.input_type("p", "r"))
     assert conforms({}, c.output_type("p", "tube"))
+
+
+def test_default_value_produces_conformant_typed_defaults(tmp_path):
+    # The runner-side default generator (for unsupplied job / unconnected inputs)
+    # mirrors the backend's, and its results conform.
+    c = _contracts(tmp_path)
+    assert default_value(c.output_type("p", "score")) == 0.0
+    assert default_value(c.input_type("p", "flags")) == []
+    assert default_value(c.input_type("p", "r")) == {"mean": 0.0, "n": 0}
+    assert default_value(c.output_type("p", "tube")) == {}
+    for resolved in (c.output_type("p", "score"), c.input_type("p", "r"), c.output_type("p", "plates")):
+        assert conforms(default_value(resolved), resolved)
 
 
 def test_resolves_a_real_fixture(tmp_path):

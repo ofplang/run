@@ -11,12 +11,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ofplang.run.runner.contracts import Contracts
 from ofplang.run.runner.dataflow import from_workflow
 from ofplang.run.runner.values import (
     ValueStore,
     assemble_inputs,
     collect_outputs,
-    dummy_value,
     record_outputs,
     seed_entry,
 )
@@ -86,6 +86,12 @@ def _dataflow(tmp_path):
     doc = tmp_path / "wf.yaml"
     doc.write_text(_WORKFLOW, encoding="utf-8")
     return from_workflow(doc)
+
+
+def _dataflow_and_contracts(tmp_path):
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_WORKFLOW, encoding="utf-8")
+    return from_workflow(doc), Contracts.from_workflow(doc)
 
 
 def test_ports_and_activities(tmp_path):
@@ -164,37 +170,55 @@ def test_structured_node_workflow_is_rejected(tmp_path):
 
 
 def test_seed_assemble_record_collect_route_values(tmp_path):
-    df = _dataflow(tmp_path)
+    df, contracts = _dataflow_and_contracts(tmp_path)
     store = ValueStore()
 
-    # Seed the boundary: the entry input carries a dummy.
-    seed_entry(df, store)
-    assert store.get((), "sample") == dummy_value((), "sample")
+    # Seed the boundary: with no job, the entry input gets a typed default (Sample
+    # declares no view -> empty record).
+    seed_entry(df, contracts, store)
+    assert store.get((), "sample") == {}
 
-    # M consumes the entry input; run each node, recording the backend's outputs,
-    # and check each consumer assembles the right upstream value.
-    assert assemble_inputs(df, store, ("M",)) == {"plate": dummy_value((), "sample")}
+    # M consumes the entry input; run each node, recording distinct sentinel outputs,
+    # and check each consumer assembles the right upstream value (routing).
+    assert assemble_inputs(df, contracts, store, ("M",)) == {"plate": {}}
     record_outputs(store, ("M",), {"plate_out": "P", "reading": "R"})
 
-    assert assemble_inputs(df, store, ("Az", "A")) == {"reading": "R"}
+    assert assemble_inputs(df, contracts, store, ("Az", "A")) == {"reading": "R"}
     record_outputs(store, ("Az", "A"), {"score": "S"})
 
-    assert assemble_inputs(df, store, ("F",)) == {"plate_in": "P", "go": "S"}
+    assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": "P", "go": "S"}
     record_outputs(store, ("F",), {"done": "D"})
 
     # The whole-workflow output follows the return back to F.done.
     assert collect_outputs(df, store) == {"result": "D"}
 
 
-def test_unconnected_input_falls_back_to_dummy(tmp_path):
-    df = _dataflow(tmp_path)
+def test_seed_entry_uses_job_values_and_checks_them(tmp_path):
+    df, contracts = _dataflow_and_contracts(tmp_path)
+    from ofplang.run.runner.runner import RunnerError
+
+    # A supplied job value is used verbatim (sample is an object type with no view,
+    # so its view value is an empty record).
+    store = ValueStore()
+    seed_entry(df, contracts, store, job={"sample": {}})
+    assert store.get((), "sample") == {}
+
+    # A non-conformant job value is rejected, as is an unknown entry port.
+    for bad in ({"sample": {"unexpected": 1}}, {"nope": {}}):
+        try:
+            seed_entry(df, contracts, ValueStore(), job=bad)
+        except RunnerError:
+            continue
+        raise AssertionError(f"expected RunnerError for job {bad}")
+
+
+def test_unconnected_input_falls_back_to_typed_default(tmp_path):
+    df, contracts = _dataflow_and_contracts(tmp_path)
     store = ValueStore()
     # Before any producer has run, F's inputs have no stored source value yet, so
-    # they dummy-fill (an unconnected/not-yet-produced input, v0-lite).
-    assert assemble_inputs(df, store, ("F",)) == {
-        "plate_in": dummy_value(("F",), "plate_in"),
-        "go": dummy_value(("F",), "go"),
-    }
+    # they fall back to a typed default of the port's type (Sample / Reading here
+    # declare no view, hence empty records).
+    assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": {}, "go": {}}
 
 
 # -- dataflow adapter edge cases --------------------------------------------
@@ -336,24 +360,18 @@ def test_fan_out_value_read_by_multiple_consumers(tmp_path):
         "      returns: {}\n"
         "entry: main\n",
     )
+    contracts = Contracts.from_workflow(tmp_path / "wf.yaml")
     store = ValueStore()
     record_outputs(store, ("G",), {"o": "shared"})
-    # Both consumers read the one produced value (values are not consumed in v0-lite).
-    assert assemble_inputs(df, store, ("U1",)) == {"a": "shared"}
-    assert assemble_inputs(df, store, ("U2",)) == {"a": "shared"}
+    # Both consumers read the one produced value (values are not consumed in v0).
+    assert assemble_inputs(df, contracts, store, ("U1",)) == {"a": "shared"}
+    assert assemble_inputs(df, contracts, store, ("U2",)) == {"a": "shared"}
 
 
 def test_collect_outputs_omits_unproduced_return(tmp_path):
     df = _dataflow(tmp_path)  # returns {result <- F.done}
     store = ValueStore()
-    # F never produced -> its return is omitted, not dummied.
+    # F never produced -> its return is omitted, not defaulted.
     assert collect_outputs(df, store) == {}
     record_outputs(store, ("F",), {"done": "D"})
     assert collect_outputs(df, store) == {"result": "D"}
-
-
-def test_dummy_value_is_deterministic_and_identifiable():
-    assert dummy_value(("A", "B"), "p") == dummy_value(("A", "B"), "p")
-    assert dummy_value(("A",), "p") != dummy_value(("A",), "q")
-    assert dummy_value(("A",), "p") != dummy_value(("B",), "p")
-    assert dummy_value((), "sample") == "dummy:@entry/sample"  # boundary renders as @entry

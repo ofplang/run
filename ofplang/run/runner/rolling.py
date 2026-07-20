@@ -36,14 +36,14 @@ from __future__ import annotations
 import copy
 
 from ..simulator import Simulator
-from .contracts import Contracts, to_descriptor
+from .contracts import Contracts, conforms, to_descriptor
 from .dataflow import from_workflow
 from .loader import load_document
 from .provenance import Committed, CommitLog
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
-from .values import ValueStore, collect_outputs, record_outputs, seed_entry
+from .values import ValueStore, assemble_inputs, collect_outputs, record_outputs, seed_entry
 
 
 def _normalize_mode_ids(environment: dict) -> dict:
@@ -90,6 +90,7 @@ class RollingRunner:
         environment_path,
         interface: dict | None = None,
         *,
+        job: dict | None = None,
         running_task_margin: int = 0,
         random_seed: int | None = None,
         poll_interval: int | None = 1,
@@ -120,6 +121,9 @@ class RollingRunner:
             name: {port: to_descriptor(rt) for port, rt in pc.outputs.items()}
             for name, pc in self.contracts.processes.items()
         }
+        # Whole-workflow input values (F4): {entry_port: view value}. Seeded at the
+        # boundary at run start; a missing entry input falls back to a typed default.
+        self.job = dict(job or {})
         self.values = ValueStore()
         self.outputs: dict = {}
 
@@ -176,10 +180,11 @@ class RollingRunner:
         (D25). `self.failed` records that this happened (the CLI maps it to exit 1)."""
         # Seed the boundary inputs: the entry Objects sit on their interface spots
         # at the start of the run (§6.8), and every entry input port gets its
-        # boundary view value seeded (D26; v0-lite dummies, later a job document).
+        # boundary view value seeded from the job (contract-checked) or a typed
+        # default (D27 F4).
         for _port, spot in (self.interface.get("inputs") or {}).items():
             self.sim.place(spot)
-        seed_entry(self.dataflow, self.values)
+        seed_entry(self.dataflow, self.contracts, self.values, self.job)
 
         while True:
             self.ticks += 1
@@ -299,11 +304,14 @@ class RollingRunner:
 
         if kind == "processing":
             # Pass the output value signature (D26/D27) so the backend generates a
-            # typed value for each output port at completion: the resolved
-            # value-shape descriptors of this process's outputs.
+            # typed value for each output port at completion, and the assembled input
+            # values (F4; routed from upstream / the seeded boundary). The backend
+            # records inputs but does not yet use them (F4b).
             output_schema = self._output_schemas.get(activity["process"], {})
+            inputs = assemble_inputs(self.dataflow, self.contracts, self.values, activity["node"])
             uuid = self.sim.dispatch_processing(
-                activity["process"], activity["mode"], duration=actual, output_schema=output_schema
+                activity["process"], activity["mode"], duration=actual,
+                output_schema=output_schema, inputs=inputs,
             )
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(
@@ -333,8 +341,17 @@ class RollingRunner:
                 rec.status = "completed"
                 rec.end = self.now
                 # Record the values the backend produced (D26); only value-carrying
-                # processing ops report `outputs`, keyed here by their node path.
+                # processing ops report `outputs`, keyed here by their node path. Each
+                # output is contract-checked against its port type (D27 F4): the F2
+                # defaults always conform, but a future device model / real backend
+                # (F4b) could emit a non-conformant value, caught here.
                 if "outputs" in observed_state:
+                    process = rec.activity["process"]
+                    for port, value in observed_state["outputs"].items():
+                        if not conforms(value, self.contracts.output_type(process, port)):
+                            raise RunnerError(
+                                f"backend output {process}.{port!r} does not conform to its declared type"
+                            )
                     record_outputs(self.values, tuple(rec.activity["node"]), observed_state["outputs"])
             elif observed == "failed":
                 rec.status = "failed"

@@ -1,11 +1,11 @@
 value flow (producer -> consumer, typed view values)
 ==========================================================
 entry inputs (seeded at the boundary):
-  sample       = dummy:@entry/sample
+  sample       = {}
 
 activities (assembled inputs -> produced outputs):
   Measure [measure]
-      in : {'plate': 'dummy:@entry/sample'}
+      in : {'plate': {}}
       out: {'plate_out': {}, 'reading': {'mean': 0.0, 'n': 0}}
   Az/A [analyze]
       in : {'reading': {'mean': 0.0, 'n': 0}}

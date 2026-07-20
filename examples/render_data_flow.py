@@ -12,8 +12,9 @@ This prints a text trace of that flow -- each activity's assembled inputs and th
 outputs the backend produced, then the final whole-workflow outputs -- so the
 otherwise-internal value layer is visible. The backend generates typed default
 values shaped by each type's view schema (§7.4): a `Reading` becomes
-`{mean: 0.0, n: 0}`, a `Score` `{value: 0.0, ok: false}`. (Entry inputs are still
-seeded with placeholder markers; real supplied inputs are a later stage.)
+`{mean: 0.0, n: 0}`, a `Score` `{value: 0.0, ok: false}`. Entry inputs are seeded
+with typed defaults here (a run may instead supply a job of entry values);
+producer outputs do not yet depend on inputs -- that arrives with a device model.
 
 Run it:
 
@@ -72,7 +73,7 @@ def main() -> None:
         if node is None:  # a transport / bookkeeping leg carries no value
             continue
         node = tuple(node)
-        inputs = assemble_inputs(df, runner.values, node)
+        inputs = assemble_inputs(df, runner.contracts, runner.values, node)
         outputs = {port: runner.values.snapshot().get((node, port)) for port in df.out_ports.get(node, ())}
         lines.append(f"  {_fmt_node(node)} [{record.activity.get('process')}]")
         lines.append(f"      in : {inputs or '(none)'}")

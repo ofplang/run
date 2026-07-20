@@ -11,7 +11,12 @@
 spec_version: "0.0"
 
 types:
-  Plate:   { domain: object }
+  # An object type with a view: its value is the view record (identity is the
+  # simulator's concern), so a supplied job value for the `sample` entry is checkable.
+  Plate:
+    domain: object
+    view:
+      barcode: { type: String }
   # Pure Data types with flat view schemas (§7.4): the contract-visible fields.
   Reading:
     domain: data

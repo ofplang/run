@@ -3,7 +3,7 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
-        [--interface <doc>] [--seed N] [--margin M] [--poll-interval D] [-o OUT]
+        [--interface <doc>] [--job <doc>] [--seed N] [--margin M] [--poll-interval D] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
         replay a given execution plan on the simulator
@@ -56,6 +56,12 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="DOC",
         help="execution document carrying the interface boundary constraint (§6.8)",
     )
+    r.add_argument(
+        "--job",
+        metavar="DOC",
+        help="whole-workflow input values as {entry_port: view value} (YAML/JSON); "
+        "unsupplied entry inputs default (§7 view defaults)",
+    )
     r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
     r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
     r.add_argument(
@@ -107,10 +113,21 @@ def _cmd_run(args) -> int:
             return err
         interface = doc.get("interface") if isinstance(doc, dict) else None
 
+    job = None
+    if args.job:
+        doc, err = _read_document(args.job, "job document")
+        if err is not None:
+            return err
+        if not isinstance(doc, dict):
+            print(f"ofp-run: job document must be a mapping: {args.job!r}", file=sys.stderr)
+            return EXIT_USAGE
+        job = doc
+
     runner = RollingRunner(
         args.workflow,
         args.env,
         interface,
+        job=job,
         running_task_margin=args.margin,
         random_seed=args.seed,
         poll_interval=args.poll_interval,

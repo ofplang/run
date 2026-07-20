@@ -120,9 +120,12 @@ class _Op:
     # no signature; then no outputs are ever attached, so `state` / `observe` stay
     # status-only for it) -- and the outputs the backend generates at completion
     # (`{port: value}`). The backend is the value *generator* (D26 principle B): it
-    # walks each descriptor to a typed default (D27 F2). Outputs do not depend on
-    # inputs, and dispatch carries no inputs (the seam is output-only in v0).
+    # walks each descriptor to a typed default (D27 F2). `inputs` are the input
+    # values passed at dispatch (D27 F4); the backend records them but does not yet
+    # use them -- outputs stay input-independent typed defaults until a device model
+    # consumes them (F4b).
     output_schema: dict | None = None
+    inputs: dict | None = None
     outputs: dict | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # Whether this operation is scheduled to fail instead of completing (D25). Set
@@ -231,7 +234,7 @@ class Simulator:
     # -- dispatch (D14/D15/D16) -------------------------------------------
 
     def dispatch_processing(
-        self, process: str, mode, duration: int | None = None, output_schema=None
+        self, process: str, mode, duration: int | None = None, output_schema=None, inputs=None
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -242,8 +245,9 @@ class Simulator:
         ``{port: value-shape descriptor}`` the backend uses to generate a typed value
         for each output port at completion, revealed via `state` / `observe`. When
         given (even empty), the operation carries `outputs`; when omitted (None), it
-        stays status-only (backward compatible). Input values are not passed -- the
-        seam is output-only.
+        stays status-only (backward compatible). `inputs` (``{port: value}``, D27 F4)
+        are recorded but not yet consumed -- outputs stay input-independent typed
+        defaults until a device model uses them (F4b).
         """
         # Resolve the capability. Workflow provenance (the node) is not needed here
         # (D14) -- the environment mode alone gives devices, spots, and duration.
@@ -260,7 +264,7 @@ class Simulator:
 
         in_spots = tuple(m.input_spots.values())
         out_spots = tuple(m.output_spots.values())
-        inputs = set(in_spots)
+        input_spot_set = set(in_spots)
 
         # Preconditions (D16, the validating oracle). No device is down (a down
         # device cannot run processes, D21); devices idle; every input spot holds
@@ -275,7 +279,7 @@ class Simulator:
             if s not in self._spot_holds:
                 raise MissingObject(f"input spot is empty: {s}")
         for s in out_spots:
-            if s not in inputs and s in self._spot_holds:
+            if s not in input_spot_set and s in self._spot_holds:
                 raise SpotConflict(f"output spot already occupied: {s}")
 
         # Commit: occupy the devices for the run (spots change only on completion).
@@ -292,6 +296,7 @@ class Simulator:
             to_spot=None,
             should_fail=(process, str(mode)) in self._failing_processes,
             output_schema=None if output_schema is None else dict(output_schema),
+            inputs=None if inputs is None else dict(inputs),
         )
 
     def dispatch_transport(
@@ -392,6 +397,7 @@ class Simulator:
         to_spot,
         should_fail=False,
         output_schema=None,
+        inputs=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -409,6 +415,7 @@ class Simulator:
             to_spot=to_spot,
             should_fail=should_fail,
             output_schema=output_schema,
+            inputs=inputs,
         )
         self._ops[op.uuid] = op
         return op.uuid
