@@ -141,6 +141,21 @@ def test_device_model_output_is_contract_checked():
         runner.run()
 
 
+def test_cli_writes_whole_workflow_outputs(tmp_path):
+    # `--outputs` writes the whole-workflow output values as a run-local YAML
+    # artifact (D27 F5), separate from the status document.
+    from ofplang.run.cli import main
+
+    out = tmp_path / "outputs.yaml"
+    code = main([
+        "run", TYPED_WF, "--env", ENV,
+        "--interface", str(FIXTURES / "pure_data.document.yaml"),
+        "--outputs", str(out),
+    ])
+    assert code == 0
+    assert load_document(out) == {"final_score": {"value": 0.0, "ok": False}}
+
+
 def test_value_layer_is_deterministic():
     # Typed defaults are deterministic, so both poll modes agree on the output.
     a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)

@@ -3,7 +3,8 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
-        [--interface <doc>] [--job <doc>] [--seed N] [--margin M] [--poll-interval D] [-o OUT]
+        [--interface <doc>] [--job <doc>] [--outputs FILE]
+        [--seed N] [--margin M] [--poll-interval D] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
         replay a given execution plan on the simulator
@@ -72,6 +73,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="poll every D time units (fixed-interval, with completion-time estimation; default 1)",
     )
     r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
+    r.add_argument(
+        "--outputs",
+        metavar="FILE",
+        help="write the whole-workflow output values {port: value} here (YAML); "
+        "a run-local artifact, not part of the §6/§7 status document",
+    )
 
     # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
     p = sub.add_parser("replay", help="replay an execution plan on the simulator")
@@ -137,6 +144,11 @@ def _cmd_run(args) -> int:
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
+
+    # The whole-workflow output values are a run-local artifact (D27 F5), written
+    # separately so the §6/§7 status document stays value-free.
+    if args.outputs:
+        Path(args.outputs).write_text(serialize_document(runner.outputs), encoding="utf-8")
 
     # An activity failure stops the run without raising: the status is still emitted
     # (it carries the failed / cancelled activities), but the run counts as failed.
