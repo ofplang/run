@@ -70,8 +70,8 @@ SIMPLE_ENV = {
 }
 
 
-def make_sim() -> Simulator:
-    return Simulator(SIMPLE_ENV)
+def make_sim(device_model=None) -> Simulator:
+    return Simulator(SIMPLE_ENV, device_model=device_model)
 
 
 # -- environment loading ---------------------------------------------------
@@ -233,6 +233,31 @@ def test_observe_mixes_signed_and_unsigned_and_running_ops():
     obs = sim.observe()
     assert obs[signed] == {"status": "completed", "outputs": {"source_out": 0}}
     assert obs[unsigned] == {"status": "running"}
+
+
+def test_device_model_computes_outputs_from_inputs():
+    # An installed device model computes a signed op's outputs from its inputs
+    # (D27 F4b), instead of the input-independent typed defaults. It is called with
+    # the capability (process, mode), the inputs, and the output schema.
+    seen = []
+
+    def model(process, mode, inputs, output_schema):
+        seen.append((process, mode, dict(inputs), sorted(output_schema)))
+        return {port: inputs.get("seed", 0) + 1 for port in output_schema}
+
+    sim = make_sim(model)
+    uid = sim.dispatch_processing("source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41})
+    sim.advance(2)
+    assert sim.state(uid)["outputs"] == {"source_out": 42}  # computed, not the default 0
+    assert seen == [("source", "0", {"seed": 41}, ["source_out"])]
+
+
+def test_device_model_left_default_when_absent():
+    # Without a model the backend still generates input-independent typed defaults.
+    sim = make_sim()  # no device model
+    uid = sim.dispatch_processing("source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41})
+    sim.advance(2)
+    assert sim.state(uid)["outputs"] == {"source_out": 0}
 
 
 def test_processing_in_place_transform_keeps_spot():

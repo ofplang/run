@@ -1,0 +1,41 @@
+# Pure-Data chain for the device-model propagation demo (dev-notes D27 F4b): a
+# `Count` value (view {value: Int}) flows from the entry through two device-less
+# `inc` steps to the returned output. With an echo device model, the job's entry
+# value reaches the final output unchanged -- demonstrating end-to-end value
+# propagation through the backend. No object flow, so no interface is needed.
+spec_version: "0.0"
+
+types:
+  Count:
+    domain: data
+    view:
+      value: { type: Int }
+
+processes:
+  inc:
+    kind: atomic
+    inputs:
+      x: { type: Count, phase: data }
+    outputs:
+      y: { type: Count, phase: data }
+
+  main:
+    kind: composite
+    inputs:
+      start: { type: Count, phase: data }
+    outputs:
+      result: { type: Count, phase: data }
+    body:
+      nodes:
+        - id: S1
+          process: inc
+          bind:
+            x: { from: inputs.start }
+        - id: S2
+          process: inc
+          bind:
+            x: { from: S1.y }
+      returns:
+        result: { from: S2.y }
+
+entry: main

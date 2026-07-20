@@ -99,6 +99,48 @@ def test_job_rejects_nonconformant_and_unknown_entries():
         unknown.run()
 
 
+COUNT_WF = str(FIXTURES / "count_chain.workflow.yaml")
+COUNT_ENV = str(FIXTURES / "count_chain.env.yaml")
+
+
+def _echo_inc(process, mode, inputs, output_schema):
+    """A device model for `inc`: echo the input `x` to every output port."""
+    return {port: inputs["x"] for port in output_schema}
+
+
+def test_device_model_propagates_job_value_end_to_end():
+    # With a device model, a supplied job value flows through the backend, down the
+    # two-step chain, to the returned output (D27 F4b) -- end-to-end propagation.
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, job={"start": {"value": 42}}, device_model=_echo_inc, random_seed=0,
+    )
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert runner.outputs == {"result": {"value": 42}}
+    # It reached the output via each step, not by chance.
+    assert runner.values.get(("S1",), "y") == {"value": 42}
+    assert runner.values.get(("S2",), "y") == {"value": 42}
+
+
+def test_without_device_model_outputs_are_defaults():
+    # No model -> outputs are input-independent typed defaults; the job value does
+    # not reach the output (Count's view default is {value: 0}).
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, job={"start": {"value": 42}}, random_seed=0)
+    runner.run()
+    assert runner.outputs == {"result": {"value": 0}}
+
+
+def test_device_model_output_is_contract_checked():
+    # A model that returns a non-conformant value is caught at poll (the F4a
+    # conformance check, now live under a device model).
+    def bad_model(process, mode, inputs, output_schema):
+        return {port: "not-an-int-record" for port in output_schema}
+
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, device_model=bad_model, random_seed=0)
+    with pytest.raises(RunnerError):
+        runner.run()
+
+
 def test_value_layer_is_deterministic():
     # Typed defaults are deterministic, so both poll modes agree on the output.
     a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)

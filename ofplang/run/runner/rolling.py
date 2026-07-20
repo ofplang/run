@@ -91,6 +91,7 @@ class RollingRunner:
         interface: dict | None = None,
         *,
         job: dict | None = None,
+        device_model=None,
         running_task_margin: int = 0,
         random_seed: int | None = None,
         poll_interval: int | None = 1,
@@ -103,7 +104,10 @@ class RollingRunner:
         # against a reduced copy of it (D21), while the backend keeps the full one.
         # Mode ids are pinned up front so they stay stable when modes are dropped.
         self._environment = _normalize_mode_ids(load_document(environment_path))
-        self.sim = Simulator(self._environment)  # the backend reads the environment itself
+        # The backend reads the environment itself. An optional device model (D27
+        # F4b) lets it compute outputs from inputs (default: input-independent typed
+        # defaults); a scenario concern injected from Python, like `duration_model`.
+        self.sim = Simulator(self._environment, device_model=device_model)
 
         # Value layer (D26). The runner owns view-value routing: `dataflow` is the
         # workflow's port-level routing view (reused from the scheduler's flattener,
