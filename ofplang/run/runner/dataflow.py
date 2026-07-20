@@ -15,9 +15,9 @@ drives, so the two always agree. The scheduler discards the port-level mapping o
 Pure Data arcs (it keeps only node-level precedence); D26-0 added `data_arcs` /
 `data_entry_inputs` to expose it for us here.
 
-This adapter is v0-lite (D26): it reads only the graph *structure* (node paths,
-ports, arcs, boundary). It does not resolve types or view schemas -- values are
-opaque in v0-lite -- so no §7 / §5.7 machinery is pulled in.
+This adapter reads only the graph *structure* (node paths, ports, arcs,
+boundary). It does not resolve types or view schemas -- that is `contracts.py`'s
+job (§7) -- so no §7 / §5.7 machinery is pulled in here.
 """
 
 from __future__ import annotations

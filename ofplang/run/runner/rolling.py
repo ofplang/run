@@ -105,8 +105,9 @@ class RollingRunner:
         # Mode ids are pinned up front so they stay stable when modes are dropped.
         self._environment = _normalize_mode_ids(load_document(environment_path))
         # The backend reads the environment itself. An optional device model (D27
-        # F4b) lets it compute outputs from inputs (default: input-independent typed
-        # defaults); a scenario concern injected from Python, like `duration_model`.
+        # F4b) computes outputs from inputs; without one the built-in
+        # `default_device_model` (type defaults + `objects.map` object carry) is
+        # used. A scenario concern injected from Python, like `duration_model`.
         self.sim = Simulator(self._environment, device_model=device_model)
 
         # Value layer (D26). The runner owns view-value routing: `dataflow` is the

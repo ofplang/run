@@ -1,9 +1,13 @@
-"""The simulated execution backend (dev-notes design.md D10-D25).
+"""The simulated execution backend (dev-notes design.md D10-D27).
 
 `Simulator` stands in for real hardware so the runner can be driven end to end
-without a lab. It knows only the physical world (D10): devices, spots,
-transporters, and opaque timed operations. It does not know workflows or plans --
-the runner keeps that provenance.
+without a lab. Its physical core knows only the physical world (D10): devices,
+spots, transporters, and opaque timed operations; it does not interpret workflows
+or plans -- the runner keeps that provenance. On top of that it carries the value
+seam (D26/D27): a dispatched operation may carry input values and an output
+signature, and at completion a *device model* produces the output values (see
+`default_device_model`). The device model receives the process definition and may
+read its structure, but the physical core still never interprets it.
 
 Contract (D14/D15/D21), summarised:
 
@@ -39,8 +43,10 @@ never trips these.
 Scope: duration variance is injected externally by passing a `duration` to a
 dispatch, not built in (D13). A down device only blocks new processing (D21).
 Operation failure is injected per capability (D25): a scheduled `(process, mode)`
-or `(transporter, route)` fails at its end. Data value computation remains out of
-scope (D12).
+or `(transporter, route)` fails at its end. View values are typed but still dummy
+(the built-in `default_device_model` fills type defaults and carries objects; a
+custom / real model computes them); Object identity itself is not yet tracked at
+the value level (D27).
 """
 
 from __future__ import annotations
