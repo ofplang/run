@@ -95,7 +95,8 @@ def default_device_model(process, mode, inputs, output_schema, definition):
     object pass-through keeps its view value with no per-process code. It performs no
     genuine computation; a real / custom device model does that on top (e.g. call
     this, then overwrite the computed outputs). (`objects.transform` Array ops are
-    not yet handled -- see the commented sketch below.)
+    deliberately not handled -- see the note below; supporting them here alone would
+    be meaningless without an Array<Object> transport substrate.)
 
     Reading the process's ``objects.map`` (and inputs) makes this default
     workflow-structure- and input-dependent -- a deliberate change from the pure,
@@ -109,12 +110,17 @@ def default_device_model(process, mode, inputs, output_schema, definition):
         # strip the namespace to the bare port name.
         outputs[out_ref.split(".", 1)[1]] = inputs[in_ref.split(".", 1)[1]]
 
-    # --- objects.transform (Array structural ops, §14.4) -- NOT YET SUPPORTED ---
-    # Sketch for future work, kept commented until we support it. v0 has three
-    # Array transform kinds; at the value (view) level an Array<T> is a list, so
-    # each is just a list reshape (the simulator handles the Object identities
-    # physically). Each entry is `{kind, inputs: {role: inputs.*}, outputs: {role:
-    # outputs.*}}`. Uncomment to enable.
+    # --- objects.transform (Array structural ops, §14.4) -- DEFERRED BY DESIGN ---
+    # v0 has three Array transform kinds; at the value (view) level an Array<T> is a
+    # list, so each is just a list reshape (below). But transform is fundamentally an
+    # Array<Object> operation, and Array<Object> has no transport substrate yet: the
+    # simulator tracks one Object per spot, and neither it nor the scheduler models an
+    # array of Objects flowing across spots with per-slot identity. Computing the
+    # reshape *here* alone would be a hollow feature -- nothing could route the
+    # Objects, and no fixture could exercise it. In practice a transform is usually
+    # interpreted via map / fold expansion, so this belongs with that future work
+    # (Array<Object> transport + map/fold), not as a standalone device-model reshape.
+    # The sketch below is kept only to record the value-level shape of each kind.
     #
     # def _port(ref):
     #     return ref.split(".", 1)[1]
