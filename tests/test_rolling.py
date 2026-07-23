@@ -59,9 +59,15 @@ def test_committed_activities_carry_provenance():
 def test_interface_workflow_seeds_and_delivers():
     # A workflow with an Object-bearing entry input: the runner seeds `sample` at
     # loader.stage (interface.inputs) and drives it through heat to output.slot.
-    doc = load_document(FIXTURES / "interface_load.document.yaml")
-    interface = doc["interface"]
-    runner = RollingRunner(IFACE_WF, IFACE_ENV, interface, random_seed=0)
+    # The boundary pins the Object entry on the loader and the Object return on the
+    # output rack (the projection feeds the scheduler the §6.8 interface constraint).
+    boundary = {
+        "boundary": {
+            "inputs": {"sample": {"spot": "loader.stage"}},
+            "outputs": {"result": {"spot": "output.slot"}},
+        }
+    }
+    runner = RollingRunner(IFACE_WF, IFACE_ENV, boundary, random_seed=0)
     status = runner.run()
     assert all(a["status"] == "completed" for a in status["activities"])
     # The interface is carried through unchanged (§6.8).
@@ -88,11 +94,11 @@ def test_cli_run_simple(tmp_path, capsys):
     assert all(a["status"] == "completed" for a in status["activities"])
 
 
-def test_cli_run_interface(tmp_path):
+def test_cli_run_boundary(tmp_path):
     out = tmp_path / "status.yaml"
-    iface_doc = str(FIXTURES / "interface_load.document.yaml")
+    boundary_doc = str(FIXTURES / "interface_load.boundary.yaml")
     code = main(
-        ["run", IFACE_WF, "--env", IFACE_ENV, "--interface", iface_doc, "--seed", "0", "-o", str(out)]
+        ["run", IFACE_WF, "--env", IFACE_ENV, "--boundary", boundary_doc, "--seed", "0", "-o", str(out)]
     )
     assert code == EXIT_OK
     status = load_document(out)

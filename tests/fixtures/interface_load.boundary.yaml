@@ -1,0 +1,10 @@
+# Run boundary (D28) for interface_load.workflow.yaml: the Object entry `sample`
+# starts on the loader, and the Object return `result` is delivered to the output
+# rack. Both are Object-bearing, so each names a spot; neither carries a view
+# value (Plate declares no view). This is the boundary the CLI end-to-end test
+# feeds via --boundary (replacing the former §6.8 interface document).
+boundary:
+  inputs:
+    sample: { spot: loader.stage }
+  outputs:
+    result: { spot: output.slot }

@@ -1,0 +1,9 @@
+boundary:
+  inputs:
+    start:
+      view:
+        value: 42
+  outputs:
+    result:
+      view:
+        value: 44

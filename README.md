@@ -32,9 +32,13 @@ without real hardware; the same dispatch contract targets real hardware later.
 > - **Value layer** — the runner resolves each port's type and view schema (§7),
 >   routes typed view values along the workflow's arcs (producer output → consumer
 >   input, across nested composites), contract-checks them, and assembles the
->   whole-workflow outputs. A caller supplies the entry values as a **job**
->   (`--job`); unsupplied entries default. Values are typed but still dummy — a real
->   device backend plugs into the same seam later.
+>   whole-workflow outputs. A caller supplies the whole-workflow I/O as a single
+>   **run boundary** (`--boundary`): one document with a per-port `{spot, view}`
+>   descriptor — `spot` places a boundary Object (§6.8), `view` supplies an input
+>   value — for the workflow's entry inputs and final outputs. Unsupplied entry
+>   views default. At run end the produced output views are echoed back into a
+>   result boundary of the same schema (`--boundary-out`). Values are typed but still
+>   dummy — a real device backend plugs into the same seam later.
 
 ## Install
 
@@ -54,22 +58,27 @@ pip install -e ../ofplang-schedule
 
 ```sh
 ofp-run run <workflow> --env <env>
-    [--interface DOC] [--job DOC] [--outputs FILE]
+    [--boundary DOC] [--boundary-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [-o OUT]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
 
 `run` drives a v0 workflow to completion by replanning as it goes: each tick it
 renders the committed history as a status, calls the scheduler, and dispatches the
-newly-runnable work. `--interface` supplies the boundary spots for a workflow with
-Object-bearing entry inputs (spec §6.8); `--job` supplies the whole-workflow input
-values (`{entry_port: view value}`, contract-checked; unsupplied entries default);
-`--outputs` writes the whole-workflow output values to a YAML file (a run-local
-artifact, separate from the status document); `--poll-interval` sets the fixed
-polling interval (default 1). `replay` runs a plan produced by `ofp-schedule`
-verbatim on the simulator (no value layer). Both write the final execution status
-as YAML (`-o`, else stdout). Exit codes: `0` success, `1` execution failed (an
-activity failed, or a replan is infeasible), `2` usage/input error.
+newly-runnable work. `--boundary` supplies the whole-workflow I/O as one document —
+a `boundary:` mapping with a `{spot, view}` descriptor per entry input / final
+output port. `spot` places a boundary Object on an environment spot (spec §6.8;
+Object ports only); `view` supplies an input's view value (unsupplied entry views
+default). The runner projects it into the scheduler's interface (spots only, so the
+scheduler stays value-independent) and the seeded input values. `--boundary-out`
+writes the result boundary — the same schema with each produced output's `view`
+filled in — a run-local artifact, separate from the value-free status document. On
+completion each pinned Object output is checked to have reached its declared spot.
+`--poll-interval` sets the fixed polling interval (default 1). `replay` runs a plan
+produced by `ofp-schedule` verbatim on the simulator (no value layer). Both write
+the final execution status as YAML (`-o`, else stdout). Exit codes: `0` success,
+`1` execution failed (an activity failed, or a replan is infeasible), `2`
+usage/input error.
 
 This tool is also intended to be exposed as the `run` subcommand of the umbrella
 `ofp` CLI (a separate repository in the `ofplang` organization).

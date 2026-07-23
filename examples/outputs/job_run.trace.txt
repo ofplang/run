@@ -1,6 +1,6 @@
 job run (supplied inputs -> computed outputs)
 ==============================================
-job (whole-workflow inputs) : {'start': {'value': 42}}
+boundary inputs             : {'start': {'view': {'value': 42}}}
 
 per-step values (device model `inc`: value + 1):
   S1.y = {'value': 43}

@@ -1,7 +1,0 @@
-# Interface boundary (§6.8) for pure_data.workflow.yaml: the entry plate `sample`
-# starts on the loader. No `now` and no started activities, so this drives an
-# initial plan / a fresh run.
-interface:
-  inputs:
-    sample: loader.stage
-activities: []

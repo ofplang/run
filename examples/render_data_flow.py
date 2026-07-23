@@ -13,7 +13,7 @@ outputs the backend produced, then the final whole-workflow outputs -- so the
 otherwise-internal value layer is visible. The backend generates typed default
 values shaped by each type's view schema (§7.4): a `Reading` becomes
 `{mean: 0.0, n: 0}`, a `Score` `{value: 0.0, ok: false}`. Entry inputs are seeded
-with typed defaults here (a run may instead supply a job of entry values);
+with typed defaults here (a run may instead supply input views in the boundary);
 producer outputs do not yet depend on inputs -- that arrives with a device model.
 
 Run it:
@@ -29,14 +29,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ofplang.run.runner import RollingRunner, load_document
+from ofplang.run.runner import RollingRunner
 from ofplang.run.runner.values import assemble_inputs
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
 WORKFLOW = HERE / "data_flow.workflow.yaml"
 ENVIRONMENT = HERE / "data_flow.env.yaml"
-DOCUMENT = HERE / "data_flow.document.yaml"
+
+# The run boundary (D28): the entry Object `sample` starts on the loader. Its view
+# is unsupplied (Plate defaults to an empty view record); `final_score` is Pure
+# Data, so it occupies no spot and is not pinned.
+BOUNDARY = {"boundary": {"inputs": {"sample": {"spot": "loader.stage"}}}}
 
 
 def _fmt_node(node) -> str:
@@ -50,8 +54,7 @@ def main() -> None:
 
     # Drive the workflow to completion. Event-boundary advance keeps the times
     # exact for a clean trace; the value layer is identical under either poll mode.
-    interface = load_document(DOCUMENT)["interface"]
-    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), interface, poll_interval=None, random_seed=0)
+    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), BOUNDARY, poll_interval=None, random_seed=0)
     status = runner.run()
 
     df = runner.dataflow

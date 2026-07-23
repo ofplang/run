@@ -1,0 +1,15 @@
+boundary:
+  inputs:
+    start:
+      view: 42
+    sample:
+      spot: loader.stage
+      view:
+        barcode: ABC
+  outputs:
+    result:
+      view: 44
+    plate_final:
+      spot: unloader.slot
+      view:
+        barcode: ABC

@@ -28,13 +28,27 @@ WF = str(FIXTURES / "nested_returns.workflow.yaml")
 ENV = str(FIXTURES / "pure_data.env.yaml")
 
 
-def _interface():
-    return load_document(FIXTURES / "pure_data.document.yaml")["interface"]
+def _boundary(sample=None, extra_inputs=None):
+    """A boundary doc pinning `sample` on the loader (the pure_data interface). An
+    optional `sample` view value is supplied (the job); `extra_inputs` adds raw port
+    descriptors (used to exercise the unknown-port error)."""
+    sample_desc = {"spot": "loader.stage"}
+    if sample is not None:
+        sample_desc["view"] = sample
+    inputs = {"sample": sample_desc}
+    if extra_inputs:
+        inputs.update(extra_inputs)
+    return {"boundary": {"inputs": inputs}}
+
+
+def _count_boundary(value):
+    """A boundary doc supplying the Pure Data `start` value for count_chain (no spot)."""
+    return {"boundary": {"inputs": {"start": {"view": {"value": value}}}}}
 
 
 @pytest.mark.parametrize("poll_interval", [None, 1])
 def test_value_layer_produces_whole_workflow_output(poll_interval):
-    runner = RollingRunner(WF, ENV, _interface(), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(WF, ENV, _boundary(), poll_interval=poll_interval, random_seed=0)
     status = runner.run()
 
     # The run completes normally.
@@ -64,7 +78,7 @@ def test_typed_values_are_view_shaped():
     # by each type's view schema (F2 typed defaults). `final_score` is a `Score`
     # (view {value: Float, ok: Bool}) returned from the nested analyze.
     runner = RollingRunner(
-        str(FIXTURES / "typed_returns.workflow.yaml"), ENV, _interface(), random_seed=0,
+        str(FIXTURES / "typed_returns.workflow.yaml"), ENV, _boundary(), random_seed=0,
     )
     status = runner.run()
     assert all(a["status"] == "completed" for a in status["activities"])
@@ -76,27 +90,27 @@ def test_typed_values_are_view_shaped():
 TYPED_WF = str(FIXTURES / "typed_returns.workflow.yaml")
 
 
-def test_job_supplies_and_defaults_entry_values():
-    # A supplied job value seeds the entry input (contract-checked); an unsupplied
+def test_boundary_supplies_and_defaults_entry_values():
+    # A supplied boundary view seeds the entry input (contract-checked); an unsupplied
     # one falls back to a typed default. `sample` is a Plate with view {barcode}.
-    with_job = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": "ABC"}}, random_seed=0)
-    with_job.run()
-    assert with_job.values.get((), "sample") == {"barcode": "ABC"}
+    with_view = RollingRunner(TYPED_WF, ENV, _boundary({"barcode": "ABC"}), random_seed=0)
+    with_view.run()
+    assert with_view.values.get((), "sample") == {"barcode": "ABC"}
 
-    without_job = RollingRunner(TYPED_WF, ENV, _interface(), random_seed=0)
-    without_job.run()
-    assert without_job.values.get((), "sample") == {"barcode": ""}  # typed default
+    without_view = RollingRunner(TYPED_WF, ENV, _boundary(), random_seed=0)
+    without_view.run()
+    assert without_view.values.get((), "sample") == {"barcode": ""}  # typed default
 
 
-def test_job_rejects_nonconformant_and_unknown_entries():
-    # A non-conformant job value and an unknown entry port are both rejected up front.
-    bad_value = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": 1}}, random_seed=0)
+def test_boundary_rejects_nonconformant_and_unknown_entries():
+    # A non-conformant view value is rejected at run (the seed conformance check); an
+    # unknown entry port is rejected up front, at boundary parse (construction).
+    bad_value = RollingRunner(TYPED_WF, ENV, _boundary({"barcode": 1}), random_seed=0)
     with pytest.raises(RunnerError):
         bad_value.run()
 
-    unknown = RollingRunner(TYPED_WF, ENV, _interface(), job={"nope": {"barcode": "X"}}, random_seed=0)
     with pytest.raises(RunnerError):
-        unknown.run()
+        RollingRunner(TYPED_WF, ENV, _boundary(extra_inputs={"nope": {"view": {"barcode": "X"}}}), random_seed=0)
 
 
 COUNT_WF = str(FIXTURES / "count_chain.workflow.yaml")
@@ -112,7 +126,7 @@ def test_device_model_propagates_job_value_end_to_end():
     # With a device model, a supplied job value flows through the backend, down the
     # two-step chain, to the returned output (D27 F4b) -- end-to-end propagation.
     runner = RollingRunner(
-        COUNT_WF, COUNT_ENV, job={"start": {"value": 42}}, device_model=_echo_inc, random_seed=0,
+        COUNT_WF, COUNT_ENV, _count_boundary(42), device_model=_echo_inc, random_seed=0,
     )
     status = runner.run()
     assert all(a["status"] == "completed" for a in status["activities"])
@@ -131,7 +145,7 @@ def test_device_model_receives_the_process_definition():
         seen[process] = definition
         return {port: inputs["x"] for port in output_schema}  # echo the Count
 
-    runner = RollingRunner(COUNT_WF, COUNT_ENV, job={"start": {"value": 1}}, device_model=capture, random_seed=0)
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, _count_boundary(1), device_model=capture, random_seed=0)
     runner.run()
     assert "inc" in seen
     definition = seen["inc"]
@@ -143,7 +157,7 @@ def test_without_device_model_computed_outputs_are_defaults():
     # No model -> the built-in default applies. `inc` declares no objects.map, so its
     # outputs are type defaults; the job value is not computed through (result is the
     # Count view default {value: 0}).
-    runner = RollingRunner(COUNT_WF, COUNT_ENV, job={"start": {"value": 42}}, random_seed=0)
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, _count_boundary(42), random_seed=0)
     runner.run()
     assert runner.outputs == {"result": {"value": 0}}
 
@@ -152,7 +166,7 @@ def test_default_carries_mapped_object_without_a_device_model():
     # The built-in default carries a mapped Object output even with no device model:
     # measure's plate_out is `objects.map: {outputs.plate_out: inputs.plate}`, so the
     # supplied plate flows through to it (its view value, {barcode: "XY"}).
-    runner = RollingRunner(TYPED_WF, ENV, _interface(), job={"sample": {"barcode": "XY"}}, random_seed=0)
+    runner = RollingRunner(TYPED_WF, ENV, _boundary({"barcode": "XY"}), random_seed=0)
     runner.run()
     assert runner.values.get(("Measure",), "plate_out") == {"barcode": "XY"}
 
@@ -168,25 +182,38 @@ def test_device_model_output_is_contract_checked():
         runner.run()
 
 
-def test_cli_writes_whole_workflow_outputs(tmp_path):
-    # `--outputs` writes the whole-workflow output values as a run-local YAML
-    # artifact (D27 F5), separate from the status document.
+def test_cli_writes_result_boundary(tmp_path):
+    # `--boundary-out` writes the result boundary document (D28): the same schema as
+    # --boundary, with each produced output's `view` filled in; a run-local artifact,
+    # separate from the status document. `final_score` is a Pure Data output (no spot).
+    import yaml
+
     from ofplang.run.cli import main
 
-    out = tmp_path / "outputs.yaml"
+    boundary_in = tmp_path / "boundary.yaml"
+    boundary_in.write_text(
+        yaml.safe_dump({"boundary": {"inputs": {"sample": {"spot": "loader.stage"}}}}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "boundary_out.yaml"
     code = main([
         "run", TYPED_WF, "--env", ENV,
-        "--interface", str(FIXTURES / "pure_data.document.yaml"),
-        "--outputs", str(out),
+        "--boundary", str(boundary_in),
+        "--boundary-out", str(out),
     ])
     assert code == 0
-    assert load_document(out) == {"final_score": {"value": 0.0, "ok": False}}
+    assert load_document(out) == {
+        "boundary": {
+            "inputs": {"sample": {"spot": "loader.stage"}},
+            "outputs": {"final_score": {"view": {"value": 0.0, "ok": False}}},
+        }
+    }
 
 
 def test_value_layer_is_deterministic():
     # Typed defaults are deterministic, so both poll modes agree on the output.
-    a = RollingRunner(WF, ENV, _interface(), poll_interval=None, random_seed=0)
-    b = RollingRunner(WF, ENV, _interface(), poll_interval=1, random_seed=0)
+    a = RollingRunner(WF, ENV, _boundary(), poll_interval=None, random_seed=0)
+    b = RollingRunner(WF, ENV, _boundary(), poll_interval=1, random_seed=0)
     a.run()
     b.run()
     assert a.outputs == b.outputs
@@ -204,11 +231,18 @@ FAIL_ENV = str(FIXTURES / "failure.env.yaml")
 def test_object_entry_and_object_return_end_to_end():
     # An Object entry input and an Object return: the final output follows the
     # return back to the producing atomic's recorded value.
-    interface = load_document(FIXTURES / "interface_load.document.yaml")["interface"]
+    # The boundary pins the Object entry on the loader and the Object return on the
+    # output rack (so the run-end delivery check, P3, applies to `result`).
+    boundary = {
+        "boundary": {
+            "inputs": {"sample": {"spot": "loader.stage"}},
+            "outputs": {"result": {"spot": "output.slot"}},
+        }
+    }
     runner = RollingRunner(
         str(FIXTURES / "interface_load.workflow.yaml"),
         str(FIXTURES / "interface_load.env.yaml"),
-        interface,
+        boundary,
         random_seed=0,
     )
     status = runner.run()
@@ -218,6 +252,24 @@ def test_object_entry_and_object_return_end_to_end():
     # The entry input was seeded at the boundary as a typed default (Plate declares
     # no view -> empty record).
     assert runner.values.get((), "sample") == {}
+
+
+def test_output_spot_delivery_check_flags_empty_spot():
+    # P3 (D28): a pinned Object output that is not on its declared spot at run end is
+    # an inconsistency, raised. A successful run with a pinned output always delivers
+    # (the §6.8 interface_out node holds the spot), so this exercises the guard
+    # directly: point the check at a valid but unoccupied spot and confirm it fires.
+    import dataclasses
+
+    runner = RollingRunner(
+        str(FIXTURES / "interface_load.workflow.yaml"),
+        str(FIXTURES / "interface_load.env.yaml"),
+        random_seed=0,
+    )
+    # output.slot is empty before any delivery; claim `result` should be there.
+    runner.boundary = dataclasses.replace(runner.boundary, output_spots={"result": "output.slot"})
+    with pytest.raises(RunnerError, match="did not reach its declared spot"):
+        runner._check_output_spots()
 
 
 def test_create_workflow_records_producer_but_has_no_outputs():

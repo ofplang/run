@@ -1,27 +1,28 @@
-"""Run a workflow with supplied inputs and see the outputs (dev-notes D27 F4/F5).
+"""Run a workflow with supplied inputs and see the outputs (dev-notes D28 / D27 F4).
 
 Scenario (see count_chain.workflow.yaml): a `Count` value (view {value: Int})
-enters from a supplied *job*, flows through two device-less `inc` steps, and is
+enters from the run boundary, flows through two device-less `inc` steps, and is
 returned as the whole-workflow output. This is the full value story the runner now
 supports:
 
-  * the caller supplies the whole-workflow inputs (the job), contract-checked (F4a);
+  * the caller supplies the whole-workflow inputs in the boundary, contract-checked;
   * a device model computes each step's outputs from its inputs (F4b) -- here `inc`
     adds one, so the value is transformed, not merely carried;
-  * the runner assembles the whole-workflow outputs and exposes them (F5).
+  * the runner assembles the whole-workflow outputs and echoes them back into the
+    result boundary (the same schema as the supplied boundary).
 
-So a job of `{start: {value: 42}}` becomes `{result: {value: 44}}` (42 -> +1 -> +1).
-The device model is the dummy stand-in for real device computation; a real backend
-would plug a real model at the same seam.
+So a boundary input of `{start: {value: 42}}` becomes `{result: {value: 44}}`
+(42 -> +1 -> +1). The device model is the dummy stand-in for real device
+computation; a real backend would plug a real model at the same seam.
 
 Run it:
 
     python examples/render_job_run.py
 
-It prints the job, each step's value, and the whole-workflow outputs, and writes
-examples/outputs/job_run.trace.txt and examples/outputs/job_run.outputs.yaml (the
-latter is what `ofp-run run --outputs FILE` would write). Requires the sibling
-`ofplang-schedule` (the runner replans through it).
+It prints the boundary inputs, each step's value, and the whole-workflow outputs,
+and writes examples/outputs/job_run.trace.txt and job_run.boundary.yaml (the latter
+is the result boundary, as `ofp-run run --boundary-out FILE` would write it).
+Requires the sibling `ofplang-schedule` (the runner replans through it).
 """
 
 from __future__ import annotations
@@ -37,8 +38,9 @@ OUT = HERE / "outputs"
 WORKFLOW = HERE / "count_chain.workflow.yaml"
 ENVIRONMENT = HERE / "count_chain.env.yaml"
 
-# The whole-workflow inputs supplied by the caller (a job).
-JOB = {"start": {"value": 42}}
+# The run boundary (D28): the whole-workflow inputs supplied by the caller. `start`
+# is Pure Data (a Count view), so it carries a `view` and no spot.
+BOUNDARY = {"boundary": {"inputs": {"start": {"view": {"value": 42}}}}}
 
 
 def inc_model(process, mode, inputs, output_schema, definition):
@@ -57,7 +59,7 @@ def main() -> None:
     # Event-boundary advance keeps the times exact for a clean trace; the value
     # layer is identical under either poll mode.
     runner = RollingRunner(
-        str(WORKFLOW), str(ENVIRONMENT), job=JOB, device_model=inc_model,
+        str(WORKFLOW), str(ENVIRONMENT), BOUNDARY, device_model=inc_model,
         poll_interval=None, random_seed=0,
     )
     status = runner.run()
@@ -65,7 +67,7 @@ def main() -> None:
     lines: list[str] = []
     lines.append("job run (supplied inputs -> computed outputs)")
     lines.append("=" * 46)
-    lines.append(f"job (whole-workflow inputs) : {JOB}")
+    lines.append(f"boundary inputs             : {BOUNDARY['boundary']['inputs']}")
     lines.append("")
     lines.append("per-step values (device model `inc`: value + 1):")
     # The two inc steps, in order; show the Count each produced.
@@ -76,15 +78,16 @@ def main() -> None:
 
     text = "\n".join(lines) + "\n"
     (OUT / "job_run.trace.txt").write_text(text, encoding="utf-8")
-    # The outputs artifact, as `ofp-run run --outputs FILE` would write it.
-    (OUT / "job_run.outputs.yaml").write_text(
-        yaml.safe_dump(runner.outputs, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    # The result boundary artifact, as `ofp-run run --boundary-out FILE` would write
+    # it: the same schema as the supplied boundary, with each output's view filled in.
+    (OUT / "job_run.boundary.yaml").write_text(
+        yaml.safe_dump(runner.result_boundary, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
 
     print(text, end="")
     print(f"makespan = {status['now']}")
     print(f"wrote {OUT / 'job_run.trace.txt'}")
-    print(f"wrote {OUT / 'job_run.outputs.yaml'}")
+    print(f"wrote {OUT / 'job_run.boundary.yaml'}")
 
 
 if __name__ == "__main__":

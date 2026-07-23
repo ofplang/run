@@ -5,8 +5,8 @@
 # input and output are named `current` / `next` instead, because they are distinct
 # values (before / after the count-up). A step takes `current` and `plate` and
 # returns `next` (= current + 1) and the same `plate`. This shows a Pure Data value
-# and an Object-bearing value flowing together; pairs with plate_chain.env.yaml and
-# plate_chain.document.yaml (the interface pins the plate's boundary spots).
+# and an Object-bearing value flowing together; pairs with plate_chain.env.yaml.
+# render_plate_chain.py supplies the run boundary (the plate's spots + view values).
 spec_version: "0.0"
 
 types:

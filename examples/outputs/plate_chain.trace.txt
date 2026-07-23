@@ -1,6 +1,6 @@
 plate chain (Int carried alongside an Object)
 ==============================================
-job (whole-workflow inputs) : {'start': 42, 'sample': {'barcode': 'ABC'}}
+boundary inputs             : {'start': {'view': 42}, 'sample': {'spot': 'loader.stage', 'view': {'barcode': 'ABC'}}}
 
 per-step values (device model: next = current + 1, plate carried through):
   S1.next  = 43

@@ -36,6 +36,7 @@ from __future__ import annotations
 import copy
 
 from ..simulator import Simulator
+from .boundary import parse_boundary
 from .contracts import Contracts, conforms, to_descriptor
 from .dataflow import from_workflow
 from .loader import load_document
@@ -82,15 +83,20 @@ def _reduce_environment(environment: dict, down: set[str]) -> dict:
 
 
 class RollingRunner:
-    """Drives workflow + environment (+ interface) to completion by replanning."""
+    """Drives workflow + environment (+ boundary) to completion by replanning.
+
+    `boundary` is the run I/O document (D28): a `boundary:` mapping with per-port
+    `{spot, view}` descriptors for the workflow's entry inputs and final outputs.
+    The runner projects it into the scheduler `interface` (spots only), the seed
+    `job` (input views), and the pinned output spots (checked at run end). None
+    means no boundary (no Object placement, all entry inputs defaulted)."""
 
     def __init__(
         self,
         workflow_path,
         environment_path,
-        interface: dict | None = None,
+        boundary: dict | None = None,
         *,
-        job: dict | None = None,
         device_model=None,
         running_task_margin: int = 0,
         random_seed: int | None = None,
@@ -130,13 +136,26 @@ class RollingRunner:
         # device model at dispatch so it can act on a process's declared structure
         # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
         self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
+        # The run boundary (D28): the single run-facing I/O document. Parsed against
+        # the resolved contracts into the pieces the run needs -- the §6.8 `interface`
+        # (spots only) handed to the scheduler, the `job` ({entry_port: view value})
+        # seeded at run start, and the Object outputs pinned to a delivery spot
+        # (checked at run end, P3). View values never reach the scheduler: the
+        # interface projection is value-free, so an unpinned output can never become a
+        # scheduling constraint on a replan. Structural boundary errors (an unknown
+        # port, a missing / stray spot) surface here, up front; a supplied view value's
+        # conformance is checked when it is seeded.
+        self.boundary = parse_boundary(boundary, self.contracts)
+        self.interface = self.boundary.interface
         # Whole-workflow input values (F4): {entry_port: view value}. Seeded at the
         # boundary at run start; a missing entry input falls back to a typed default.
-        self.job = dict(job or {})
+        self.job = self.boundary.job
         self.values = ValueStore()
         self.outputs: dict = {}
-
-        self.interface = interface or {}
+        # The result boundary (D28): the same-schema document echoing the produced
+        # output views, assembled at the end of a run (the CLI writes it to
+        # `--boundary-out`). Empty until `run()` completes.
+        self.result_boundary: dict = {}
         self.margin = running_task_margin
         self.seed = random_seed
         # Fixed-interval polling is the standard mode (D22): an integer polls every
@@ -227,9 +246,31 @@ class RollingRunner:
         # channel, not the §6/§7 document).
         self.outputs = collect_outputs(self.dataflow, self.values)
 
+        # On a run that completed, verify each pinned Object output actually reached
+        # its declared delivery spot (P3, D28). The §6.8 interface_out node holds the
+        # spot to the makespan, so a completed run must leave it occupied; an empty
+        # spot means the boundary delivery did not happen -- an inconsistency, raised.
+        # Skipped on a failed / stopped run (delivery legitimately may not have run).
+        if not self.failed:
+            self._check_output_spots()
+        # Echo the produced output views back into a result document of the same
+        # boundary schema (D28), for `--boundary-out`.
+        self.result_boundary = self.boundary.result(self.outputs)
+
         # A stopped run reports the work that never ran as cancelled (D25).
         cancelled = self._cancelled_activities() if self._stopping else None
         return build_status(self.log.records(), self.now, self.interface, self._last_time, cancelled)
+
+    def _check_output_spots(self) -> None:
+        """Verify every pinned Object output landed on its declared delivery spot
+        (P3, D28). The runner does not read spot state in normal operation (D15);
+        this is the one end-of-run sanity read. Raises `RunnerError` on a spot the
+        boundary delivery left empty."""
+        for port, spot in self.boundary.output_spots.items():
+            if self.sim.spot_state(spot) is None:
+                raise RunnerError(
+                    f"boundary output {port!r} did not reach its declared spot {spot!r}"
+                )
 
     def _replan_and_dispatch(self) -> list[dict]:
         """One normal tick: build the status from committed history, replan, and

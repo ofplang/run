@@ -84,8 +84,10 @@ pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 from ofplang.run.runner import RollingRunner  # noqa: E402
 
 
-def _interface():
-    return load_document(PD_DOC)["interface"]
+def _boundary():
+    """The run boundary for pure_data: pin the entry Object `sample` on the loader
+    (the same placement the pure_data interface fixture carries)."""
+    return {"boundary": {"inputs": {"sample": {"spot": "loader.stage"}}}}
 
 
 def _assert_pure_data_run(status: dict) -> None:
@@ -116,19 +118,19 @@ def _assert_pure_data_run(status: dict) -> None:
 
 def test_rolling_pure_data_event_boundary():
     # Event-boundary advance (exact, deterministic times).
-    runner = RollingRunner(PD_WF, PD_ENV, _interface(), poll_interval=None, random_seed=0)
+    runner = RollingRunner(PD_WF, PD_ENV, _boundary(), poll_interval=None, random_seed=0)
     _assert_pure_data_run(runner.run())
 
 
 def test_rolling_pure_data_fixed_interval():
     # Default fixed-interval polling (the standard mode).
-    runner = RollingRunner(PD_WF, PD_ENV, _interface(), random_seed=0)
+    runner = RollingRunner(PD_WF, PD_ENV, _boundary(), random_seed=0)
     _assert_pure_data_run(runner.run())
 
 
 def test_rolling_pure_data_round_trips_through_replans():
     # The run drives through several replan cycles, each feeding the committed
     # pure-data activity back to the scheduler.
-    runner = RollingRunner(PD_WF, PD_ENV, _interface(), poll_interval=None, random_seed=0)
+    runner = RollingRunner(PD_WF, PD_ENV, _boundary(), poll_interval=None, random_seed=0)
     runner.run()
     assert runner.ticks > 1

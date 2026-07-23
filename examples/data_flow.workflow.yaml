@@ -1,7 +1,7 @@
 # Value-flow example workflow (see examples/render_data_flow.py): a nested
 # composite with a non-empty `returns`, so a run produces a whole-workflow output
-# that flows through a nested composite boundary. It pairs with data_flow.env.yaml
-# and data_flow.document.yaml (the interface). Structure:
+# that flows through a nested composite boundary. It pairs with data_flow.env.yaml;
+# render_data_flow.py supplies the run boundary (the entry plate's spot). Structure:
 #
 #   sample --(object)--> Measure --(object)------> Finish
 #                           |                        ^

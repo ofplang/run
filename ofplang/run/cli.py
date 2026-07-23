@@ -3,7 +3,7 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
-        [--interface <doc>] [--job <doc>] [--outputs FILE]
+        [--boundary <doc>] [--boundary-out FILE]
         [--seed N] [--margin M] [--poll-interval D] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
@@ -53,15 +53,12 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
     r.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
     r.add_argument(
-        "--interface",
+        "--boundary",
         metavar="DOC",
-        help="execution document carrying the interface boundary constraint (§6.8)",
-    )
-    r.add_argument(
-        "--job",
-        metavar="DOC",
-        help="whole-workflow input values as {entry_port: view value} (YAML/JSON); "
-        "unsupplied entry inputs default (§7 view defaults)",
+        help="run boundary document (§6.8 / value layer): a `boundary:` mapping with "
+        "per-port {spot, view} descriptors for the workflow's entry inputs and final "
+        "outputs. `spot` places a boundary Object; `view` supplies an input value "
+        "(unsupplied entry inputs default)",
     )
     r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
     r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
@@ -74,10 +71,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
     r.add_argument(
-        "--outputs",
+        "--boundary-out",
         metavar="FILE",
-        help="write the whole-workflow output values {port: value} here (YAML); "
-        "a run-local artifact, not part of the §6/§7 status document",
+        help="write the result boundary document here (YAML): the same schema as "
+        "--boundary, with each produced output's `view` filled in; a run-local "
+        "artifact, not part of the §6/§7 status document",
     )
 
     # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
@@ -113,42 +111,37 @@ def _cmd_run(args) -> int:
             print(f"ofp-run: {label} not found: {path!r}", file=sys.stderr)
             return EXIT_USAGE
 
-    interface = None
-    if args.interface:
-        doc, err = _read_document(args.interface, "interface document")
+    # The run boundary (D28): the single run-facing I/O document (spot placement +
+    # input views). Passed to the runner verbatim; it parses / validates it against
+    # the workflow's contracts.
+    boundary = None
+    if args.boundary:
+        boundary, err = _read_document(args.boundary, "boundary document")
         if err is not None:
             return err
-        interface = doc.get("interface") if isinstance(doc, dict) else None
-
-    job = None
-    if args.job:
-        doc, err = _read_document(args.job, "job document")
-        if err is not None:
-            return err
-        if not isinstance(doc, dict):
-            print(f"ofp-run: job document must be a mapping: {args.job!r}", file=sys.stderr)
+        if not isinstance(boundary, dict):
+            print(f"ofp-run: boundary document must be a mapping: {args.boundary!r}", file=sys.stderr)
             return EXIT_USAGE
-        job = doc
 
-    runner = RollingRunner(
-        args.workflow,
-        args.env,
-        interface,
-        job=job,
-        running_task_margin=args.margin,
-        random_seed=args.seed,
-        poll_interval=args.poll_interval,
-    )
     try:
+        runner = RollingRunner(
+            args.workflow,
+            args.env,
+            boundary,
+            running_task_margin=args.margin,
+            random_seed=args.seed,
+            poll_interval=args.poll_interval,
+        )
         status = runner.run()
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    # The whole-workflow output values are a run-local artifact (D27 F5), written
-    # separately so the §6/§7 status document stays value-free.
-    if args.outputs:
-        Path(args.outputs).write_text(serialize_document(runner.outputs), encoding="utf-8")
+    # The result boundary is a run-local artifact (D28): the same schema as the
+    # supplied boundary with the produced output views filled in, written separately
+    # so the §6/§7 status document stays value-free.
+    if args.boundary_out:
+        Path(args.boundary_out).write_text(serialize_document(runner.result_boundary), encoding="utf-8")
 
     # An activity failure stops the run without raising: the status is still emitted
     # (it carries the failed / cancelled activities), but the run counts as failed.
