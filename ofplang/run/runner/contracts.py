@@ -73,6 +73,13 @@ class Nominal:
     name: str
     domain: str  # "data" | "object"
     view: dict = field(default_factory=dict)  # field name -> ResolvedType
+    # Type-level static view values (§7.4): field name -> its declared static value,
+    # for view fields that declare `value:`. Such a field is the same constant for
+    # every value of this type, so the runner projects it onto every view record of
+    # this type (D35), rather than a runtime default. Fields with no static value are
+    # absent here. validate has already checked each static value conforms to its
+    # field type, so it is trusted.
+    static_view: dict = field(default_factory=dict)
 
 
 ResolvedType = "Primitive | ArrayType | Nominal"
@@ -124,16 +131,38 @@ def conforms(value, resolved) -> bool:
 
 
 def default_value(resolved):
-    """A typed default value for `resolved`, mirroring the backend's generator
-    (D27 F2): a primitive's default, an empty array, or a record of its view
-    fields' defaults. Used runner-side to synthesise a value the runner is
-    responsible for -- an entry input the job did not supply, or an unconnected
-    input -- as a conformant view value (F4). The result always `conforms`."""
+    """A typed default value for `resolved`: a primitive's default, an empty array, or
+    a record of its view fields. A view field with a type-level static value (§7.4)
+    takes that static value; other fields take a typed default (D27 F2 / D35). Used
+    runner-side to synthesise a value the runner is responsible for -- an entry input
+    the job did not supply, or an unconnected input -- as a conformant view value (F4).
+    The result always `conforms`."""
     if isinstance(resolved, Primitive):
         return _PRIMITIVE_DEFAULTS[resolved.name]
     if isinstance(resolved, ArrayType):
         return []
-    return {field: default_value(field_type) for field, field_type in resolved.view.items()}
+    return {
+        field: resolved.static_view[field] if field in resolved.static_view else default_value(field_type)
+        for field, field_type in resolved.view.items()
+    }
+
+
+def with_static_views(value, resolved):
+    """Return `value` with every type-level static view field set to its declared
+    static value (§7.4 / D35). A static view field is the same constant for every value
+    of the type, so this is the correct view projection: the runner applies it wherever
+    it routes a value (a seeded / assembled input, a recorded output), so scripts and
+    contracts always see the static value rather than a stale runtime default.
+
+    A nominal's static fields are forced to their constants (option A: a differing
+    supplied / computed value is overwritten, since the field is type-fixed); an
+    Array's elements are each projected (so an Array of a type with static views is
+    handled); a primitive, or a nominal with no static fields, is returned unchanged."""
+    if isinstance(resolved, ArrayType):
+        return [with_static_views(item, resolved.element) for item in value] if isinstance(value, list) else value
+    if isinstance(resolved, Nominal) and resolved.static_view and isinstance(value, dict):
+        return {**value, **resolved.static_view}
+    return value
 
 
 # -- resolution --------------------------------------------------------------
@@ -169,8 +198,16 @@ def _build_registry(types_section: dict) -> dict:
         registry[name] = Nominal(name, spec.get("domain"), view={})
     for name, spec in (types_section or {}).items():
         view_raw = (spec or {}).get("view") or {}
-        view = {f: _parse((fs or {}).get("type", ""), registry) for f, fs in view_raw.items()}
-        registry[name] = replace(registry[name], view=view)
+        view: dict = {}
+        static_view: dict = {}
+        for f, fs in view_raw.items():
+            fs = fs or {}
+            view[f] = _parse(fs.get("type", ""), registry)
+            # A view field declaring `value:` is a type-level static view value (§7.4);
+            # record it so the runner projects it onto every value of this type (D35).
+            if "value" in fs:
+                static_view[f] = fs["value"]
+        registry[name] = replace(registry[name], view=view, static_view=static_view)
     return registry
 
 

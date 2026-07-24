@@ -38,7 +38,7 @@ import copy
 from ..simulator import Simulator
 from .boundary import parse_boundary
 from .contract_eval import evaluate, parse as parse_contract
-from .contracts import ArrayType, Contracts, conforms, to_descriptor
+from .contracts import ArrayType, Contracts, conforms, to_descriptor, with_static_views
 from .dataflow import from_workflow
 from .loader import load_document
 from .provenance import Committed, CommitLog
@@ -582,14 +582,23 @@ class RollingRunner:
                 # output is contract-checked against its port type (D27 F4): the F2
                 # defaults always conform, but a future device model / real backend
                 # (F4b) could emit a non-conformant value, caught here.
-                if "outputs" in observed_state:
+                outputs = observed_state.get("outputs")
+                if outputs is not None:
                     process = rec.activity["process"]
-                    for port, value in observed_state["outputs"].items():
-                        if not conforms(value, self.contracts.output_type(process, port)):
+                    normalized: dict = {}
+                    for port, value in outputs.items():
+                        resolved = self.contracts.output_type(process, port)
+                        if not conforms(value, resolved):
                             raise RunnerError(
                                 f"backend output {process}.{port!r} does not conform to its declared type"
                             )
-                    record_outputs(self.values, tuple(rec.activity["node"]), observed_state["outputs"])
+                        # Project type-level static view values onto the produced value
+                        # (D35): the stored / downstream / contract-visible value carries
+                        # the static constant even if the backend emitted a default (or a
+                        # differing value, option A).
+                        normalized[port] = with_static_views(value, resolved)
+                    record_outputs(self.values, tuple(rec.activity["node"]), normalized)
+                    outputs = normalized
                 # Postcondition contracts (§9 `ensures`, D32): checked once the outputs
                 # exist, over this invocation's assembled inputs and produced outputs. A
                 # violation is a runtime contract violation (§9.3): mark the (physically
@@ -598,8 +607,7 @@ class RollingRunner:
                 process = rec.activity.get("process")
                 if process is not None and self._contract_asts.get(process, {}).get("ensures"):
                     inputs = assemble_inputs(self.dataflow, self.contracts, self.values, rec.activity["node"])
-                    outputs = observed_state.get("outputs") or {}
-                    if self._violated_contract(process, "ensures", inputs, outputs) is not None:
+                    if self._violated_contract(process, "ensures", inputs, outputs or {}) is not None:
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True

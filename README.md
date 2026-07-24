@@ -78,6 +78,11 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   cancelled). Because non-script process outputs are still typed defaults, `ensures`
 >   bites mainly on script processes and boundary-supplied inputs until a real device
 >   backend computes physical outputs.
+> - **Static view values** (spec §7.4) — a type whose view field declares a `value:`
+>   fixes that field to a constant for every value of the type. The runner projects it
+>   onto every view record it routes, so a Python script reading the field and a
+>   contract referencing it both see the static value (not a runtime default). A value
+>   that carries a conflicting one is forced to the static value.
 
 ## Install
 

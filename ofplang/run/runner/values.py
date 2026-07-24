@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import conforms, default_value
+from .contracts import conforms, default_value, with_static_views
 from .runner import RunnerError
 
 
@@ -73,6 +73,11 @@ def seed_entry(dataflow, contracts, store: ValueStore, job: dict | None = None) 
                 raise RunnerError(f"job value for entry input {port!r} does not conform to its type")
         else:
             value = default_value(resolved) if resolved is not None else {}
+        # Project any type-level static view values onto the seeded value (D35), so a
+        # supplied job value with a stale static field is corrected and a default
+        # already carries them. The value store then always holds the static value.
+        if resolved is not None:
+            value = with_static_views(value, resolved)
         store.put((), port, value)
 
 
@@ -105,8 +110,10 @@ def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
             value = dataflow.literals[(node, port)]
             if resolved is not None and not conforms(value, resolved):
                 raise RunnerError(f"static literal for input {port!r} does not conform to its type")
-            result[port] = value
+            # A literal bound to a static-view type gets its static fields projected (D35).
+            result[port] = with_static_views(value, resolved) if resolved is not None else value
         else:
+            # `default_value` already carries static view values (D35).
             result[port] = default_value(resolved) if resolved is not None else {}
     return result
 

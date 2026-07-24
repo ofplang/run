@@ -1,0 +1,69 @@
+# Type-level static view values (spec §7.4 / dev-notes D35). The `Spec` type
+# declares a static view field `capacity = 96`: it is the same constant for every
+# value of that type. The runner must project it onto every view record of `Spec`,
+# so a Python script reading it and a contract referencing it both see 96 -- not a
+# runtime default.
+#
+#   Tag (script) --spec:Spec--> Use (script) --n:Int--> returns.n
+#
+# `Tag` deliberately returns `{"capacity": 5}` for its `Spec` output -- a value that
+# conflicts with the static value. Option A (D35): the runner forces the static
+# field to 96 when it records the output, so downstream `Use` sees capacity 96. `Use`
+# reads `s["capacity"]` in its script and asserts it via contracts:
+#   requires inputs.s.view.capacity == 96
+#   ensures  outputs.n.view == inputs.s.view.capacity * 2
+# The run completes with n = 192 only if static view values are honored. Pairs with
+# static_view.env.yaml (device-less `tag` / `use`).
+spec_version: "0.0"
+
+types:
+  Spec:
+    domain: data
+    view:
+      capacity: { type: Int, value: 96 }        # type-level static view value
+
+processes:
+
+  tag:
+    kind: atomic
+    inputs: {}
+    outputs:
+      spec: { type: Spec, phase: data }
+    script:
+      language: python
+      code: |
+        return {"spec": {"capacity": 5}}          # deliberately wrong; forced to 96 (option A)
+
+  use:
+    kind: atomic
+    inputs:
+      s: { type: Spec, phase: data }
+    outputs:
+      n: { type: Int, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.s.view.capacity == 96"
+      ensures:
+        - expr: "outputs.n.view == inputs.s.view.capacity * 2"
+    script:
+      language: python
+      code: |
+        return {"n": s["capacity"] * 2}
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs:
+      n: { type: Int, phase: data }
+    body:
+      nodes:
+        - id: Tag
+          process: tag
+        - id: Use
+          process: use
+          bind:
+            s: { from: Tag.spec }
+      returns:
+        n: { from: Use.n }
+
+entry: main
