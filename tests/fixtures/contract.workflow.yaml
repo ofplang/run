@@ -1,0 +1,71 @@
+# A workflow exercising runtime contract checking (spec §9 / dev-notes D32) over
+# script-computed data values.
+#
+#   inputs.raw --\                       Score.margin --> Report.m
+#                 > Score (script) ------< Score.margin --> returns.margin
+#   {value: 60} --/  margin                Report.doubled --> returns.doubled
+#   (static literal -> threshold)
+#
+# `score` is a Python script process (§22) with contracts (§9):
+#   * requires: the measured `raw` is non-negative (a precondition on its input);
+#   * ensures:  the produced `margin` equals `raw - threshold` (a postcondition
+#               relating its output to its inputs).
+# `report` doubles the margin. Both are Pure Data. At runtime the runner evaluates
+# `requires` before `score` runs and `ensures` after it completes; a violation of
+# either stops the run gracefully (D25), leaving `report` cancelled. Pairs with
+# contract.env.yaml (device-less `score` / `report`).
+spec_version: "0.0"
+
+processes:
+
+  score:
+    kind: atomic
+    inputs:
+      raw:       { type: Int, phase: data }
+      threshold: { type: Int, phase: data }
+    outputs:
+      margin: { type: Int, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.raw.view >= 0"
+      ensures:
+        - expr: "outputs.margin.view == inputs.raw.view - inputs.threshold.view"
+    script:
+      language: python
+      code: |
+        return {"margin": raw - threshold}
+
+  report:
+    kind: atomic
+    inputs:
+      m: { type: Int, phase: data }
+    outputs:
+      doubled: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"doubled": m * 2}
+
+  main:
+    kind: composite
+    inputs:
+      raw: { type: Int, phase: data }
+    outputs:
+      margin:  { type: Int, phase: data }
+      doubled: { type: Int, phase: data }
+    body:
+      nodes:
+        - id: Score
+          process: score
+          bind:
+            raw:       { from: inputs.raw }
+            threshold: { value: 60 }          # static literal (§11 / D30)
+        - id: Report
+          process: report
+          bind:
+            m: { from: Score.margin }
+      returns:
+        margin:  { from: Score.margin }
+        doubled: { from: Report.doubled }
+
+entry: main

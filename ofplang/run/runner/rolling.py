@@ -37,7 +37,8 @@ import copy
 
 from ..simulator import Simulator
 from .boundary import parse_boundary
-from .contracts import Contracts, conforms, to_descriptor
+from .contract_eval import evaluate, parse as parse_contract
+from .contracts import ArrayType, Contracts, conforms, to_descriptor
 from .dataflow import from_workflow
 from .loader import load_document
 from .provenance import Committed, CommitLog
@@ -136,6 +137,13 @@ class RollingRunner:
         # device model at dispatch so it can act on a process's declared structure
         # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
         self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
+        # Parsed contract expressions (§9 / D32), per atomic process:
+        # {process: {"requires": [(expr, ast)], "ensures": [(expr, ast)]}}. Only
+        # atomic processes are checked in this first cut (composite contracts are
+        # deferred); a process with no `contracts` section is absent. Parsed once up
+        # front, so a malformed expression surfaces here rather than mid-run (valid v0
+        # parses cleanly -- validate has already type-checked it, D32).
+        self._contract_asts = self._parse_contracts()
         # The run boundary (D28): the single run-facing I/O document. Parsed against
         # the resolved contracts into the pieces the run needs -- the §6.8 `interface`
         # (spots only) handed to the scheduler, the `job` ({entry_port: view value})
@@ -272,6 +280,69 @@ class RollingRunner:
                     f"boundary output {port!r} did not reach its declared spot {spot!r}"
                 )
 
+    def _parse_contracts(self) -> dict:
+        """Parse each atomic process's `contracts` (§9) into ASTs, keyed by process
+        and section (`requires` / `ensures`). Composite contracts are out of this
+        first cut's scope (D32), so composite defs are skipped; a process with no
+        `contracts` section produces no entry."""
+        result: dict = {}
+        for name, pdef in self._process_defs.items():
+            pdef = pdef or {}
+            if pdef.get("kind") != "atomic":
+                continue  # composite contracts deferred (scope A)
+            contracts = pdef.get("contracts") or {}
+            parsed: dict = {}
+            for section in ("requires", "ensures"):
+                exprs = [
+                    (item["expr"], parse_contract(item["expr"]))
+                    for item in (contracts.get(section) or [])
+                    if item and item.get("expr") is not None
+                ]
+                if exprs:
+                    parsed[section] = exprs
+            if parsed:
+                result[name] = parsed
+        return result
+
+    def _contract_resolver(self, process: str, inputs: dict, outputs: dict):
+        """Build the `resolve(scope, port, fields)` callback `contract_eval` needs:
+        map a `.view` reference to this invocation's actual view value. A bare `.view`
+        is the value itself (a primitive scalar or a view record); `.view.length` on
+        an Array is its element count; `.view.<field>` on a nominal is that view
+        field (§9.1)."""
+        def resolve(scope: str, port: str, fields: tuple):
+            value = (inputs if scope == "inputs" else outputs)[port]
+            if not fields:
+                return value
+            rtype = (
+                self.contracts.input_type(process, port)
+                if scope == "inputs"
+                else self.contracts.output_type(process, port)
+            )
+            if isinstance(rtype, ArrayType):
+                return len(value)  # the only Array view field is `length`
+            return value[fields[0]]  # nominal view record field
+
+        return resolve
+
+    def _violated_contract(self, process: str, section: str, inputs: dict, outputs: dict):
+        """Return the first violated `section` (requires / ensures) contract
+        expression of `process`, or None if all hold. A contract that evaluates false
+        -- or whose runtime evaluation errors (e.g. division by zero on runtime
+        values, §9.2) -- is a runtime contract violation (§9.3)."""
+        exprs = self._contract_asts.get(process, {}).get(section)
+        if not exprs:
+            return None
+        resolve = self._contract_resolver(process, inputs, outputs)
+        for expr, ast in exprs:
+            try:
+                ok = evaluate(ast, resolve)
+            except Exception:
+                return expr  # a runtime evaluation error is a violation
+            if not ok:
+                return expr
+        return None
+
     def _replan_and_dispatch(self) -> list[dict]:
         """One normal tick: build the status from committed history, replan, and
         dispatch every pending activity that can start now. Returns the plan's
@@ -311,6 +382,10 @@ class RollingRunner:
         # finished by now (we polled on the previous advance), so the backend's
         # preconditions hold.
         for act in pending:
+            # A `requires` violation in `_commit_start` sets `_stopping` (D32); stop
+            # dispatching the rest of this tick's pending work at once (D25).
+            if self._stopping:
+                break
             if int(act["start"]) <= self.now:
                 self._commit_start(act)
         return pending
@@ -359,6 +434,17 @@ class RollingRunner:
             # records inputs but does not yet use them (F4b).
             output_schema = self._output_schemas.get(activity["process"], {})
             inputs = assemble_inputs(self.dataflow, self.contracts, self.values, activity["node"])
+            # Precondition contracts (§9 `requires`, D32): checked before the op runs,
+            # over its assembled inputs. A violation must prevent the op from running,
+            # so the activity is recorded `failed` and never dispatched, stopping the
+            # run gracefully (D25) -- like an observed activity failure, but caught up
+            # front. `requires` may reference only inputs (§9.1), so outputs is empty.
+            violated = self._violated_contract(activity["process"], "requires", inputs, {})
+            if violated is not None:
+                self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
+                self.failed = True
+                self._stopping = True
+                return
             uuid = self.sim.dispatch_processing(
                 activity["process"], activity["mode"], duration=actual,
                 output_schema=output_schema, inputs=inputs,
@@ -404,6 +490,19 @@ class RollingRunner:
                                 f"backend output {process}.{port!r} does not conform to its declared type"
                             )
                     record_outputs(self.values, tuple(rec.activity["node"]), observed_state["outputs"])
+                # Postcondition contracts (§9 `ensures`, D32): checked once the outputs
+                # exist, over this invocation's assembled inputs and produced outputs. A
+                # violation is a runtime contract violation (§9.3): mark the (physically
+                # completed) activity `failed` and stop the run gracefully (D25). Only
+                # processing activities carry a `process` (a transport leg does not).
+                process = rec.activity.get("process")
+                if process is not None and self._contract_asts.get(process, {}).get("ensures"):
+                    inputs = assemble_inputs(self.dataflow, self.contracts, self.values, rec.activity["node"])
+                    outputs = observed_state.get("outputs") or {}
+                    if self._violated_contract(process, "ensures", inputs, outputs) is not None:
+                        rec.status = "failed"
+                        self.failed = True
+                        self._stopping = True
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now

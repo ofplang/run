@@ -57,6 +57,19 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   scheduler's estimate of the compute cost. Scripts run with full Python builtins
 >   and no import restriction (§22.3 permits an implementation to restrict these;
 >   this one does not).
+> - **Contracts** (spec §9) — an atomic process may declare `contracts` with
+>   `requires` (preconditions over `inputs.*.view`) and `ensures` (postconditions
+>   over `inputs.*.view` and `outputs.*.view`). The runner evaluates them at
+>   runtime against the actual view values: `requires` before the operation runs
+>   (a violation stops it before dispatch), `ensures` after it completes. A
+>   violation — or a runtime evaluation error — stops the run gracefully like any
+>   activity failure (`failed` + downstream `cancelled`, exit 1). Static /
+>   graph-time contract checking (a fully-constant contract that is statically
+>   false, type errors, bad references) is `ofplang-validate`'s job and is not
+>   repeated here. Only atomic-process contracts are checked; composite-process
+>   contracts are not yet evaluated. Because non-script process outputs are still
+>   typed defaults, `ensures` bites mainly on script processes and boundary-supplied
+>   inputs until a real device backend computes physical outputs.
 
 ## Install
 
