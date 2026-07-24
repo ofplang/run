@@ -70,10 +70,14 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   entry composite (`main`): the entry composite's `requires` is evaluated at run
 >   start over the whole-workflow inputs (a violation stops the run before any work
 >   runs) and its `ensures` at run end over the whole-workflow inputs and outputs (a
->   violation marks the completed run failed). Nested composite-process contracts are
->   not yet evaluated. Because non-script process outputs are still typed defaults,
->   `ensures` bites mainly on script processes and boundary-supplied inputs until a
->   real device backend computes physical outputs.
+>   violation marks the completed run failed). Nested composite contracts are checked
+>   too, at each composite invocation's value boundary: its `requires` once its inputs
+>   are available (for an input fed by an upstream process this is mid-run, before the
+>   composite's body runs) and its `ensures` once its outputs are, a violation
+>   stopping the run gracefully at the composite boundary (its not-yet-run body
+>   cancelled). Because non-script process outputs are still typed defaults, `ensures`
+>   bites mainly on script processes and boundary-supplied inputs until a real device
+>   backend computes physical outputs.
 
 ## Install
 

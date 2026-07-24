@@ -145,9 +145,15 @@ class RollingRunner:
         # than mid-run (valid v0 parses cleanly -- validate has already type-checked it).
         self._contract_asts = self._parse_contracts()
         # Whether the entry process is a composite (the usual case). Its contracts are
-        # the whole-workflow envelope, checked at run start / run end (D32 Phase 1); an
-        # atomic entry is instead a single activity, checked on the activity path.
+        # the whole-workflow envelope, checked at run start / run end (D33); an atomic
+        # entry is instead a single activity, checked on the activity path.
         self._entry_is_composite = (self._process_defs.get(self.contracts.entry) or {}).get("kind") == "composite"
+        # Nested composite contract checks (D34): the composite invocation boundaries
+        # (keyed by node path) and the per-invocation sets of already-checked contracts,
+        # so each `requires` / `ensures` fires once, when its values become available.
+        self._composites = self.dataflow.composites
+        self._checked_requires: set = set()
+        self._checked_ensures: set = set()
         # The run boundary (D28): the single run-facing I/O document. Parsed against
         # the resolved contracts into the pieces the run needs -- the §6.8 `interface`
         # (spots only) handed to the scheduler, the `job` ({entry_port: view value})
@@ -237,6 +243,11 @@ class RollingRunner:
                 self.failed = True
                 self._stopping = True
 
+        # Nested composite contracts whose values are already available at run start
+        # (inputs bound only to the boundary / literals) are checked now, before any
+        # dispatch -- so a `requires` violation still precedes the composite's body (D34).
+        self._check_ready_composites()
+
         while True:
             self.ticks += 1
             if self.ticks > self.max_ticks:
@@ -263,6 +274,9 @@ class RollingRunner:
             self.now = self._next_time(pending)
             self.sim.advance(self.now)
             self._poll()
+            # A poll may have recorded the last value a nested composite's contract was
+            # waiting on -- check any that just became ready (D34).
+            self._check_ready_composites()
 
         # Assemble the whole-workflow outputs from the produced values (D26); exposed
         # via `self.outputs` and `self.values.snapshot()` (v0-lite: a runner-internal
@@ -306,20 +320,18 @@ class RollingRunner:
                 )
 
     def _parse_contracts(self) -> dict:
-        """Parse each process's `contracts` (§9) into ASTs, keyed by process and
-        section (`requires` / `ensures`). Phase 1 covers atomic processes and the
-        top-level entry composite; nested composite contracts are deferred (their
-        boundary mappings are not exposed by the flattener). A process with no
+        """Parse every process's `contracts` (§9) into ASTs, keyed by process and
+        section (`requires` / `ensures`). All process kinds are parsed here; where each
+        is *checked* is decided at run time by the process's role -- an atomic process
+        on the activity path (D32), the entry composite at the run boundary (D33), a
+        nested composite when its values become available (D34). A process with no
         `contracts` section produces no entry."""
         result: dict = {}
         for name, pdef in self._process_defs.items():
             pdef = pdef or {}
-            # Atomic processes are checked per activity; the entry composite is the
-            # whole-workflow envelope (Phase 1). Any other composite is deferred.
-            is_entry_composite = name == self.contracts.entry and pdef.get("kind") == "composite"
-            if pdef.get("kind") != "atomic" and not is_entry_composite:
-                continue
             contracts = pdef.get("contracts") or {}
+            if not contracts:
+                continue
             parsed: dict = {}
             for section in ("requires", "ensures"):
                 exprs = [
@@ -379,6 +391,57 @@ class RollingRunner:
             if not ok:
                 return expr
         return None
+
+    def _composite_ready(self, mapping: dict) -> bool:
+        """Whether every value-store key in `mapping` (a composite's inputs or outputs,
+        port -> (node, port)) has been produced / seeded. Literal-bound ports are not
+        in `mapping`, so they never gate readiness (their value is always available)."""
+        return all(self.values.has(node, port) for (node, port) in mapping.values())
+
+    def _composite_values(self, mapping: dict, literals: dict) -> dict:
+        """A composite's port -> view value map: each routed port read from the value
+        store, plus each literal-bound port's constant."""
+        values = {cport: self.values.get(node, port) for cport, (node, port) in mapping.items()}
+        values.update(literals)
+        return values
+
+    def _check_ready_composites(self) -> None:
+        """Check each nested composite invocation's contracts (§9 / D34) as soon as its
+        values are available: `requires` once all its inputs are present, `ensures`
+        once all its inputs and outputs are. Each invocation is checked once (tracked in
+        `_checked_requires` / `_checked_ensures`). A violation stops the run gracefully
+        (D25) at the composite boundary -- no single activity is marked failed, like the
+        entry composite (D33). Skipped once the run is already stopping."""
+        if self._stopping:
+            return
+        for path, b in self._composites.items():
+            asts = self._contract_asts.get(b.process)
+            if not asts:
+                continue  # this composite declares no contracts
+            # `requires`: over the composite's inputs, checked before its body's
+            # input-dependent activities can run (they wait on the same values).
+            if "requires" in asts and path not in self._checked_requires and self._composite_ready(b.inputs):
+                self._checked_requires.add(path)
+                inputs = self._composite_values(b.inputs, b.input_literals)
+                if self._violated_contract(b.process, "requires", inputs, {}) is not None:
+                    self.failed = True
+                    self._stopping = True
+                    return
+            # `ensures`: over the composite's inputs and outputs, checked once its
+            # outputs exist (before any downstream consumer of them runs).
+            if (
+                "ensures" in asts
+                and path not in self._checked_ensures
+                and self._composite_ready(b.inputs)
+                and self._composite_ready(b.outputs)
+            ):
+                self._checked_ensures.add(path)
+                inputs = self._composite_values(b.inputs, b.input_literals)
+                outputs = self._composite_values(b.outputs, b.output_literals)
+                if self._violated_contract(b.process, "ensures", inputs, outputs) is not None:
+                    self.failed = True
+                    self._stopping = True
+                    return
 
     def _replan_and_dispatch(self) -> list[dict]:
         """One normal tick: build the status from committed history, replan, and

@@ -1,0 +1,78 @@
+# Contracts on a NESTED composite (spec §9 / dev-notes D34 Phase 2). The composite
+# `wrap` is invoked inside `main` and carries `requires` / `ensures`; the runner
+# checks them at the composite's value boundary -- `requires` once its input is
+# available, `ensures` once its output is -- even though `wrap` is flattened away.
+#
+#   inputs.a --> Pre (script) --p--> [ wrap: Inc (script) --y--> out ] --> returns.r
+#                                     ^requires inp>=0    ^ensures out==inp+1
+#
+# `wrap.inp` is fed by the upstream atomic `Pre` (not the boundary), so `wrap`'s
+# `requires` is genuinely checked mid-run, after `Pre` completes and before `Inc`
+# (wrap's body) runs. Everything is Pure Data (script processes). Pairs with
+# nested_composite_contract.env.yaml (device-less `pre` / `inc`).
+spec_version: "0.0"
+
+processes:
+
+  pre:
+    kind: atomic
+    inputs:
+      x: { type: Int, phase: data }
+    outputs:
+      p: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"p": x}
+
+  inc:
+    kind: atomic
+    inputs:
+      x: { type: Int, phase: data }
+    outputs:
+      y: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"y": x + 1}
+
+  wrap:
+    kind: composite
+    inputs:
+      inp: { type: Int, phase: data }
+    outputs:
+      out: { type: Int, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.inp.view >= 0"
+      ensures:
+        - expr: "outputs.out.view == inputs.inp.view + 1"
+    body:
+      nodes:
+        - id: Inc
+          process: inc
+          bind:
+            x: { from: inputs.inp }
+      returns:
+        out: { from: Inc.y }
+
+  main:
+    kind: composite
+    inputs:
+      a: { type: Int, phase: data }
+    outputs:
+      r: { type: Int, phase: data }
+    body:
+      nodes:
+        - id: Pre
+          process: pre
+          bind:
+            x: { from: inputs.a }
+        - id: W
+          process: wrap
+          bind:
+            inp: { from: Pre.p }
+      returns:
+        r: { from: W.out }
+
+entry: main

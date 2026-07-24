@@ -36,6 +36,22 @@ NodePath = tuple  # tuple[str, ...]
 
 
 @dataclass(frozen=True)
+class CompositeBoundary:
+    """One nested composite invocation's value-layer boundary (D34), for its contract
+    checks. `inputs` / `outputs` map each of the composite's own ports to the value-
+    store key `(node, port)` that supplies it (a producing atomic, or the boundary
+    `((), name)`); `input_literals` / `output_literals` hold ports bound to / returning
+    a static literal. `process` is the composite process name (its contracts are keyed
+    by it)."""
+
+    process: str
+    inputs: dict          # port -> (node, port) value-store key
+    input_literals: dict  # port -> literal value
+    outputs: dict         # port -> (node, port) value-store key
+    output_literals: dict  # port -> literal value
+
+
+@dataclass(frozen=True)
 class Dataflow:
     """The routing view of a workflow, derived from the scheduler's flattened graph.
 
@@ -63,6 +79,13 @@ class Dataflow:
     # Pure Data). The runner seeds these as the port's value in place of a typed
     # default. Recorded by the scheduler's flattener (`data_literals`, D30).
     literals: dict
+    # Nested composite invocation boundaries (D34), keyed by the composite's node
+    # path -> `CompositeBoundary`. Each maps the composite's own input / output ports
+    # to the value-store key `(node, port)` that supplies them (or a static literal),
+    # so the runner can evaluate the composite's contracts against those values even
+    # though the composite is flattened away. The top-level entry composite `()` is
+    # not here (its contracts are checked via the whole-workflow handles, D33).
+    composites: dict
 
 
 def from_workflow(workflow_path) -> Dataflow:
@@ -112,4 +135,18 @@ def from_workflow(workflow_path) -> Dataflow:
     # spliced to the leaf atomic that consumes them.
     literals = {(endpoint.node, endpoint.port): value for endpoint, value in workflow.data_literals.items()}
 
-    return Dataflow(process_of, in_ports, out_ports, input_source, entry_ports, returns, literals)
+    # Nested composite boundaries (D34): convert each schedule `CompositeIO`'s
+    # Endpoints into value-store keys `(node, port)`, so the runner can read a
+    # composite port's value straight from the store (or a literal).
+    composites = {
+        path: CompositeBoundary(
+            process=io.process,
+            inputs={port: (ep.node, ep.port) for port, ep in io.inputs.items()},
+            input_literals=dict(io.input_literals),
+            outputs={port: (ep.node, ep.port) for port, ep in io.outputs.items()},
+            output_literals=dict(io.output_literals),
+        )
+        for path, io in workflow.composites.items()
+    }
+
+    return Dataflow(process_of, in_ports, out_ports, input_source, entry_ports, returns, literals, composites)
