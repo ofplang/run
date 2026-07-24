@@ -137,13 +137,17 @@ class RollingRunner:
         # device model at dispatch so it can act on a process's declared structure
         # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
         self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
-        # Parsed contract expressions (§9 / D32), per atomic process:
-        # {process: {"requires": [(expr, ast)], "ensures": [(expr, ast)]}}. Only
-        # atomic processes are checked in this first cut (composite contracts are
-        # deferred); a process with no `contracts` section is absent. Parsed once up
-        # front, so a malformed expression surfaces here rather than mid-run (valid v0
-        # parses cleanly -- validate has already type-checked it, D32).
+        # Parsed contract expressions (§9 / D32), per process:
+        # {process: {"requires": [(expr, ast)], "ensures": [(expr, ast)]}}. Checked for
+        # each atomic process and for the top-level entry composite (Phase 1); nested
+        # composite contracts are deferred. A process with no `contracts` section is
+        # absent. Parsed once up front, so a malformed expression surfaces here rather
+        # than mid-run (valid v0 parses cleanly -- validate has already type-checked it).
         self._contract_asts = self._parse_contracts()
+        # Whether the entry process is a composite (the usual case). Its contracts are
+        # the whole-workflow envelope, checked at run start / run end (D32 Phase 1); an
+        # atomic entry is instead a single activity, checked on the activity path.
+        self._entry_is_composite = (self._process_defs.get(self.contracts.entry) or {}).get("kind") == "composite"
         # The run boundary (D28): the single run-facing I/O document. Parsed against
         # the resolved contracts into the pieces the run needs -- the §6.8 `interface`
         # (spots only) handed to the scheduler, the `job` ({entry_port: view value})
@@ -222,6 +226,17 @@ class RollingRunner:
             self.sim.place(spot)
         seed_entry(self.dataflow, self.contracts, self.values, self.job)
 
+        # Whole-workflow precondition contracts (§9 `requires` on the entry composite,
+        # D32 Phase 1): checked once the boundary inputs are seeded, before any work is
+        # dispatched. A violation stops the run before it starts (graceful, D25): no
+        # activity runs, `self.failed`/`_stopping` are set, and the loop below breaks
+        # immediately (nothing is running), so the final status is emptily terminal.
+        entry = self.contracts.entry
+        if self._entry_is_composite and self._contract_asts.get(entry, {}).get("requires"):
+            if self._violated_contract(entry, "requires", self._main_contract_inputs(), {}) is not None:
+                self.failed = True
+                self._stopping = True
+
         while True:
             self.ticks += 1
             if self.ticks > self.max_ticks:
@@ -261,6 +276,16 @@ class RollingRunner:
         # Skipped on a failed / stopped run (delivery legitimately may not have run).
         if not self.failed:
             self._check_output_spots()
+            # Whole-workflow postcondition contracts (§9 `ensures` on the entry
+            # composite, D32 Phase 1): checked once the outputs are assembled, over the
+            # boundary inputs and produced outputs. A violation is a runtime contract
+            # violation (§9.3): set `self.failed` (exit 1). The activities stay
+            # `completed` -- the failure is at the whole-workflow boundary, not any one
+            # activity. Only checked on an otherwise-successful run (the guard above).
+            entry = self.contracts.entry
+            if self._entry_is_composite and self._contract_asts.get(entry, {}).get("ensures"):
+                if self._violated_contract(entry, "ensures", self._main_contract_inputs(), self.outputs) is not None:
+                    self.failed = True
         # Echo the produced output views back into a result document of the same
         # boundary schema (D28), for `--boundary-out`.
         self.result_boundary = self.boundary.result(self.outputs)
@@ -281,15 +306,19 @@ class RollingRunner:
                 )
 
     def _parse_contracts(self) -> dict:
-        """Parse each atomic process's `contracts` (§9) into ASTs, keyed by process
-        and section (`requires` / `ensures`). Composite contracts are out of this
-        first cut's scope (D32), so composite defs are skipped; a process with no
+        """Parse each process's `contracts` (§9) into ASTs, keyed by process and
+        section (`requires` / `ensures`). Phase 1 covers atomic processes and the
+        top-level entry composite; nested composite contracts are deferred (their
+        boundary mappings are not exposed by the flattener). A process with no
         `contracts` section produces no entry."""
         result: dict = {}
         for name, pdef in self._process_defs.items():
             pdef = pdef or {}
-            if pdef.get("kind") != "atomic":
-                continue  # composite contracts deferred (scope A)
+            # Atomic processes are checked per activity; the entry composite is the
+            # whole-workflow envelope (Phase 1). Any other composite is deferred.
+            is_entry_composite = name == self.contracts.entry and pdef.get("kind") == "composite"
+            if pdef.get("kind") != "atomic" and not is_entry_composite:
+                continue
             contracts = pdef.get("contracts") or {}
             parsed: dict = {}
             for section in ("requires", "ensures"):
@@ -303,6 +332,14 @@ class RollingRunner:
             if parsed:
                 result[name] = parsed
         return result
+
+    def _main_contract_inputs(self) -> dict:
+        """The entry composite's input view values, for its own whole-workflow contract
+        checks (§9 on `main`, D32 Phase 1): each declared entry input read from the
+        boundary-seeded value store. Every entry input is seeded at run start
+        (`seed_entry`), so all are present."""
+        entry = self.contracts.entry
+        return {port: self.values.get((), port) for port in self.contracts.processes[entry].inputs}
 
     def _contract_resolver(self, process: str, inputs: dict, outputs: dict):
         """Build the `resolve(scope, port, fields)` callback `contract_eval` needs:

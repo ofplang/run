@@ -1,0 +1,52 @@
+# A workflow with contracts on the top-level composite `main` (spec §9 / dev-notes
+# D32 Phase 1). The whole-workflow precondition and postcondition are checked at the
+# run boundary -- `requires` over the run's inputs at the start, `ensures` over the
+# run's inputs and outputs at the end -- not on any single activity.
+#
+#   inputs.raw --\                       Score.margin --> returns.margin
+#                 > Score (script) ------<
+#   {value: 60} --/  margin
+#
+# `main.requires` demands a non-negative `raw`; `main.ensures` demands the returned
+# `margin` equals `raw - 60`. The inner `score` script (Pure Data) computes it. A
+# violation of either stops the run gracefully (D25): a `requires` failure before any
+# work runs, an `ensures` failure at the end (activities stay completed). Pairs with
+# composite_contract.env.yaml (device-less `score`).
+spec_version: "0.0"
+
+processes:
+
+  score:
+    kind: atomic
+    inputs:
+      raw:       { type: Int, phase: data }
+      threshold: { type: Int, phase: data }
+    outputs:
+      margin: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"margin": raw - threshold}
+
+  main:
+    kind: composite
+    inputs:
+      raw: { type: Int, phase: data }
+    outputs:
+      margin: { type: Int, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.raw.view >= 0"
+      ensures:
+        - expr: "outputs.margin.view == inputs.raw.view - 60"
+    body:
+      nodes:
+        - id: Score
+          process: score
+          bind:
+            raw:       { from: inputs.raw }
+            threshold: { value: 60 }
+      returns:
+        margin: { from: Score.margin }
+
+entry: main

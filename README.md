@@ -66,10 +66,14 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   activity failure (`failed` + downstream `cancelled`, exit 1). Static /
 >   graph-time contract checking (a fully-constant contract that is statically
 >   false, type errors, bad references) is `ofplang-validate`'s job and is not
->   repeated here. Only atomic-process contracts are checked; composite-process
->   contracts are not yet evaluated. Because non-script process outputs are still
->   typed defaults, `ensures` bites mainly on script processes and boundary-supplied
->   inputs until a real device backend computes physical outputs.
+>   repeated here. Contracts are checked on atomic processes and on the top-level
+>   entry composite (`main`): the entry composite's `requires` is evaluated at run
+>   start over the whole-workflow inputs (a violation stops the run before any work
+>   runs) and its `ensures` at run end over the whole-workflow inputs and outputs (a
+>   violation marks the completed run failed). Nested composite-process contracts are
+>   not yet evaluated. Because non-script process outputs are still typed defaults,
+>   `ensures` bites mainly on script processes and boundary-supplied inputs until a
+>   real device backend computes physical outputs.
 
 ## Install
 
