@@ -43,10 +43,14 @@ never trips these.
 Scope: duration variance is injected externally by passing a `duration` to a
 dispatch, not built in (D13). A down device only blocks new processing (D21).
 Operation failure is injected per capability (D25): a scheduled `(process, mode)`
-or `(transporter, route)` fails at its end. View values are typed but still dummy
-(the built-in `default_device_model` fills type defaults and carries objects; a
-custom / real model computes them); Object identity itself is not yet tracked at
-the value level (D27).
+or `(transporter, route)` fails at its end; additionally, a device model that
+cannot compute an operation's outputs (e.g. a `script` process that raises or
+fails runtime verification, §22) raises `DeviceComputationError` and the operation
+ends `failed` the same way (D31). Output view values come from the built-in
+`script_device_model`: it runs `python_script_processes` (§22) -- the first real
+computation -- and otherwise fills typed defaults and carries objects (a custom /
+real model computes them). Object identity itself is not yet tracked at the value
+level (D27).
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .environment import Environment, device_of, environment_from_dict, load_environment
+from .script import DeviceComputationError, script_device_model
 from .errors import (
     ClockError,
     DeviceDown,
@@ -224,8 +229,11 @@ class Simulator:
         # computation (a real backend plugs a real model here). `definition` is the
         # raw process definition (its declared kind/inputs/outputs/objects), so a
         # model can act on the process structure. None means the built-in
-        # `default_device_model` (typed defaults + `objects.map` object pass-through)
-        # is used. Affects signed processing only.
+        # `script_device_model` is used: it runs a `script` process (§22, D31) and
+        # otherwise falls back to `default_device_model` (typed defaults +
+        # `objects.map` object pass-through). A model raising `DeviceComputationError`
+        # ends the operation `failed` (a runtime failure, D25). Affects signed
+        # processing only.
         self._device_model = device_model
 
         # Virtual clock, in the integer ticks of the environment's time unit (§4.1).
@@ -704,11 +712,25 @@ class Simulator:
 
         # Value seam (D26/D27): a completed operation dispatched with a signature
         # produces a value at each output port, via a device model -- the injected
-        # one, or the built-in `default_device_model` (typed defaults + object
-        # pass-through from `objects.map`) when none was injected (D27 F4b).
+        # one, or the built-in `script_device_model` (which runs a `script` process,
+        # §22, else falls back to typed defaults + `objects.map` object pass-through)
+        # when none was injected (D27 F4b / D31).
         if op.output_schema is not None:
-            model = self._device_model if self._device_model is not None else default_device_model
-            op.outputs = model(op.process, op.mode, op.inputs or {}, op.output_schema, op.definition)
+            model = self._device_model if self._device_model is not None else script_device_model
+            try:
+                op.outputs = model(op.process, op.mode, op.inputs or {}, op.output_schema, op.definition)
+            except DeviceComputationError:
+                # The device model could not compute the outputs -- e.g. a script
+                # process raised or failed runtime verification (§22.2). Treat it like
+                # an injected failure (D25): the op ends `failed`, carries no outputs,
+                # and applies no material effect. This is coherent because such a
+                # failure comes from Pure Data compute (a script process holds no
+                # spot), so the material steps above were a no-op for it; spot
+                # occupancy is left exactly as a D25 failure leaves it. The caller
+                # (`_advance`) reads `op.status` for the event it records.
+                op.outputs = None
+                op.status = "failed"
+                return
 
         op.status = "completed"
 

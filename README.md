@@ -41,8 +41,22 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   views default. A workflow-embedded static literal (`bind: {port: {value: …}}`,
 >   §11) is seeded as that consumer input's value in place of a default. At run end
 >   the produced output views are echoed back into a result boundary of the same
->   schema (`--boundary-out`). Values are typed but still dummy — a real device
->   backend plugs into the same seam later.
+>   schema (`--boundary-out`). Non-script values are typed but still dummy — a real
+>   device backend plugs into the same seam later.
+> - **Python script processes** (spec §22, `python_script_processes`) — an atomic
+>   Pure-Data process may carry a `script: {language: python, code: …}` section.
+>   The built-in device model runs it: the input port values are bound as locals,
+>   the code returns a mapping of the declared outputs, and those become the
+>   operation's computed output values — the first genuine (non-dummy) computation
+>   in the value layer. A script that raises, returns the wrong output names, or
+>   returns a non-conformant value fails runtime verification (§22.2) and stops the
+>   run gracefully like any other activity failure (the failed activity is marked
+>   `failed`, its unstarted successors `cancelled`, exit 1). The script runs inline
+>   in real time but advances no simulation time; its outputs appear when the
+>   operation completes at its `end`, and the environment mode's `duration` is the
+>   scheduler's estimate of the compute cost. Scripts run with full Python builtins
+>   and no import restriction (§22.3 permits an implementation to restrict these;
+>   this one does not).
 
 ## Install
 

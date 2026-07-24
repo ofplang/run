@@ -1,0 +1,68 @@
+# A `python_script_processes` workflow (spec §22): two chained script processes
+# compute Pure Data values from the entry inputs, with no physical material.
+#
+#   inputs.a --\                       Add.z --> Label.n
+#               > Add (x+y) --z(Int)--<
+#   inputs.b --/                       Add.z --> returns.sum
+#                                      Label.text --> returns.summary
+#
+# `add` is an atomic script process computing `z = x + y`; `label` is a second
+# script process turning that Int into a String. Both are Pure Data (§22.1: no
+# Object-bearing ports, no `objects` section). The runner routes the entry inputs
+# into `add`, `add`'s output into `label`, and both final values to the boundary --
+# so the whole-workflow outputs are genuinely computed by the scripts, not defaulted.
+# Pairs with script.env.yaml (device-less `add` / `label`).
+spec_version: "0.0"
+
+processes:
+
+  # Script process: z = x + y (§22.2 -- the code is a function body returning a
+  # mapping of the declared output names).
+  add:
+    kind: atomic
+    inputs:
+      x: { type: Int, phase: data }
+      y: { type: Int, phase: data }
+    outputs:
+      z: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"z": x + y}
+
+  # Script process: render the sum as a String.
+  label:
+    kind: atomic
+    inputs:
+      n: { type: Int, phase: data }
+    outputs:
+      text: { type: String, phase: data }
+    script:
+      language: python
+      code: |
+        return {"text": "sum=" + str(n)}
+
+  main:
+    kind: composite
+    inputs:
+      a: { type: Int, phase: data }
+      b: { type: Int, phase: data }
+    outputs:
+      sum:     { type: Int,    phase: data }
+      summary: { type: String, phase: data }
+    body:
+      nodes:
+        - id: Add
+          process: add
+          bind:
+            x: { from: inputs.a }
+            y: { from: inputs.b }
+        - id: Label
+          process: label
+          bind:
+            n: { from: Add.z }        # script -> script Pure Data routing
+      returns:
+        sum:     { from: Add.z }
+        summary: { from: Label.text }
+
+entry: main
