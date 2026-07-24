@@ -1,17 +1,21 @@
-"""Trace a run that combines a static value literal (§11 / D30) with Python script
-processes (§22 / D31) -- the value layer computing real values.
+"""Trace a run that combines a static value literal (§11 / D30), Python script
+processes (§22 / D31), and runtime contracts (§9 / D32) -- the value layer
+computing and checking real values.
 
 Scenario (see script_literal.workflow.yaml): a measured `raw` from the run
 boundary and a `threshold` embedded as a static literal (`value: 60`) both feed a
 `score` script process, which computes `margin` and `passed`; a second `report`
-script turns those into a summary string. Unlike render_data_flow.py (where the
-backend produced typed *defaults*), here the outputs are genuinely computed by the
-scripts, and one input is a workflow-embedded constant rather than a routed value.
+script turns those into a summary string. `score` declares a `requires`
+precondition and `ensures` postconditions (and `report` an `ensures`), which the
+runner checks at runtime against the computed view values. Unlike
+render_data_flow.py (where the backend produced typed *defaults*), here the
+outputs are genuinely computed by the scripts, and one input is a workflow-embedded
+constant rather than a routed value.
 
-This prints a text trace making both features visible: which inputs were seeded at
-the boundary, which came from a static literal, and -- per activity -- the
-assembled inputs and the outputs each script computed, ending with the
-whole-workflow outputs.
+This prints a text trace making all three features visible: which inputs were
+seeded at the boundary, which came from a static literal, the assembled inputs and
+computed outputs per activity, the declared contracts (checked at runtime), and
+the whole-workflow outputs.
 
 Run it:
 
@@ -26,6 +30,8 @@ also carries the static literals, D30).
 from __future__ import annotations
 
 from pathlib import Path
+
+import yaml
 
 from ofplang.run.runner import RollingRunner
 from ofplang.run.runner.values import assemble_inputs
@@ -96,6 +102,22 @@ def main() -> None:
     lines.append("whole-workflow outputs (returns):")
     for name, (node, port) in df.returns.items():
         lines.append(f"  {name:<12} = {runner.outputs.get(name)!r}   <- {_fmt_node(node)}.{port}")
+
+    # The contracts declared on each process (§9), checked by the runner at runtime
+    # against the computed view values. The run reaching here without failing means
+    # every requires / ensures held; a violation would have stopped it (D25).
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    verdict = "all held" if not runner.failed else "VIOLATED (run stopped)"
+    lines.append("")
+    lines.append(f"contracts (checked at runtime -- {verdict}):")
+    any_contract = False
+    for pname, pdef in (workflow.get("processes") or {}).items():
+        for section in ("requires", "ensures"):
+            for item in ((pdef or {}).get("contracts") or {}).get(section) or []:
+                lines.append(f"  {pname}.{section:<8} {item['expr']}")
+                any_contract = True
+    if not any_contract:
+        lines.append("  (none)")
 
     text = "\n".join(lines) + "\n"
     (OUT / "script_literal.trace.txt").write_text(text, encoding="utf-8")

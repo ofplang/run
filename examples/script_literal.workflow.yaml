@@ -1,9 +1,12 @@
-# A workflow combining two v0 value-layer features (dev-notes design.md D30 + D31):
+# A workflow combining three v0 value-layer features (dev-notes design.md D30-D32):
 #
 #   * a STATIC VALUE literal (§11): the `threshold` input of `Score` is bound to the
 #     constant 60 embedded in the workflow -- no producer feeds it;
 #   * two PYTHON SCRIPT processes (§22, `python_script_processes`): `score` and
-#     `report` compute their Pure Data outputs by running inline Python.
+#     `report` compute their Pure Data outputs by running inline Python;
+#   * CONTRACTS (§9): `score` declares a `requires` precondition and `ensures`
+#     postconditions, and `report` an `ensures`, all checked at runtime against the
+#     computed view values (a violation would stop the run gracefully).
 #
 #   inputs.raw --------\                          Score.margin --> Report.n
 #                       > Score (script) --------< Score.passed --> Report.ok
@@ -29,6 +32,12 @@ processes:
     outputs:
       margin: { type: Int,  phase: data }
       passed: { type: Bool, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.raw.view >= 0"                                        # a measured value is non-negative
+      ensures:
+        - expr: "outputs.margin.view == inputs.raw.view - inputs.threshold.view"
+        - expr: "outputs.passed.view == (inputs.raw.view >= inputs.threshold.view)"
     script:
       language: python
       code: |
@@ -45,6 +54,9 @@ processes:
       ok: { type: Bool, phase: data }
     outputs:
       text: { type: String, phase: data }
+    contracts:
+      ensures:
+        - expr: 'outputs.text.view != ""'                                     # a non-empty summary is produced
     script:
       language: python
       code: |

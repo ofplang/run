@@ -18,3 +18,9 @@ whole-workflow outputs (returns):
   margin       = 12   <- Score.margin
   passed       = True   <- Score.passed
   summary      = 'PASS (margin=12)'   <- Report.text
+
+contracts (checked at runtime -- all held):
+  score.requires inputs.raw.view >= 0
+  score.ensures  outputs.margin.view == inputs.raw.view - inputs.threshold.view
+  score.ensures  outputs.passed.view == (inputs.raw.view >= inputs.threshold.view)
+  report.ensures  outputs.text.view != ""
