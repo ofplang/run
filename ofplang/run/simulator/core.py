@@ -202,6 +202,11 @@ class _Op:
     # the simulator itself does not interpret it.
     definition: dict | None = None
     status: str = "running"  # "running" | "completed" | "failed"
+    # A machine-readable (code, message) reason for a *model-driven* failure (D36),
+    # set when a device model raises `DeviceComputationError` at completion (e.g. a
+    # script error, §22.2). None otherwise -- an injected D25 failure carries no
+    # detail. Surfaced via `state` / `observe` so the runner can report why it failed.
+    reason: tuple | None = None
     # Whether this operation is scheduled to fail instead of completing (D25). Set
     # at dispatch from the failing (process, mode) / (transporter, route) sets; when
     # the clock reaches its end it goes to `failed` (resources freed, no material
@@ -530,6 +535,10 @@ class Simulator:
         view = {"status": op.status}
         if op.outputs is not None:
             view["outputs"] = op.outputs
+        # A model-driven failure carries a (code, message) reason (D36); an injected
+        # or normal op has none, so its view stays exactly as before.
+        if op.reason is not None:
+            view["reason"] = op.reason
         return view
 
     def observe(self) -> dict[str, dict]:
@@ -719,7 +728,7 @@ class Simulator:
             model = self._device_model if self._device_model is not None else script_device_model
             try:
                 op.outputs = model(op.process, op.mode, op.inputs or {}, op.output_schema, op.definition)
-            except DeviceComputationError:
+            except DeviceComputationError as exc:
                 # The device model could not compute the outputs -- e.g. a script
                 # process raised or failed runtime verification (§22.2). Treat it like
                 # an injected failure (D25): the op ends `failed`, carries no outputs,
@@ -729,6 +738,10 @@ class Simulator:
                 # occupancy is left exactly as a D25 failure leaves it. The caller
                 # (`_advance`) reads `op.status` for the event it records.
                 op.outputs = None
+                # Keep the model's (code, message) so the runner can report the reason
+                # (D36); this is the one place a failure carries detail (D25 injected
+                # failures do not).
+                op.reason = (getattr(exc, "code", "device_error"), str(exc))
                 op.status = "failed"
                 return
 

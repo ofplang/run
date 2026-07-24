@@ -143,7 +143,10 @@ def test_simulator_fails_operation_on_script_computation_error():
         "add", "v0", output_schema={"z": INT}, inputs={"x": 4, "y": 5}, definition=bad
     )
     sim.advance(0)
-    assert sim.state(uuid) == {"status": "failed"}
+    # The failed op also carries the model's (code, message) reason (D36).
+    state = sim.state(uuid)
+    assert state["status"] == "failed"
+    assert state["reason"][0] == "script_error"
 
 
 # -- runner end to end -------------------------------------------------------

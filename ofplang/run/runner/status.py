@@ -32,6 +32,11 @@ def build_status(
     a failure. Each is stamped `cancelled` with a zero-length interval at `now` (it
     reached a terminal, non-running state without executing) and appended after the
     committed history.
+
+    The failure *reason* (D36) is deliberately NOT put in this document: the status
+    must stay a valid §6 execution document (it can be validated and fed back to the
+    scheduler), so the reason is exposed out of band via `RollingRunner.failure` and
+    the CLI's stderr instead.
     """
     activities = []
     for rec in records:

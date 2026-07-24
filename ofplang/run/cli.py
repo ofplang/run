@@ -147,7 +147,14 @@ def _cmd_run(args) -> int:
     # (it carries the failed / cancelled activities), but the run counts as failed.
     _emit(status, args.output)
     if runner.failed:
-        print("ofp-run: execution failed: an activity failed", file=sys.stderr)
+        # Report the failure reason (D36): its code and human-readable detail, from
+        # the structured `runner.failure` (a contract violation, a script error, or a
+        # generic activity failure). Falls back to a generic line if unset.
+        failure = runner.failure
+        if failure is not None:
+            print(f"ofp-run: execution failed: {failure.kind}: {failure.detail}", file=sys.stderr)
+        else:
+            print("ofp-run: execution failed: an activity failed", file=sys.stderr)
         return EXIT_FAILED
     return EXIT_OK
 

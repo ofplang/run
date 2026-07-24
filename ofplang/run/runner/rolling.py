@@ -34,6 +34,7 @@ What this layer covers, added incrementally:
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 
 from ..simulator import Simulator
 from .boundary import parse_boundary
@@ -46,6 +47,20 @@ from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
 from .values import ValueStore, assemble_inputs, collect_outputs, record_outputs, seed_entry
+
+
+@dataclass
+class Failure:
+    """Why a run stopped (D36): a machine-readable `kind` (reason code), a
+    human-readable `detail`, the `subject` that failed (a node path label, `main`, or
+    an activity), and the virtual time `now` at which it was detected. The runner
+    records the first failure that stopped the run; the CLI prints it and the final
+    status echoes it."""
+
+    kind: str
+    detail: str
+    subject: str
+    now: int
 
 
 def _normalize_mode_ids(environment: dict) -> dict:
@@ -103,6 +118,7 @@ class RollingRunner:
         random_seed: int | None = None,
         poll_interval: int | None = 1,
         duration_model=None,
+        contract_observer=None,
         max_ticks: int = 100_000,
     ):
         self.workflow_path = str(workflow_path)
@@ -214,6 +230,35 @@ class RollingRunner:
         self.failed = False
         self._stopping = False
         self._last_pending: list[dict] = []
+        # Observability (D36): `failure` is the first reason that stopped the run (a
+        # `Failure`, or None), reported by the CLI and echoed into the final status.
+        # `contract_observer`, if given, is called for every contract check (held or
+        # violated) with a `{subject, process, section, expr, held, now}` record -- an
+        # optional trace hook; None (the default) means no per-check reporting.
+        self.failure: Failure | None = None
+        self._contract_observer = contract_observer
+
+    @staticmethod
+    def _fmt_node(node) -> str:
+        """A node path rendered as a readable label for reasons / traces; the empty
+        path (the workflow boundary) is `main`."""
+        return "/".join(node) if node else "main"
+
+    @staticmethod
+    def _activity_subject(activity: dict) -> str:
+        """A readable subject label for a failed activity (D36): a processing's node
+        path, or a transport's `from_spot -> to_spot`."""
+        node = activity.get("node")
+        if node is not None:
+            return "/".join(node) if node else "main"
+        return f"{activity.get('from_spot')} -> {activity.get('to_spot')}"
+
+    def _record_failure(self, kind: str, detail: str, subject: str) -> None:
+        """Record why the run stopped (D36), first failure wins (later ones are the
+        cascade of the first). Does not itself stop the run -- the caller sets
+        `failed` / `_stopping`."""
+        if self.failure is None:
+            self.failure = Failure(kind=kind, detail=detail, subject=subject, now=self.now)
 
     def run(self) -> dict:
         """Drive to completion and return the final execution status (§6/§7). Raises
@@ -239,7 +284,7 @@ class RollingRunner:
         # immediately (nothing is running), so the final status is emptily terminal.
         entry = self.contracts.entry
         if self._entry_is_composite and self._contract_asts.get(entry, {}).get("requires"):
-            if self._violated_contract(entry, "requires", self._main_contract_inputs(), {}) is not None:
+            if self._violated_contract(entry, "requires", self._main_contract_inputs(), {}, "main") is not None:
                 self.failed = True
                 self._stopping = True
 
@@ -298,13 +343,15 @@ class RollingRunner:
             # activity. Only checked on an otherwise-successful run (the guard above).
             entry = self.contracts.entry
             if self._entry_is_composite and self._contract_asts.get(entry, {}).get("ensures"):
-                if self._violated_contract(entry, "ensures", self._main_contract_inputs(), self.outputs) is not None:
+                if self._violated_contract(entry, "ensures", self._main_contract_inputs(), self.outputs, "main") is not None:
                     self.failed = True
         # Echo the produced output views back into a result document of the same
         # boundary schema (D28), for `--boundary-out`.
         self.result_boundary = self.boundary.result(self.outputs)
 
-        # A stopped run reports the work that never ran as cancelled (D25).
+        # A stopped run reports the work that never ran as cancelled (D25). The failure
+        # reason (D36) is NOT put in the status -- it stays a valid §6 document -- but is
+        # exposed via `self.failure` (and printed by the CLI).
         cancelled = self._cancelled_activities() if self._stopping else None
         return build_status(self.log.records(), self.now, self.interface, self._last_time, cancelled)
 
@@ -374,23 +421,35 @@ class RollingRunner:
 
         return resolve
 
-    def _violated_contract(self, process: str, section: str, inputs: dict, outputs: dict):
-        """Return the first violated `section` (requires / ensures) contract
-        expression of `process`, or None if all hold. A contract that evaluates false
-        -- or whose runtime evaluation errors (e.g. division by zero on runtime
-        values, §9.2) -- is a runtime contract violation (§9.3)."""
+    def _violated_contract(self, process: str, section: str, inputs: dict, outputs: dict, subject: str):
+        """Evaluate `process`'s `section` (requires / ensures) contracts for `subject`
+        and return the first violated expression, or None if all hold.
+
+        Every expression is evaluated (so the optional `contract_observer` sees each
+        one, held or violated, D36; §9.2 permits evaluating all at runtime), and the
+        first violation is recorded as the run's failure reason. A contract that
+        evaluates false -- or whose runtime evaluation errors (§9.2) -- is a runtime
+        contract violation (§9.3)."""
         exprs = self._contract_asts.get(process, {}).get(section)
         if not exprs:
             return None
         resolve = self._contract_resolver(process, inputs, outputs)
+        first_violation = None
         for expr, ast in exprs:
             try:
-                ok = evaluate(ast, resolve)
+                held = bool(evaluate(ast, resolve))
             except Exception:
-                return expr  # a runtime evaluation error is a violation
-            if not ok:
-                return expr
-        return None
+                held = False  # a runtime evaluation error counts as a violation (§9.2)
+            if self._contract_observer is not None:
+                self._contract_observer(
+                    {"subject": subject, "process": process, "section": section,
+                     "expr": expr, "held": held, "now": self.now}
+                )
+            if not held and first_violation is None:
+                first_violation = expr
+        if first_violation is not None:
+            self._record_failure(f"contract_{section}", f"{subject}: {first_violation}", subject)
+        return first_violation
 
     def _composite_ready(self, mapping: dict) -> bool:
         """Whether every value-store key in `mapping` (a composite's inputs or outputs,
@@ -423,7 +482,7 @@ class RollingRunner:
             if "requires" in asts and path not in self._checked_requires and self._composite_ready(b.inputs):
                 self._checked_requires.add(path)
                 inputs = self._composite_values(b.inputs, b.input_literals)
-                if self._violated_contract(b.process, "requires", inputs, {}) is not None:
+                if self._violated_contract(b.process, "requires", inputs, {}, self._fmt_node(path)) is not None:
                     self.failed = True
                     self._stopping = True
                     return
@@ -438,7 +497,7 @@ class RollingRunner:
                 self._checked_ensures.add(path)
                 inputs = self._composite_values(b.inputs, b.input_literals)
                 outputs = self._composite_values(b.outputs, b.output_literals)
-                if self._violated_contract(b.process, "ensures", inputs, outputs) is not None:
+                if self._violated_contract(b.process, "ensures", inputs, outputs, self._fmt_node(path)) is not None:
                     self.failed = True
                     self._stopping = True
                     return
@@ -539,7 +598,9 @@ class RollingRunner:
             # so the activity is recorded `failed` and never dispatched, stopping the
             # run gracefully (D25) -- like an observed activity failure, but caught up
             # front. `requires` may reference only inputs (§9.1), so outputs is empty.
-            violated = self._violated_contract(activity["process"], "requires", inputs, {})
+            violated = self._violated_contract(
+                activity["process"], "requires", inputs, {}, self._fmt_node(tuple(activity["node"]))
+            )
             if violated is not None:
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
                 self.failed = True
@@ -607,13 +668,23 @@ class RollingRunner:
                 process = rec.activity.get("process")
                 if process is not None and self._contract_asts.get(process, {}).get("ensures"):
                     inputs = assemble_inputs(self.dataflow, self.contracts, self.values, rec.activity["node"])
-                    if self._violated_contract(process, "ensures", inputs, outputs or {}) is not None:
+                    subject = self._fmt_node(tuple(rec.activity["node"]))
+                    if self._violated_contract(process, "ensures", inputs, outputs or {}, subject) is not None:
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now
+                # Record why (D36): a model-driven failure carries a (code, message)
+                # reason (e.g. a script error, §22.2); an injected D25 failure has none,
+                # so it is reported generically against the activity's subject.
+                subject = self._activity_subject(rec.activity)
+                reason = observed_state.get("reason")
+                if reason is not None:
+                    self._record_failure(reason[0], reason[1], subject)
+                else:
+                    self._record_failure("activity_failed", f"activity {subject} failed", subject)
                 self.failed = True
                 self._stopping = True
 

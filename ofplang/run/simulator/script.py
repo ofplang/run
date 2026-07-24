@@ -54,7 +54,14 @@ class DeviceComputationError(Exception):
     caught by the simulator, which ends the operation `failed` (D25) instead of
     `completed`. A custom device model may raise it to signal the same graceful
     failure. It is intended for Pure Data computation (no material effect on
-    failure), consistent with D25."""
+    failure), consistent with D25.
+
+    `code` is a machine-readable reason code (D36) the simulator surfaces and the
+    runner maps to its failure reason; the message is the human-readable detail."""
+
+    def __init__(self, message: str, code: str = "script_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def run_python_script(code: str, inputs: dict) -> Any:
@@ -150,23 +157,27 @@ def script_device_model(process, mode, inputs, output_schema, definition):
     language = script.get("language")
     if language != "python":
         raise DeviceComputationError(
-            f"script process {process!r} declares unsupported script language {language!r}"
+            f"script process {process!r} declares unsupported script language {language!r}",
+            code="script_language",
         )
 
     # Run the script and verify its result against the declared outputs (§22.2).
     result = run_python_script(script.get("code") or "", inputs or {})
     if not isinstance(result, dict):
         raise DeviceComputationError(
-            f"script process {process!r} returned {type(result).__name__}, not a mapping"
+            f"script process {process!r} returned {type(result).__name__}, not a mapping",
+            code="script_output_names",
         )
     if set(result) != set(output_schema):
         raise DeviceComputationError(
             f"script process {process!r} returned output names {sorted(result)}, "
-            f"expected exactly {sorted(output_schema)}"
+            f"expected exactly {sorted(output_schema)}",
+            code="script_output_names",
         )
     for port, descriptor in output_schema.items():
         if not _conforms_to_descriptor(result[port], descriptor):
             raise DeviceComputationError(
-                f"script process {process!r} output {port!r} does not conform to its declared type"
+                f"script process {process!r} output {port!r} does not conform to its declared type",
+                code="script_output_type",
             )
     return result

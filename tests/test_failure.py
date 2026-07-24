@@ -145,6 +145,7 @@ def test_cli_maps_failed_run_to_exit_failed(tmp_path, monkeypatch, capsys):
 
     class _FakeRunner:
         failed = True
+        failure = None  # a real runner sets a Failure; the CLI falls back to a generic line
 
         def __init__(self, *a, **k):
             pass

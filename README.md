@@ -78,6 +78,13 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   cancelled). Because non-script process outputs are still typed defaults, `ensures`
 >   bites mainly on script processes and boundary-supplied inputs until a real device
 >   backend computes physical outputs.
+> - **Failure observability** — when a run stops (an injected activity failure, a
+>   script error, or a contract violation), the reason is exposed as a structured
+>   `RollingRunner.failure` (a machine-readable `kind` code, e.g. `contract_requires`
+>   / `script_error`, plus a human-readable `detail`, the `subject`, and the time),
+>   and the CLI prints it to stderr. The status document itself stays a valid §6
+>   document (the reason is out of band). An optional `contract_observer` callback is
+>   invoked for every contract check (held or violated) — a trace hook for debugging.
 > - **Static view values** (spec §7.4) — a type whose view field declares a `value:`
 >   fixes that field to a constant for every value of the type. The runner projects it
 >   onto every view record it routes, so a Python script reading the field and a
