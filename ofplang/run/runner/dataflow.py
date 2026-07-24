@@ -12,8 +12,10 @@ this module is a *thin adapter* over the scheduler's own flattener,
 `ofplang.schedule.scheduler.workflow.parse_workflow` (D26-0). That flattener is
 the single source of the node paths that also appear in the plan the runner
 drives, so the two always agree. The scheduler discards the port-level mapping of
-Pure Data arcs (it keeps only node-level precedence); D26-0 added `data_arcs` /
-`data_entry_inputs` to expose it for us here.
+Pure Data arcs (it keeps only node-level precedence) and the static literal
+`value:` bindings entirely; D26-0 added `data_arcs` / `data_entry_inputs`, and D30
+added `data_literals`, to expose these for us here (value-independent metadata the
+scheduler itself never reads).
 
 This adapter reads only the graph *structure* (node paths, ports, arcs,
 boundary). It does not resolve types or view schemas -- that is `contracts.py`'s
@@ -48,14 +50,19 @@ class Dataflow:
     in_ports: dict
     out_ports: dict
     # (consumer node, input port) -> the source (node, port) that feeds it. An
-    # input with no entry here is unconnected (a literal `value:` or unbound) and
-    # is dummy-filled in v0-lite. A source node of `()` is a boundary entry input.
+    # input with no entry here is unconnected (an unbound input) and is dummy-filled,
+    # unless it appears in `literals` below. A source node of `()` is a boundary
+    # entry input.
     input_source: dict
     # every `main`-level input port name (seeded at the boundary at run start).
     entry_ports: tuple
     # `main`-level output port name -> the producing (node, port) (for the final
     # whole-workflow outputs). Covers Object and Pure Data returns alike.
     returns: dict
+    # (consumer node, input port) -> a static literal `value:` bound to it (§11,
+    # Pure Data). The runner seeds these as the port's value in place of a typed
+    # default. Recorded by the scheduler's flattener (`data_literals`, D30).
+    literals: dict
 
 
 def from_workflow(workflow_path) -> Dataflow:
@@ -99,4 +106,10 @@ def from_workflow(workflow_path) -> Dataflow:
     entry_ports = tuple(workflow.entry_input_ports.keys())
     returns = {name: (endpoint.node, endpoint.port) for name, endpoint in workflow.exit_outputs.items()}
 
-    return Dataflow(process_of, in_ports, out_ports, input_source, entry_ports, returns)
+    # Static literal bindings (§11), keyed by the consuming (node, port) -- the same
+    # key convention as `input_source`, so the value layer can look them up the same
+    # way. Recorded by the flattener (D30) so nested-composite literals are already
+    # spliced to the leaf atomic that consumes them.
+    literals = {(endpoint.node, endpoint.port): value for endpoint, value in workflow.data_literals.items()}
+
+    return Dataflow(process_of, in_ports, out_ports, input_source, entry_ports, returns, literals)

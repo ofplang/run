@@ -1,0 +1,30 @@
+# A workflow exercising a static literal `bind` value (§11 / D30): the Pure Data
+# input `seed` of `emit` is bound to the constant 7 -- no producer feeds it. With an
+# echo device model, the literal flows input -> backend -> the whole-workflow output,
+# proving the runner seeds the literal (rather than a typed default) and dispatches
+# it. Pairs with literal_chain.env.yaml (device-less `emit`).
+spec_version: "0.0"
+
+processes:
+  emit:
+    kind: atomic
+    inputs:
+      seed: { type: Int, phase: data }
+    outputs:
+      out: { type: Int, phase: data }
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs:
+      result: { type: Int, phase: data }
+    body:
+      nodes:
+        - id: E
+          process: emit
+          bind:
+            seed: { value: 7 }        # static literal, no producer
+      returns:
+        result: { from: E.out }
+
+entry: main

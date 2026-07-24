@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ofplang.run.runner.contracts import Contracts
 from ofplang.run.runner.dataflow import from_workflow
 from ofplang.run.runner.values import (
@@ -219,6 +221,86 @@ def test_unconnected_input_falls_back_to_typed_default(tmp_path):
     # they fall back to a typed default of the port's type (Sample / Reading here
     # declare no view, hence empty records).
     assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": {}, "go": {}}
+
+
+# -- static literals (`bind: {port: {value: ...}}`, §11 / D30) ---------------
+
+_LITERAL_WF = """\
+spec_version: "0.0"
+processes:
+  compute:
+    kind: atomic
+    inputs: {cfg: {type: Int, phase: data}}
+    outputs: {out: {type: Int, phase: data}}
+  main:
+    kind: composite
+    inputs: {}
+    body:
+      nodes:
+        - {id: C, process: compute, bind: {cfg: {value: 5}}}
+      returns: {}
+entry: main
+"""
+
+
+def test_literal_is_recorded_and_assembled(tmp_path):
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_LITERAL_WF, encoding="utf-8")
+    df = from_workflow(doc)
+    contracts = Contracts.from_workflow(doc)
+
+    # The adapter surfaces the literal keyed by the consuming (node, port).
+    assert df.literals == {(("C",), "cfg"): 5}
+    # assemble_inputs seeds it as the port's value (not a typed default of 0).
+    assert assemble_inputs(df, contracts, ValueStore(), ("C",)) == {"cfg": 5}
+
+
+def test_nonconformant_literal_is_rejected(tmp_path):
+    from ofplang.run.runner.runner import RunnerError
+
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_LITERAL_WF.replace("value: 5", 'value: "not-an-int"'), encoding="utf-8")
+    df = from_workflow(doc)
+    contracts = Contracts.from_workflow(doc)
+    with pytest.raises(RunnerError, match="does not conform"):
+        assemble_inputs(df, contracts, ValueStore(), ("C",))
+
+
+_LITERAL_NESTED_WF = """\
+spec_version: "0.0"
+processes:
+  compute:
+    kind: atomic
+    inputs: {cfg: {type: Int, phase: data}}
+    outputs: {out: {type: Int, phase: data}}
+  wrap:
+    kind: composite
+    inputs: {w: {type: Int, phase: data}}
+    outputs: {wo: {type: Int, phase: data}}
+    body:
+      nodes:
+        - {id: C, process: compute, bind: {cfg: {from: inputs.w}}}
+      returns: {wo: {from: C.out}}
+  main:
+    kind: composite
+    inputs: {}
+    body:
+      nodes:
+        - {id: W, process: wrap, bind: {w: {value: 9}}}
+      returns: {}
+entry: main
+"""
+
+
+def test_literal_spliced_across_composite_boundary(tmp_path):
+    # A literal supplied to a composite input reaches the inner atomic that consumes
+    # it, at its qualified node path (the flattener propagates it, D30).
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_LITERAL_NESTED_WF, encoding="utf-8")
+    df = from_workflow(doc)
+    contracts = Contracts.from_workflow(doc)
+    assert df.literals == {(("W", "C"), "cfg"): 9}
+    assert assemble_inputs(df, contracts, ValueStore(), ("W", "C")) == {"cfg": 9}
 
 
 # -- dataflow adapter edge cases --------------------------------------------

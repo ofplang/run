@@ -36,9 +36,11 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   **run boundary** (`--boundary`): one document with a per-port `{spot, view}`
 >   descriptor — `spot` places a boundary Object (§6.8), `view` supplies an input
 >   value — for the workflow's entry inputs and final outputs. Unsupplied entry
->   views default. At run end the produced output views are echoed back into a
->   result boundary of the same schema (`--boundary-out`). Values are typed but still
->   dummy — a real device backend plugs into the same seam later.
+>   views default. A workflow-embedded static literal (`bind: {port: {value: …}}`,
+>   §11) is seeded as that consumer input's value in place of a default. At run end
+>   the produced output views are echoed back into a result boundary of the same
+>   schema (`--boundary-out`). Values are typed but still dummy — a real device
+>   backend plugs into the same seam later.
 
 ## Install
 

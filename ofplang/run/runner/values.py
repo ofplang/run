@@ -79,11 +79,16 @@ def seed_entry(dataflow, contracts, store: ValueStore, job: dict | None = None) 
 def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
     """Build a node's input values by following each input port back to its source.
 
-    For each input port of `node`: if the dataflow gives it a source that has a
-    value, use that (the producer -> consumer routing); otherwise it is unconnected
-    (a literal `value:` or unbound input) and gets a typed default of the port's
-    type, so the assembled value always conforms. This is the routing primitive the
-    dataflow unit tests exercise and the rolling loop passes to the backend (F4)."""
+    For each input port of `node`, in precedence order (these are mutually exclusive
+    per binding, §11):
+      1. a connected producer (`from:`) that has a stored value -> use it (the
+         producer -> consumer routing);
+      2. a static literal (`value:`, D30) bound to the port -> use it, contract-checked
+         against the port type (a non-conformant literal is a `RunnerError`);
+      3. otherwise unconnected (unbound, or a producer that has not run yet) -> a typed
+         default of the port's type.
+    Every assembled value conforms. This is the routing primitive the dataflow unit
+    tests exercise and the rolling loop passes to the backend (F4)."""
     node = tuple(node)
     process = dataflow.process_of.get(node)
     result: dict[str, Any] = {}
@@ -91,8 +96,17 @@ def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
         source = dataflow.input_source.get((node, port))
         if source is not None and store.has(source[0], source[1]):
             result[port] = store.get(source[0], source[1])
+            continue
+        resolved = contracts.input_type(process, port) if process is not None else None
+        if (node, port) in dataflow.literals:
+            # A static literal supplies the value directly; check it like a job value
+            # (the runner assumes valid v0, but a cheap conformance check catches an
+            # ill-typed constant that would otherwise flow on unnoticed).
+            value = dataflow.literals[(node, port)]
+            if resolved is not None and not conforms(value, resolved):
+                raise RunnerError(f"static literal for input {port!r} does not conform to its type")
+            result[port] = value
         else:
-            resolved = contracts.input_type(process, port) if process is not None else None
             result[port] = default_value(resolved) if resolved is not None else {}
     return result
 

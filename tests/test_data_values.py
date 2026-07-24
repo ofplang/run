@@ -153,6 +153,47 @@ def test_device_model_receives_the_process_definition():
     assert set(definition["inputs"]) == {"x"} and set(definition["outputs"]) == {"y"}
 
 
+LITERAL_WF = str(FIXTURES / "literal_chain.workflow.yaml")
+LITERAL_ENV = str(FIXTURES / "literal_chain.env.yaml")
+
+
+def test_static_literal_reaches_backend_and_output():
+    # A static literal `bind: {seed: {value: 7}}` (§11 / D30) is assembled as the
+    # input the backend receives (no producer, no boundary job), and -- with an echo
+    # model -- flows to the whole-workflow output. This exercises the full path:
+    # schedule flattener -> data_literals -> dataflow.literals -> assemble_inputs ->
+    # dispatch, with node paths matching the plan at runtime.
+    seen = {}
+
+    def echo(process, mode, inputs, output_schema, definition):
+        seen.update(inputs)
+        return {port: inputs["seed"] for port in output_schema}
+
+    runner = RollingRunner(LITERAL_WF, LITERAL_ENV, device_model=echo, random_seed=0)
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert seen["seed"] == 7              # the literal was assembled and dispatched
+    assert runner.outputs == {"result": 7}  # and reaches the whole-workflow output
+
+
+def test_static_literal_supplied_even_without_device_model():
+    # Without a device model the default computes a typed default output (the literal
+    # does not propagate downstream), but it is still assembled and handed to the
+    # backend -- the literal mechanism does not depend on a model.
+    seen = {}
+
+    def capture(process, mode, inputs, output_schema, definition):
+        seen.update(inputs)
+        from ofplang.run.simulator import default_device_model
+
+        return default_device_model(process, mode, inputs, output_schema, definition)
+
+    runner = RollingRunner(LITERAL_WF, LITERAL_ENV, device_model=capture, random_seed=0)
+    runner.run()
+    assert seen["seed"] == 7                 # literal reached the backend
+    assert runner.outputs == {"result": 0}   # default model ignores it -> typed default
+
+
 def test_without_device_model_computed_outputs_are_defaults():
     # No model -> the built-in default applies. `inc` declares no objects.map, so its
     # outputs are type defaults; the job value is not computed through (result is the
