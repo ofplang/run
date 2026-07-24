@@ -214,10 +214,12 @@ def _build_registry(types_section: dict) -> dict:
 @dataclass(frozen=True)
 class ProcessContract:
     """One process's resolved port signature: port name -> resolved type, for its
-    declared inputs and outputs."""
+    declared inputs and outputs, plus each input port's declared `phase` (§5.6),
+    used to classify when a contract over it can be checked (D37)."""
 
     inputs: dict
     outputs: dict
+    input_phases: dict = field(default_factory=dict)  # input port -> "graph" | "run" | "data"
 
 
 class Contracts:
@@ -249,9 +251,14 @@ class Contracts:
         processes: dict = {}
         for name, spec in raw_processes.items():
             spec = spec or {}
-            inputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("inputs") or {}).items()}
+            raw_inputs = spec.get("inputs") or {}
+            inputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in raw_inputs.items()}
             outputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("outputs") or {}).items()}
-            processes[name] = ProcessContract(inputs, outputs)
+            # Each input port's declared phase (§5.6), defaulting to `data` (a runtime
+            # value) when absent -- so a contract over it is treated as runtime (never
+            # wrongly hoisted to a run-start preflight, D37).
+            input_phases = {p: (ps or {}).get("phase", "data") for p, ps in raw_inputs.items()}
+            processes[name] = ProcessContract(inputs, outputs, input_phases)
         entry = data.get("entry") or ("main" if "main" in raw_processes else None)
         return cls(processes, registry, entry)
 
@@ -261,6 +268,10 @@ class Contracts:
 
     def input_type(self, process: str, port: str) -> ResolvedType:
         return self.processes[process].inputs[port]
+
+    def input_phase(self, process: str, port: str) -> str:
+        """An input port's declared phase (§5.6), defaulting to `data` (D37)."""
+        return self.processes[process].input_phases.get(port, "data")
 
     def output_type(self, process: str, port: str) -> ResolvedType:
         return self.processes[process].outputs[port]

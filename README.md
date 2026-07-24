@@ -61,7 +61,10 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   `requires` (preconditions over `inputs.*.view`) and `ensures` (postconditions
 >   over `inputs.*.view` and `outputs.*.view`). The runner evaluates them at
 >   runtime against the actual view values: `requires` before the operation runs
->   (a violation stops it before dispatch), `ensures` after it completes. A
+>   (a violation stops it before dispatch), `ensures` after it completes. An atomic
+>   `requires` that references only run/graph-phase inputs (§5.6) is knowable at run
+>   start, so it is checked there as a *preflight* — before any work is dispatched —
+>   rather than waiting for that (possibly late) operation. A
 >   violation — or a runtime evaluation error — stops the run gracefully like any
 >   activity failure (`failed` + downstream `cancelled`, exit 1). Static /
 >   graph-time contract checking (a fully-constant contract that is statically

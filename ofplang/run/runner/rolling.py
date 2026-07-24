@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 from ..simulator import Simulator
 from .boundary import parse_boundary
-from .contract_eval import evaluate, parse as parse_contract
+from .contract_eval import evaluate, parse as parse_contract, referenced_ports
 from .contracts import ArrayType, Contracts, conforms, to_descriptor, with_static_views
 from .dataflow import from_workflow
 from .loader import load_document
@@ -288,6 +288,11 @@ class RollingRunner:
                 self.failed = True
                 self._stopping = True
 
+        # Atomic preconditions that are knowable at run start -- `requires` referencing
+        # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
+        # violation stops the run before the (possibly late-dispatched) process runs.
+        self._preflight_atomic_requires()
+
         # Nested composite contracts whose values are already available at run start
         # (inputs bound only to the boundary / literals) are checked now, before any
         # dispatch -- so a `requires` violation still precedes the composite's body (D34).
@@ -368,17 +373,24 @@ class RollingRunner:
 
     def _parse_contracts(self) -> dict:
         """Parse every process's `contracts` (§9) into ASTs, keyed by process and
-        section (`requires` / `ensures`). All process kinds are parsed here; where each
-        is *checked* is decided at run time by the process's role -- an atomic process
-        on the activity path (D32), the entry composite at the run boundary (D33), a
-        nested composite when its values become available (D34). A process with no
-        `contracts` section produces no entry."""
+        section. All process kinds are parsed here; where each is *checked* is decided
+        at run time by the process's role -- an atomic process on the activity path
+        (D32), the entry composite at the run boundary (D33), a nested composite when
+        its values become available (D34). A process with no `contracts` produces no
+        entry.
+
+        For an atomic process, `requires` is split by phase (D37): an expression
+        referencing only run/graph-phase inputs is knowable at run start and goes to
+        `requires_preflight` (checked before dispatch); one reading any data-phase input
+        stays in `requires` (checked at dispatch). Composite `requires` is not split
+        (the entry composite is already a run-boundary check, D33)."""
         result: dict = {}
         for name, pdef in self._process_defs.items():
             pdef = pdef or {}
             contracts = pdef.get("contracts") or {}
             if not contracts:
                 continue
+            is_atomic = pdef.get("kind") == "atomic"
             parsed: dict = {}
             for section in ("requires", "ensures"):
                 exprs = [
@@ -386,11 +398,47 @@ class RollingRunner:
                     for item in (contracts.get(section) or [])
                     if item and item.get("expr") is not None
                 ]
-                if exprs:
+                if not exprs:
+                    continue
+                if section == "requires" and is_atomic:
+                    # `requires` references only inputs (§9.1); an expression is
+                    # preflightable iff every input it reads is non-data phase (§5.6),
+                    # hence knowable at run start.
+                    preflight = [
+                        (expr, ast)
+                        for expr, ast in exprs
+                        if all(self.contracts.input_phase(name, port) != "data" for _s, port in referenced_ports(ast))
+                    ]
+                    runtime = [pair for pair in exprs if pair not in preflight]
+                    if preflight:
+                        parsed["requires_preflight"] = preflight
+                    if runtime:
+                        parsed["requires"] = runtime
+                else:
                     parsed[section] = exprs
             if parsed:
                 result[name] = parsed
         return result
+
+    def _preflight_atomic_requires(self) -> None:
+        """Run-start preflight (D37): check each atomic invocation's phase-hoisted
+        preconditions (`requires_preflight` -- those over run/graph-phase inputs alone)
+        before any work is dispatched, over the run-start-available values. A violation
+        stops the run before it starts (like an atomic `requires`, but caught up front,
+        so no dependent work runs). Skipped once the run is already stopping."""
+        if self._stopping:
+            return
+        for node, process in self.dataflow.process_of.items():
+            if not self._contract_asts.get(process, {}).get("requires_preflight"):
+                continue
+            # At run start only boundary / literal inputs are available; a preflight
+            # expression reads only those (by phase), so assembling here resolves the
+            # ports it needs (other, data-phase inputs default but are not referenced).
+            inputs = assemble_inputs(self.dataflow, self.contracts, self.values, node)
+            if self._violated_contract(process, "requires_preflight", inputs, {}, self._fmt_node(node)) is not None:
+                self.failed = True
+                self._stopping = True
+                return
 
     def _main_contract_inputs(self) -> dict:
         """The entry composite's input view values, for its own whole-workflow contract

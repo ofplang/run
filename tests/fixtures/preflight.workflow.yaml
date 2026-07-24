@@ -1,0 +1,64 @@
+# Run-start preflight of a run-phase precondition (spec §5.6 / §9; dev-notes D37).
+#
+#   inputs.seed --> Slow (script, slow) --d(data)--> Check (script) --ok--> returns.ok
+#   inputs.limit (run phase) --------------------------> Check
+#                                                        requires: limit >= 0
+#
+# `Check` dispatches only after the slow producer `Slow` finishes (it consumes
+# Slow.d). But its precondition `requires: inputs.limit.view >= 0` references only
+# `limit`, a RUN-phase boundary input known at run start. So the runner hoists that
+# check to a run-start preflight (D37): a bad `limit` stops the run at t=0, before
+# `Slow` (or anything) runs -- rather than waiting until `Check` would dispatch.
+# Pairs with preflight.env.yaml (device-less `slow` / `check`).
+spec_version: "0.0"
+
+processes:
+
+  slow:
+    kind: atomic
+    inputs:
+      x: { type: Int, phase: data }
+    outputs:
+      d: { type: Int, phase: data }
+    script:
+      language: python
+      code: |
+        return {"d": x + 1}
+
+  check:
+    kind: atomic
+    inputs:
+      d:     { type: Int, phase: data }   # from Slow -> Check dispatches late
+      limit: { type: Int, phase: run }    # run-phase boundary input, known at run start
+    outputs:
+      ok: { type: Int, phase: data }
+    contracts:
+      requires:
+        - expr: "inputs.limit.view >= 0"   # references only run-phase `limit` -> preflight
+    script:
+      language: python
+      code: |
+        return {"ok": d + limit}
+
+  main:
+    kind: composite
+    inputs:
+      seed:  { type: Int, phase: data }
+      limit: { type: Int, phase: run }
+    outputs:
+      ok: { type: Int, phase: data }
+    body:
+      nodes:
+        - id: Slow
+          process: slow
+          bind:
+            x: { from: inputs.seed }
+        - id: Check
+          process: check
+          bind:
+            d:     { from: Slow.d }
+            limit: { from: inputs.limit }
+      returns:
+        ok: { from: Check.ok }
+
+entry: main

@@ -235,6 +235,26 @@ def parse(expr: str):
     return _Parser(_tokenize(expr)).parse()
 
 
+def referenced_ports(ast) -> set:
+    """The set of `(scope, port)` view references in a parsed contract AST -- e.g.
+    `{("inputs", "raw"), ("outputs", "y")}`. Used to classify a contract by the phase
+    of the ports it reads (D37): a contract referencing only run/graph-phase ports is
+    knowable at run start and can be checked as a preflight."""
+    found: set = set()
+
+    def walk(node):
+        if isinstance(node, _Ref):
+            found.add((node.scope, node.port))
+        elif isinstance(node, _Unary):
+            walk(node.operand)
+        elif isinstance(node, _Binary):
+            walk(node.left)
+            walk(node.right)
+
+    walk(ast)
+    return found
+
+
 # -- evaluation --------------------------------------------------------------
 
 
