@@ -1,0 +1,20 @@
+static value + python script -- computed value flow
+==========================================================
+entry inputs (seeded at the boundary):
+  raw          = 72
+
+static value literals (embedded in the workflow):
+  Score.threshold  = 60
+
+activities (assembled inputs -> script-computed outputs):
+  Score [score]
+      in : {'raw': 72, 'threshold': 60}
+      out: {'margin': 12, 'passed': True}
+  Report [report]
+      in : {'n': 12, 'ok': True}
+      out: {'text': 'PASS (margin=12)'}
+
+whole-workflow outputs (returns):
+  margin       = 12   <- Score.margin
+  passed       = True   <- Score.passed
+  summary      = 'PASS (margin=12)'   <- Report.text

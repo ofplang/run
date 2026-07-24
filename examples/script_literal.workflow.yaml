@@ -1,0 +1,79 @@
+# A workflow combining two v0 value-layer features (dev-notes design.md D30 + D31):
+#
+#   * a STATIC VALUE literal (§11): the `threshold` input of `Score` is bound to the
+#     constant 60 embedded in the workflow -- no producer feeds it;
+#   * two PYTHON SCRIPT processes (§22, `python_script_processes`): `score` and
+#     `report` compute their Pure Data outputs by running inline Python.
+#
+#   inputs.raw --------\                          Score.margin --> Report.n
+#                       > Score (script) --------< Score.passed --> Report.ok
+#   {value: 60} --------/  margin, passed          Score.margin --> returns.margin
+#   (static literal -> threshold)                  Score.passed --> returns.passed
+#                                                  Report.text   --> returns.summary
+#
+# `score` reads a measured `raw` (from the run boundary) and a `threshold` (the
+# embedded literal), and returns the `margin` (raw - threshold) and whether it
+# `passed` (raw >= threshold). `report` turns those into a human-readable summary
+# string. Everything is Pure Data (§22.1: script processes have no Object ports),
+# so the whole workflow computes values with no physical material.
+spec_version: "0.0"
+
+processes:
+
+  # Script process: compare the measured value against the threshold.
+  score:
+    kind: atomic
+    inputs:
+      raw:       { type: Int, phase: data }
+      threshold: { type: Int, phase: data }
+    outputs:
+      margin: { type: Int,  phase: data }
+      passed: { type: Bool, phase: data }
+    script:
+      language: python
+      code: |
+        return {
+            "margin": raw - threshold,
+            "passed": raw >= threshold,
+        }
+
+  # Script process: render the score as a summary line.
+  report:
+    kind: atomic
+    inputs:
+      n:  { type: Int,  phase: data }
+      ok: { type: Bool, phase: data }
+    outputs:
+      text: { type: String, phase: data }
+    script:
+      language: python
+      code: |
+        status = "PASS" if ok else "FAIL"
+        return {"text": status + " (margin=" + str(n) + ")"}
+
+  main:
+    kind: composite
+    inputs:
+      raw: { type: Int, phase: data }        # supplied by the run boundary
+    outputs:
+      margin:  { type: Int,    phase: data }
+      passed:  { type: Bool,   phase: data }
+      summary: { type: String, phase: data }
+    body:
+      nodes:
+        - id: Score
+          process: score
+          bind:
+            raw:       { from: inputs.raw }
+            threshold: { value: 60 }          # STATIC VALUE literal (§11 / D30)
+        - id: Report
+          process: report
+          bind:
+            n:  { from: Score.margin }        # script -> script Pure Data routing
+            ok: { from: Score.passed }
+      returns:
+        margin:  { from: Score.margin }
+        passed:  { from: Score.passed }
+        summary: { from: Report.text }
+
+entry: main
