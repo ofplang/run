@@ -429,13 +429,16 @@ class RollingRunner:
         if self._stopping:
             return
         for node, process in self.dataflow.process_of.items():
-            if not self._contract_asts.get(process, {}).get("requires_preflight"):
+            # Only the preflight candidates whose referenced inputs are *actually*
+            # fixed at run start for this node (boundary / literal / unconnected) are
+            # checked here; any candidate reading a producer-fed input is deferred to
+            # dispatch (checked once the producer has run), so we never evaluate a
+            # requires against a not-yet-produced input's typed default.
+            checkable, _deferred = self._split_preflight(node, process)
+            if not checkable:
                 continue
-            # At run start only boundary / literal inputs are available; a preflight
-            # expression reads only those (by phase), so assembling here resolves the
-            # ports it needs (other, data-phase inputs default but are not referenced).
             inputs = assemble_inputs(self.dataflow, self.contracts, self.values, node)
-            if self._violated_contract(process, "requires_preflight", inputs, {}, self._fmt_node(node)) is not None:
+            if self._violated_exprs(process, "requires_preflight", checkable, inputs, {}, self._fmt_node(node)) is not None:
                 self.failed = True
                 self._stopping = True
                 return
@@ -469,16 +472,52 @@ class RollingRunner:
 
         return resolve
 
+    def _input_available_at_start(self, node, port: str) -> bool:
+        """Whether input `port` of `node` has a value fixed at run start.
+
+        True when the port is fed by the boundary (a seeded entry input), bound to a
+        static literal, or unconnected (a typed default) -- all fixed before any work
+        runs. False when a producing node feeds it: that value is not known until the
+        producer completes, so a `requires` over it cannot be preflighted (D37 assumed
+        run-phase inputs are always boundary/literal; a legal run->run producer output
+        breaks that assumption). `input_source` uses `()` for the boundary node."""
+        source = self.dataflow.input_source.get((tuple(node), port))
+        if source is not None:
+            return source[0] == ()
+        return True  # a static literal or an unconnected input: fixed at run start
+
+    def _split_preflight(self, node, process: str):
+        """Partition a process's preflight-candidate `requires` at `node` into those
+        actually checkable at run start (every referenced input fixed at run start)
+        and those deferred to dispatch (a referenced input is producer-fed). The split
+        is a static property of the dataflow, so it is the same at preflight and at
+        dispatch -- guaranteeing each expression is checked exactly once."""
+        candidates = self._contract_asts.get(process, {}).get("requires_preflight") or []
+        checkable, deferred = [], []
+        for pair in candidates:
+            _expr, ast = pair
+            if all(self._input_available_at_start(node, port) for _s, port in referenced_ports(ast)):
+                checkable.append(pair)
+            else:
+                deferred.append(pair)
+        return checkable, deferred
+
     def _violated_contract(self, process: str, section: str, inputs: dict, outputs: dict, subject: str):
-        """Evaluate `process`'s `section` (requires / ensures) contracts for `subject`
-        and return the first violated expression, or None if all hold.
+        """Evaluate `process`'s stored `section` (requires / ensures) contracts for
+        `subject`; see `_violated_exprs`."""
+        return self._violated_exprs(
+            process, section, self._contract_asts.get(process, {}).get(section) or [], inputs, outputs, subject
+        )
+
+    def _violated_exprs(self, process: str, section: str, exprs, inputs: dict, outputs: dict, subject: str):
+        """Evaluate an explicit list of `(expr, ast)` contracts for `subject` and return
+        the first violated expression, or None if all hold.
 
         Every expression is evaluated (so the optional `contract_observer` sees each
         one, held or violated, D36; v0 §9.2 permits evaluating all at runtime), and the
-        first violation is recorded as the run's failure reason. A contract that
-        evaluates false -- or whose runtime evaluation errors (v0 §9.2) -- is a runtime
-        contract violation (v0 §9.3)."""
-        exprs = self._contract_asts.get(process, {}).get(section)
+        first violation is recorded as the run's failure reason under `section`. A
+        contract that evaluates false -- or whose runtime evaluation errors (v0 §9.2) --
+        is a runtime contract violation (v0 §9.3)."""
         if not exprs:
             return None
         resolve = self._contract_resolver(process, inputs, outputs)
@@ -646,8 +685,14 @@ class RollingRunner:
             # so the activity is recorded `failed` and never dispatched, stopping the
             # run gracefully (D25) -- like an observed activity failure, but caught up
             # front. `requires` may reference only inputs (v0 §9.1), so outputs is empty.
-            violated = self._violated_contract(
-                activity["process"], "requires", inputs, {}, self._fmt_node(tuple(activity["node"]))
+            # Besides the data-phase `requires` (D32), also check any preflight
+            # candidate deferred from run start because it reads a producer-fed input
+            # (now available) -- so it is verified here rather than skipped (D37 gap).
+            proc = activity["process"]
+            _checkable, deferred = self._split_preflight(activity["node"], proc)
+            requires = (self._contract_asts.get(proc, {}).get("requires") or []) + deferred
+            violated = self._violated_exprs(
+                proc, "requires", requires, inputs, {}, self._fmt_node(tuple(activity["node"]))
             )
             if violated is not None:
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))

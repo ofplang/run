@@ -1,0 +1,59 @@
+# A producer-fed run-phase precondition (dev-notes D37 gap; review #2).
+#
+#   inputs.seed --> Src (script) --r(run phase)--> Check (script) --ok--> returns.ok
+#                                                  requires: inputs.r.view >= 0
+#
+# `Check.r` is a RUN-phase input, so its `requires` is a preflight *candidate* (D37).
+# But `r` is fed by the producer `Src` (a legal run->run output), so it is NOT fixed
+# at run start: the check must be *deferred to dispatch* and evaluated against Src's
+# real output, never against the run-start typed default (which would hide a bad
+# value). Pairs with producer_run_phase.env.yaml.
+spec_version: "0.0"
+
+processes:
+
+  src:
+    kind: atomic
+    inputs:
+      seed: { type: Int, phase: data }
+    outputs:
+      r: { type: Int, phase: run }
+    script:
+      language: python
+      code: |
+        return {"r": seed}
+
+  check:
+    kind: atomic
+    inputs:
+      r: { type: Int, phase: run }
+    outputs:
+      ok: { type: Int, phase: run }
+    contracts:
+      requires:
+        - expr: "inputs.r.view >= 0"
+    script:
+      language: python
+      code: |
+        return {"ok": r}
+
+  main:
+    kind: composite
+    inputs:
+      seed: { type: Int, phase: data }
+    outputs:
+      ok: { type: Int, phase: run }
+    body:
+      nodes:
+        - id: Src
+          process: src
+          bind:
+            seed: { from: inputs.seed }
+        - id: Check
+          process: check
+          bind:
+            r: { from: Src.r }
+      returns:
+        ok: { from: Check.ok }
+
+entry: main
