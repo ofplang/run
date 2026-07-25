@@ -260,6 +260,10 @@ class Contracts:
             input_phases = {p: (ps or {}).get("phase", "data") for p, ps in raw_inputs.items()}
             processes[name] = ProcessContract(inputs, outputs, input_phases)
         entry = data.get("entry") or ("main" if "main" in raw_processes else None)
+        # A declared `entry` that names no process would otherwise surface as a bare
+        # KeyError deep in seeding / contract lookups; report it cleanly here.
+        if entry is not None and entry not in processes:
+            raise RunnerError(f"entry process {entry!r} is not defined")
         return cls(processes, registry, entry)
 
     def entry_input_type(self, port: str) -> ResolvedType:

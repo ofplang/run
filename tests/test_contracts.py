@@ -216,3 +216,15 @@ def test_resolves_a_real_fixture(tmp_path):
     # main is a composite; its declared ports resolve too (used for boundary later).
     assert c.input_type("main", "sample") == Nominal("Plate", "object", {})
     assert c.output_type("main", "final_score") == Nominal("Score", "data", {})
+
+
+def test_nonexistent_entry_is_a_clean_error(tmp_path):
+    # A declared `entry` that names no process is reported as a clean RunnerError,
+    # not a bare KeyError deep in seeding / contract lookups (review #8).
+    wf = tmp_path / "bad_entry.workflow.yaml"
+    wf.write_text(
+        "spec_version: '0.0'\nprocesses:\n  main:\n    kind: atomic\nentry: typo\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RunnerError, match="entry process 'typo' is not defined"):
+        Contracts.from_workflow(str(wf))
