@@ -1,5 +1,7 @@
 # ofplang run
 
+[![CI](https://github.com/ofplang/run/actions/workflows/ci.yml/badge.svg)](https://github.com/ofplang/run/actions/workflows/ci.yml)
+
 A runner for **Object-flow Programming Language v0** — a YAML-based dataflow
 workflow IR with linear Object tracking. The language is defined in the
 [ofplang/spec](https://github.com/ofplang/spec) repository.
