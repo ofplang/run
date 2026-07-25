@@ -31,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.run.runner import (
+    ContractSyntaxError,
     RollingRunner,
     Runner,
     RunnerError,
@@ -133,6 +134,12 @@ def _cmd_run(args) -> int:
             poll_interval=args.poll_interval,
         )
         status = runner.run()
+    except (yaml.YAMLError, ContractSyntaxError) as exc:
+        # Malformed workflow / environment YAML or an unparsable contract
+        # expression is an input error, not an execution failure -- the runner is
+        # the untrusted boundary even though valid v0 input never hits this.
+        print(f"ofp-run: invalid input: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
@@ -167,9 +174,12 @@ def _cmd_replay(args) -> int:
         print(f"ofp-run: environment not found: {args.env!r}", file=sys.stderr)
         return EXIT_USAGE
 
-    runner = Runner(plan, args.env)
     try:
+        runner = Runner(plan, args.env)
         status = runner.run()
+    except (yaml.YAMLError, ContractSyntaxError) as exc:
+        print(f"ofp-run: invalid input: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED

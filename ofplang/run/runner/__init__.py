@@ -18,6 +18,7 @@ Built on top of the simulator. Two entry points:
 
 from __future__ import annotations
 
+from .contract_eval import ContractSyntaxError
 from .loader import load_document, serialize_document
 from .rolling import RollingRunner
 from .runner import Runner, RunnerError
@@ -26,6 +27,7 @@ __all__ = [
     "Runner",
     "RollingRunner",
     "RunnerError",
+    "ContractSyntaxError",
     "load_document",
     "serialize_document",
 ]
