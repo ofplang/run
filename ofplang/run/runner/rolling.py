@@ -73,12 +73,23 @@ def _normalize_mode_ids(environment: dict) -> dict:
     keeps the id -> mode mapping stable across reduction (D21). Ids are `m<i>`
     rather than the bare position, because a mode id must be a v0 identifier
     (§8.1) and so cannot start with a digit.
+
+    A generated id must not collide with a *user-supplied* id in the same process
+    (modes are keyed by id downstream, so a collision silently shadows a mode):
+    the fill skips any `m<i>` a user already used.
     """
     env = copy.deepcopy(environment)
     for process in (env.get("processes") or {}).values():
-        for i, mode in enumerate(process.get("modes") or []):
+        modes = process.get("modes") or []
+        used = {m.get("id") for m in modes if m.get("id") is not None}
+        counter = 0
+        for mode in modes:
             if mode.get("id") is None:
-                mode["id"] = f"m{i}"
+                while f"m{counter}" in used:
+                    counter += 1
+                mode["id"] = f"m{counter}"
+                used.add(f"m{counter}")
+                counter += 1
     return env
 
 
