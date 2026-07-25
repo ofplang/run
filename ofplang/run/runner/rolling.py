@@ -589,6 +589,31 @@ class RollingRunner:
                     self._stopping = True
                     return
 
+    def _requires_gate_open(self, node) -> bool:
+        """Whether every ancestor composite of `node` that declares a `requires` has
+        had it checked (v0 §9). A composite's precondition gates its whole body: no
+        body activity may run until the composite's `requires` is verified. Because the
+        composite is flattened, `node` (a tuple path) lies inside composite `c` exactly
+        when `c` is a proper prefix of it.
+
+        The gate closes the D34 gap where a body activity independent of the
+        composite's inputs (e.g. an `objects.create`, or a literal-only binding) had no
+        dataflow dependency on those inputs, so it could dispatch at run start -- before
+        the composite's `requires` (checked once its producer-fed inputs arrive) was
+        ever evaluated. A violation sets `_stopping`, which halts all dispatch, so the
+        gate only needs "checked": a checked-and-held composite lets its body run, a
+        checked-and-violated one stops the run before this is reached again.
+
+        No deadlock: a composite's inputs come from outside it (its producers are never
+        gated by it), and an unbound input is never tracked as pending readiness, so the
+        `requires` always becomes checkable and the gate always eventually opens."""
+        node = tuple(node)
+        for path, boundary in self._composites.items():
+            if len(path) < len(node) and node[: len(path)] == path:
+                if "requires" in (self._contract_asts.get(boundary.process) or {}) and path not in self._checked_requires:
+                    return False
+        return True
+
     def _replan_and_dispatch(self) -> list[dict]:
         """One normal tick: build the status from committed history, replan, and
         dispatch every pending activity that can start now. Returns the plan's
@@ -633,6 +658,14 @@ class RollingRunner:
             if self._stopping:
                 break
             if int(act["start"]) <= self.now:
+                # Gate a body activity on its composite's `requires` being checked
+                # (v0 §9 / D34 gap): an input-independent body node must not run before
+                # its composite's precondition is verified. Deferred (not failed): a
+                # later tick redispatches it once the `requires` is checked. Only
+                # process invocations are gated; a transport is ordered by the Object it
+                # moves, which a gated producer has not yet created.
+                if act.get("kind") == "processing" and not self._requires_gate_open(act["node"]):
+                    continue
                 self._commit_start(act)
         return pending
 

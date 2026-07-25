@@ -1,0 +1,72 @@
+# A nested composite whose `requires` must gate an input-INDEPENDENT body node
+# (spec §9 / dev-notes D34 gap; review #1).
+#
+#   inputs.a --> Pre --p--> [ wrap:  Make --m--\                        ]
+#                            requires inp>=0     Combine(inp, m) --y--> out --> returns.r
+#            inputs.a --------------------------^ (via wrap.inp = Pre.p)
+#
+# `wrap.inp` is producer-fed (by Pre), so `wrap`'s `requires` is only checked
+# mid-run, after Pre completes. `Make` reads none of wrap's inputs, so it has no
+# dataflow dependency on `inp` and the scheduler places it at t=0 -- it would run
+# before `requires` was ever evaluated. The runner must therefore gate `Make` (and
+# every wrap body activity) on wrap's `requires` being checked: on a violation
+# (inp<0), `Make` must NOT run. Pairs with composite_requires_gate.env.yaml.
+spec_version: "0.0"
+
+processes:
+
+  pre:
+    kind: atomic
+    inputs: { x: { type: Int, phase: data } }
+    outputs: { p: { type: Int, phase: data } }
+    script: { language: python, code: "return {'p': x}" }
+
+  make:
+    kind: atomic
+    inputs: {}
+    outputs: { m: { type: Int, phase: data } }
+    script: { language: python, code: "return {'m': 1}" }
+
+  combine:
+    kind: atomic
+    inputs:
+      a: { type: Int, phase: data }
+      b: { type: Int, phase: data }
+    outputs: { y: { type: Int, phase: data } }
+    script: { language: python, code: "return {'y': a + b}" }
+
+  wrap:
+    kind: composite
+    inputs: { inp: { type: Int, phase: data } }
+    outputs: { out: { type: Int, phase: data } }
+    contracts:
+      requires:
+        - expr: "inputs.inp.view >= 0"
+    body:
+      nodes:
+        - id: Make
+          process: make
+        - id: Combine
+          process: combine
+          bind:
+            a: { from: inputs.inp }
+            b: { from: Make.m }
+      returns:
+        out: { from: Combine.y }
+
+  main:
+    kind: composite
+    inputs: { a: { type: Int, phase: data } }
+    outputs: { r: { type: Int, phase: data } }
+    body:
+      nodes:
+        - id: Pre
+          process: pre
+          bind: { x: { from: inputs.a } }
+        - id: W
+          process: wrap
+          bind: { inp: { from: Pre.p } }
+      returns:
+        r: { from: W.out }
+
+entry: main
