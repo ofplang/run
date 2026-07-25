@@ -153,7 +153,7 @@ class RollingRunner:
         # device model at dispatch so it can act on a process's declared structure
         # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
         self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
-        # Parsed contract expressions (§9 / D32), per process:
+        # Parsed contract expressions (v0 §9 / D32), per process:
         # {process: {"requires": [(expr, ast)], "ensures": [(expr, ast)]}}. Checked for
         # each atomic process and for the top-level entry composite (Phase 1); nested
         # composite contracts are deferred. A process with no `contracts` section is
@@ -277,7 +277,7 @@ class RollingRunner:
             self.sim.place(spot)
         seed_entry(self.dataflow, self.contracts, self.values, self.job)
 
-        # Whole-workflow precondition contracts (§9 `requires` on the entry composite,
+        # Whole-workflow precondition contracts (v0 §9 `requires` on the entry composite,
         # D32 Phase 1): checked once the boundary inputs are seeded, before any work is
         # dispatched. A violation stops the run before it starts (graceful, D25): no
         # activity runs, `self.failed`/`_stopping` are set, and the loop below breaks
@@ -340,10 +340,10 @@ class RollingRunner:
         # Skipped on a failed / stopped run (delivery legitimately may not have run).
         if not self.failed:
             self._check_output_spots()
-            # Whole-workflow postcondition contracts (§9 `ensures` on the entry
+            # Whole-workflow postcondition contracts (v0 §9 `ensures` on the entry
             # composite, D32 Phase 1): checked once the outputs are assembled, over the
             # boundary inputs and produced outputs. A violation is a runtime contract
-            # violation (§9.3): set `self.failed` (exit 1). The activities stay
+            # violation (v0 §9.3): set `self.failed` (exit 1). The activities stay
             # `completed` -- the failure is at the whole-workflow boundary, not any one
             # activity. Only checked on an otherwise-successful run (the guard above).
             entry = self.contracts.entry
@@ -372,7 +372,7 @@ class RollingRunner:
                 )
 
     def _parse_contracts(self) -> dict:
-        """Parse every process's `contracts` (§9) into ASTs, keyed by process and
+        """Parse every process's `contracts` (v0 §9) into ASTs, keyed by process and
         section. All process kinds are parsed here; where each is *checked* is decided
         at run time by the process's role -- an atomic process on the activity path
         (D32), the entry composite at the run boundary (D33), a nested composite when
@@ -401,8 +401,8 @@ class RollingRunner:
                 if not exprs:
                     continue
                 if section == "requires" and is_atomic:
-                    # `requires` references only inputs (§9.1); an expression is
-                    # preflightable iff every input it reads is non-data phase (§5.6),
+                    # `requires` references only inputs (v0 §9.1); an expression is
+                    # preflightable iff every input it reads is non-data phase (v0 §6),
                     # hence knowable at run start.
                     preflight = [
                         (expr, ast)
@@ -442,7 +442,7 @@ class RollingRunner:
 
     def _main_contract_inputs(self) -> dict:
         """The entry composite's input view values, for its own whole-workflow contract
-        checks (§9 on `main`, D32 Phase 1): each declared entry input read from the
+        checks (v0 §9 on `main`, D32 Phase 1): each declared entry input read from the
         boundary-seeded value store. Every entry input is seeded at run start
         (`seed_entry`), so all are present."""
         entry = self.contracts.entry
@@ -453,7 +453,7 @@ class RollingRunner:
         map a `.view` reference to this invocation's actual view value. A bare `.view`
         is the value itself (a primitive scalar or a view record); `.view.length` on
         an Array is its element count; `.view.<field>` on a nominal is that view
-        field (§9.1)."""
+        field (v0 §9.1)."""
         def resolve(scope: str, port: str, fields: tuple):
             value = (inputs if scope == "inputs" else outputs)[port]
             if not fields:
@@ -474,10 +474,10 @@ class RollingRunner:
         and return the first violated expression, or None if all hold.
 
         Every expression is evaluated (so the optional `contract_observer` sees each
-        one, held or violated, D36; §9.2 permits evaluating all at runtime), and the
+        one, held or violated, D36; v0 §9.2 permits evaluating all at runtime), and the
         first violation is recorded as the run's failure reason. A contract that
-        evaluates false -- or whose runtime evaluation errors (§9.2) -- is a runtime
-        contract violation (§9.3)."""
+        evaluates false -- or whose runtime evaluation errors (v0 §9.2) -- is a runtime
+        contract violation (v0 §9.3)."""
         exprs = self._contract_asts.get(process, {}).get(section)
         if not exprs:
             return None
@@ -487,7 +487,7 @@ class RollingRunner:
             try:
                 held = bool(evaluate(ast, resolve))
             except Exception:
-                held = False  # a runtime evaluation error counts as a violation (§9.2)
+                held = False  # a runtime evaluation error counts as a violation (v0 §9.2)
             if self._contract_observer is not None:
                 self._contract_observer(
                     {"subject": subject, "process": process, "section": section,
@@ -513,7 +513,7 @@ class RollingRunner:
         return values
 
     def _check_ready_composites(self) -> None:
-        """Check each nested composite invocation's contracts (§9 / D34) as soon as its
+        """Check each nested composite invocation's contracts (v0 §9 / D34) as soon as its
         values are available: `requires` once all its inputs are present, `ensures`
         once all its inputs and outputs are. Each invocation is checked once (tracked in
         `_checked_requires` / `_checked_ensures`). A violation stops the run gracefully
@@ -641,11 +641,11 @@ class RollingRunner:
             # records inputs but does not yet use them (F4b).
             output_schema = self._output_schemas.get(activity["process"], {})
             inputs = assemble_inputs(self.dataflow, self.contracts, self.values, activity["node"])
-            # Precondition contracts (§9 `requires`, D32): checked before the op runs,
+            # Precondition contracts (v0 §9 `requires`, D32): checked before the op runs,
             # over its assembled inputs. A violation must prevent the op from running,
             # so the activity is recorded `failed` and never dispatched, stopping the
             # run gracefully (D25) -- like an observed activity failure, but caught up
-            # front. `requires` may reference only inputs (§9.1), so outputs is empty.
+            # front. `requires` may reference only inputs (v0 §9.1), so outputs is empty.
             violated = self._violated_contract(
                 activity["process"], "requires", inputs, {}, self._fmt_node(tuple(activity["node"]))
             )
@@ -708,9 +708,9 @@ class RollingRunner:
                         normalized[port] = with_static_views(value, resolved)
                     record_outputs(self.values, tuple(rec.activity["node"]), normalized)
                     outputs = normalized
-                # Postcondition contracts (§9 `ensures`, D32): checked once the outputs
+                # Postcondition contracts (v0 §9 `ensures`, D32): checked once the outputs
                 # exist, over this invocation's assembled inputs and produced outputs. A
-                # violation is a runtime contract violation (§9.3): mark the (physically
+                # violation is a runtime contract violation (v0 §9.3): mark the (physically
                 # completed) activity `failed` and stop the run gracefully (D25). Only
                 # processing activities carry a `process` (a transport leg does not).
                 process = rec.activity.get("process")
@@ -725,7 +725,7 @@ class RollingRunner:
                 rec.status = "failed"
                 rec.end = self.now
                 # Record why (D36): a model-driven failure carries a (code, message)
-                # reason (e.g. a script error, §22.2); an injected D25 failure has none,
+                # reason (e.g. a script error, v0 §22.2); an injected D25 failure has none,
                 # so it is reported generically against the activity's subject.
                 subject = self._activity_subject(rec.activity)
                 reason = observed_state.get("reason")

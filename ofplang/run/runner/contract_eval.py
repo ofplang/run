@@ -1,4 +1,4 @@
-"""Runtime evaluator for v0 contract expressions (spec §9; dev-notes design.md D32).
+"""Runtime evaluator for v0 contract expressions (v0 §9; dev-notes design.md D32).
 
 Run-local, and deliberately promotable to a shared `ofplang-types` /
 `ofplang-contracts` module later (the project's stated direction): this module
@@ -6,7 +6,7 @@ imports nothing else from the runner. It parses a contract `expr` string into a
 tiny AST and evaluates it against runtime view values supplied through a `resolve`
 callback, so it knows nothing about the runner's type model or value store.
 
-Division of labour with `ofplang-validate` (spec §9.3): validate owns the
+Division of labour with `ofplang-validate` (v0 §9.3): validate owns the
 *graph-time* layer -- it parses, type-checks the expression to Bool, enforces
 reference scope and view-field existence, and constant-folds a fully-literal
 contract, flagging a statically-false one as an IR error. This module does the
@@ -15,7 +15,7 @@ actual view values of one activity's invocation (D32). The runner assumes valid 
 input, so this evaluator trusts the expression is well-typed and re-derives none
 of validate's static diagnostics.
 
-Grammar (§9.2), precedence lowest -> highest: `or`; `and`; comparison (`==` `!=`
+Grammar (v0 §9.2), precedence lowest -> highest: `or`; `and`; comparison (`==` `!=`
 `<` `<=` `>` `>=`, non-associative); additive (`+` `-`); multiplicative (`*`
 `/`); unary (`not`, `-`); primary (literal, `.view` reference, parenthesised). A
 reference is `inputs.<port>.view[.<field>]` or `outputs.<port>.view[.<field>]`.
@@ -124,7 +124,7 @@ class _Binary:
 
 def _make_ref(path: str) -> _Ref:
     """Turn a dotted reference path into a `_Ref`. Every valid v0 contract
-    reference is a `.view` reference (§9.1): `inputs|outputs.<port>.view[.<field>]`.
+    reference is a `.view` reference (v0 §9.1): `inputs|outputs.<port>.view[.<field>]`.
     """
     parts = path.split(".")
     if len(parts) < 3 or parts[0] not in ("inputs", "outputs") or parts[2] != "view":
@@ -216,7 +216,7 @@ class _Parser:
         if t.kind == "float":
             return _Lit(float(t.text))
         if t.kind == "str":
-            return _Lit(json.loads(t.text))  # JSON-style string escapes (§9.2)
+            return _Lit(json.loads(t.text))  # JSON-style string escapes (v0 §9.2)
         if t.kind == "kw" and t.text in ("true", "false"):
             return _Lit(t.text == "true")
         if t.kind == "ref":
@@ -265,9 +265,9 @@ def evaluate(ast, resolve):
     reference: `scope` is "inputs" / "outputs", `port` the port name, and `fields`
     the segments after `.view` (empty for a bare `.view`). The caller wires it to
     the invocation's actual view values. Numeric promotion and division follow
-    Python's arithmetic, which matches the spec's contract-local rule (§9.2). A
+    Python's arithmetic, which matches the spec's contract-local rule (v0 §9.2). A
     runtime error (e.g. division by zero on runtime values) propagates to the
-    caller, which treats it as a runtime contract violation (§9.3)."""
+    caller, which treats it as a runtime contract violation (v0 §9.3)."""
     if isinstance(ast, _Lit):
         return ast.value
     if isinstance(ast, _Ref):
@@ -276,7 +276,7 @@ def evaluate(ast, resolve):
         if ast.op == "not":
             return not evaluate(ast.operand, resolve)
         return -evaluate(ast.operand, resolve)
-    # _Binary. `and` / `or` may short-circuit at runtime (§9.2 leaves this to the
+    # _Binary. `and` / `or` may short-circuit at runtime (v0 §9.2 leaves this to the
     # implementation); the comparison / arithmetic operators evaluate both sides.
     op = ast.op
     if op == "and":

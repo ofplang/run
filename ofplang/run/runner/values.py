@@ -85,7 +85,7 @@ def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
     """Build a node's input values by following each input port back to its source.
 
     For each input port of `node`, in precedence order (these are mutually exclusive
-    per binding, §11):
+    per binding, v0 §11):
       1. a connected producer (`from:`) that has a stored value -> use it (the
          producer -> consumer routing);
       2. a static literal (`value:`, D30) bound to the port -> use it, contract-checked

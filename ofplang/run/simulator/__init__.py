@@ -1,5 +1,9 @@
 """Simulated execution backend for the runner (spec §6/§7; dev-notes D10-D27).
 
+Section references: bare `§N` cite the execution-plan spec
+(`ofplang-schedule/docs/SPECIFICATIONS.md`); the v0 language spec
+(`ofplang-spec/SPECIFICATION.md`) is cited as `v0 §N` where the two collide.
+
 This layer stands in for real hardware so the runner can be exercised end to end:
 it accepts the same physical dispatch calls a real backend would, advances a
 virtual clock, and reports operation outcomes, letting tests drive a full plan
@@ -14,7 +18,7 @@ operation failure per capability (a failing (process, mode) / (transporter, rout
 ends `failed` with no material effect, D25). Duration variance is injected
 externally via a dispatch `duration` (D13). Output view values are produced by an
 injected device model or the built-in `script_device_model` (D31), which runs a
-`python_script_processes` script (§22) and otherwise falls back to
+`python_script_processes` script (v0 §22) and otherwise falls back to
 `default_device_model` (D27); non-script outputs are typed but still dummy.
 """
 

@@ -1,8 +1,8 @@
 """Resolved type / view contracts for the value layer (dev-notes design.md D27, F1).
 
 The value layer needs to know, for each process port, its resolved type: whether
-it is Object-bearing (§5.2), and -- for typed value generation and contract
-checking in later stages -- its view schema (§7.4), the contract-visible Pure
+it is Object-bearing (v0 §5.2), and -- for typed value generation and contract
+checking in later stages -- its view schema (v0 §7.4), the contract-visible Pure
 Data projection of the value. This module resolves that from the workflow.
 
 Independence (D27): the runner does NOT depend on ofplang-validate. This is a
@@ -14,7 +14,7 @@ input -- shape / reference / phase checking is validate's job, not duplicated he
 
 Scope (D27, F1): concrete types only -- primitives (Bool/Int/Float/String),
 `Array<T>`, and nominal data / object types with a flat view schema. Generics
-(§6), traits (§7.3), phase (§5.6), and `$import` (§5.7) are out of scope; a
+(v0 §8), traits (v0 §7.3), phase (v0 §6), and `$import` (v0 §3) are out of scope; a
 generic or unknown type raises. A port's runtime "value" is its type's view
 projection: a scalar for a primitive, a list for an Array, a field dict for a
 nominal (empty when the type declares no view). Object-bearing ports carry a view
@@ -30,7 +30,7 @@ import yaml
 
 from .runner import RunnerError
 
-# v0 built-in primitive Data types (§7.1). They have no view fields; a primitive
+# v0 built-in primitive Data types (v0 §7.1). They have no view fields; a primitive
 # value is its own contract-visible projection.
 PRIMITIVES = frozenset({"Bool", "Int", "Float", "String"})
 
@@ -48,23 +48,23 @@ _PRIMITIVE_DEFAULTS = {"Bool": False, "Int": 0, "Float": 0.0, "String": ""}
 
 @dataclass(frozen=True)
 class Primitive:
-    """A built-in primitive Data type (§7.1); its value is a scalar of this kind."""
+    """A built-in primitive Data type (v0 §7.1); its value is a scalar of this kind."""
 
     name: str  # one of PRIMITIVES
 
 
 @dataclass(frozen=True)
 class ArrayType:
-    """`Array<T>` (§7.1); its value is a list of `element`-shaped values. Object-
-    bearing iff its element is (§7.1 / §5.2)."""
+    """`Array<T>` (v0 §7.1); its value is a list of `element`-shaped values. Object-
+    bearing iff its element is (v0 §7.1 / v0 §5.2)."""
 
     element: "ResolvedType"
 
 
 @dataclass(frozen=True)
 class Nominal:
-    """A user-defined nominal type (§7.2): `domain` is "data" or "object", and
-    `view` is its flat view schema (§7.4) -- field name -> resolved field type,
+    """A user-defined nominal type (v0 §7.2): `domain` is "data" or "object", and
+    `view` is its flat view schema (v0 §7.4) -- field name -> resolved field type,
     each a Primitive or an Array (recursively) of primitives. A nominal with no
     declared view has an empty `view`. Its value is a dict of the view fields; an
     object nominal additionally has a linear identity, tracked by the simulator,
@@ -73,7 +73,7 @@ class Nominal:
     name: str
     domain: str  # "data" | "object"
     view: dict = field(default_factory=dict)  # field name -> ResolvedType
-    # Type-level static view values (§7.4): field name -> its declared static value,
+    # Type-level static view values (v0 §7.4): field name -> its declared static value,
     # for view fields that declare `value:`. Such a field is the same constant for
     # every value of this type, so the runner projects it onto every view record of
     # this type (D35), rather than a runtime default. Fields with no static value are
@@ -86,7 +86,7 @@ ResolvedType = "Primitive | ArrayType | Nominal"
 
 
 def is_object_bearing(resolved) -> bool:
-    """Whether a value of this resolved type carries an Object slot (§5.2): an
+    """Whether a value of this resolved type carries an Object slot (v0 §5.2): an
     object nominal, or an Array (recursively) whose element is Object-bearing.
     Primitives and data nominals are Pure Data."""
     if isinstance(resolved, Primitive):
@@ -132,7 +132,7 @@ def conforms(value, resolved) -> bool:
 
 def default_value(resolved):
     """A typed default value for `resolved`: a primitive's default, an empty array, or
-    a record of its view fields. A view field with a type-level static value (§7.4)
+    a record of its view fields. A view field with a type-level static value (v0 §7.4)
     takes that static value; other fields take a typed default (D27 F2 / D35). Used
     runner-side to synthesise a value the runner is responsible for -- an entry input
     the job did not supply, or an unconnected input -- as a conformant view value (F4).
@@ -149,7 +149,7 @@ def default_value(resolved):
 
 def with_static_views(value, resolved):
     """Return `value` with every type-level static view field set to its declared
-    static value (§7.4 / D35). A static view field is the same constant for every value
+    static value (v0 §7.4 / D35). A static view field is the same constant for every value
     of the type, so this is the correct view projection: the runner applies it wherever
     it routes a value (a seeded / assembled input, a recorded output), so scripts and
     contracts always see the static value rather than a stale runtime default.
@@ -186,12 +186,12 @@ def _parse(expr: str, registry: dict) -> ResolvedType:
 
 
 def _build_registry(types_section: dict) -> dict:
-    """Resolve the document's `types:` section (§7.2) into a name -> Nominal map.
+    """Resolve the document's `types:` section (v0 §7.2) into a name -> Nominal map.
 
     Two passes so a view field can reference any declared type by name: first
     create each nominal with an empty view (recording its domain), then resolve
     each nominal's view fields against the now-complete registry. (In valid v0 a
-    view field is a primitive or Array of primitives, §7.4, so this never cycles.)"""
+    view field is a primitive or Array of primitives, v0 §7.4, so this never cycles.)"""
     registry: dict = {}
     for name, spec in (types_section or {}).items():
         spec = spec or {}
@@ -203,7 +203,7 @@ def _build_registry(types_section: dict) -> dict:
         for f, fs in view_raw.items():
             fs = fs or {}
             view[f] = _parse(fs.get("type", ""), registry)
-            # A view field declaring `value:` is a type-level static view value (§7.4);
+            # A view field declaring `value:` is a type-level static view value (v0 §7.4);
             # record it so the runner projects it onto every value of this type (D35).
             if "value" in fs:
                 static_view[f] = fs["value"]
@@ -214,7 +214,7 @@ def _build_registry(types_section: dict) -> dict:
 @dataclass(frozen=True)
 class ProcessContract:
     """One process's resolved port signature: port name -> resolved type, for its
-    declared inputs and outputs, plus each input port's declared `phase` (§5.6),
+    declared inputs and outputs, plus each input port's declared `phase` (v0 §6),
     used to classify when a contract over it can be checked (D37)."""
 
     inputs: dict
@@ -254,7 +254,7 @@ class Contracts:
             raw_inputs = spec.get("inputs") or {}
             inputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in raw_inputs.items()}
             outputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("outputs") or {}).items()}
-            # Each input port's declared phase (§5.6), defaulting to `data` (a runtime
+            # Each input port's declared phase (v0 §6), defaulting to `data` (a runtime
             # value) when absent -- so a contract over it is treated as runtime (never
             # wrongly hoisted to a run-start preflight, D37).
             input_phases = {p: (ps or {}).get("phase", "data") for p, ps in raw_inputs.items()}
@@ -270,7 +270,7 @@ class Contracts:
         return self.processes[process].inputs[port]
 
     def input_phase(self, process: str, port: str) -> str:
-        """An input port's declared phase (§5.6), defaulting to `data` (D37)."""
+        """An input port's declared phase (v0 §6), defaulting to `data` (D37)."""
         return self.processes[process].input_phases.get(port, "data")
 
     def output_type(self, process: str, port: str) -> ResolvedType:

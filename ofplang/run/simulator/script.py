@@ -1,6 +1,6 @@
-"""Python script execution for the value seam (spec §22; dev-notes design.md D31).
+"""Python script execution for the value seam (v0 §22; dev-notes design.md D31).
 
-A v0 `python_script_processes` process (§22) is an atomic Pure-Data process
+A v0 `python_script_processes` process (v0 §22) is an atomic Pure-Data process
 carrying a `script` section: inline Python that computes its Pure Data outputs
 from its Pure Data inputs. This module is the backend's executor for such a
 process -- the first *real* computation in the value seam (D26/D27), where until
@@ -14,11 +14,11 @@ delegates to `default_device_model`, so non-script processes are unaffected. It 
 the simulator's built-in default (see `core.Simulator`), so a workflow with script
 processes computes real values straight from the CLI with no injected model.
 
-Execution model (§22.2): the `code` is the body of an implementation-provided
+Execution model (v0 §22.2): the `code` is the body of an implementation-provided
 Python function; each input port name is bound as a local, and the function must
 return a mapping with *exactly* the declared output names, each value conforming
 to its declared type. A name mismatch, a non-conformant value, or any exception
-the script raises is a runtime verification failure (§22.2) -- not an IR error --
+the script raises is a runtime verification failure (v0 §22.2) -- not an IR error --
 so it is signalled with `DeviceComputationError`, which the simulator turns into a
 `failed` operation (the graceful stop of D25). A script process is Pure Data, so a
 failed one has no material effect, exactly as D25 requires.
@@ -31,8 +31,8 @@ duration-0 mode and later for a duration>0 one -- the mode's duration is the
 scheduler's estimate of the compute cost, and an estimate that differs from the
 real cost is absorbed exactly like physical duration variance (D23).
 
-Sandboxing (§22.3): none in this implementation. The script sees the full Python
-builtins and may import anything the host Python can. §22.3 explicitly allows an
+Sandboxing (v0 §22.3): none in this implementation. The script sees the full Python
+builtins and may import anything the host Python can. v0 §22.3 explicitly allows an
 implementation to restrict imports / builtins for sandboxing or determinism; that
 is a future tightening (implementation-defined), not done here. Execution is
 deliberately confined to `run_python_script` so it can later move behind a thread
@@ -50,7 +50,7 @@ class DeviceComputationError(Exception):
     failure, not a validating-oracle precondition error.
 
     Raised by a device model (e.g. `script_device_model` when a script raises,
-    returns the wrong output names, or returns a non-conformant value, §22.2) and
+    returns the wrong output names, or returns a non-conformant value, v0 §22.2) and
     caught by the simulator, which ends the operation `failed` (D25) instead of
     `completed`. A custom device model may raise it to signal the same graceful
     failure. It is intended for Pure Data computation (no material effect on
@@ -65,18 +65,18 @@ class DeviceComputationError(Exception):
 
 
 def run_python_script(code: str, inputs: dict) -> Any:
-    """Execute a script process's Python `code` (§22.2) and return its raw result.
+    """Execute a script process's Python `code` (v0 §22.2) and return its raw result.
 
     The `code` is evaluated as the body of an implementation-provided function
     whose parameters are the input port names, so each input is bound as a local
-    variable (§22.2). `inputs` maps each declared input port to its view value. No
-    sandboxing (§22.3): the function sees the full builtins and may import. The raw
+    variable (v0 §22.2). `inputs` maps each declared input port to its view value. No
+    sandboxing (v0 §22.3): the function sees the full builtins and may import. The raw
     return value is passed back as-is; the caller (`script_device_model`) verifies
     its shape against the declared outputs.
 
     Any failure -- a syntax error compiling the code, or an exception the script
     raises -- is wrapped in `DeviceComputationError`, so it becomes a graceful
-    runtime failure (§22.2) rather than crashing the run."""
+    runtime failure (v0 §22.2) rather than crashing the run."""
     # Build `def <fn>(<ports>): <indented code>`. Input port names are v0
     # identifiers (§8.1) and so are valid Python parameter names. Every code line is
     # indented one level to form the function body; an empty body falls back to
@@ -85,7 +85,7 @@ def run_python_script(code: str, inputs: dict) -> Any:
     body = "\n".join("    " + line for line in code.splitlines()) or "    pass"
     source = f"def __ofp_script__({params}):\n{body}"
     try:
-        # `exec` injects the real builtins into `namespace` (no restriction, §22.3),
+        # `exec` injects the real builtins into `namespace` (no restriction, v0 §22.3),
         # so the compiled function may use them -- and import -- freely.
         namespace: dict = {}
         exec(source, namespace)  # noqa: S102 - executing the user script is the feature
@@ -129,14 +129,14 @@ def _conforms_to_descriptor(value: Any, descriptor: dict) -> bool:
 
 
 def script_device_model(process, mode, inputs, output_schema, definition):
-    """Built-in device model that runs `python_script_processes` (§22).
+    """Built-in device model that runs `python_script_processes` (v0 §22).
 
-    If `definition` carries a `script` section, execute it (§22.2) and verify the
+    If `definition` carries a `script` section, execute it (v0 §22.2) and verify the
     result: it must be a mapping whose keys are *exactly* the declared output ports
     (`output_schema`), each value conforming to its declared type (its value-shape
     descriptor). Any violation -- a non-mapping result, a missing / extra output
     name, a non-conformant value, or an unsupported script language -- raises
-    `DeviceComputationError` (a runtime verification failure, §22.2; the simulator
+    `DeviceComputationError` (a runtime verification failure, v0 §22.2; the simulator
     ends the op `failed`).
 
     With no `script` section it delegates to `default_device_model` (typed defaults
@@ -151,7 +151,7 @@ def script_device_model(process, mode, inputs, output_schema, definition):
 
         return default_device_model(process, mode, inputs, output_schema, definition)
 
-    # `python` is the only v0 script language (§22); a workflow that reached the
+    # `python` is the only v0 script language (v0 §22); a workflow that reached the
     # runner is assumed valid v0, but a wrong language cannot be run as Python, so
     # fail it as a runtime verification error rather than mis-executing it.
     language = script.get("language")
@@ -161,7 +161,7 @@ def script_device_model(process, mode, inputs, output_schema, definition):
             code="script_language",
         )
 
-    # Run the script and verify its result against the declared outputs (§22.2).
+    # Run the script and verify its result against the declared outputs (v0 §22.2).
     result = run_python_script(script.get("code") or "", inputs or {})
     if not isinstance(result, dict):
         raise DeviceComputationError(

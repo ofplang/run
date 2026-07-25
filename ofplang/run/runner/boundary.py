@@ -21,7 +21,7 @@ boundary value:
 
   - ``spot`` is the physical location / linear identity of an Object at the
     boundary (§6.8). Object-bearing ports only; a Pure Data port occupies no spot.
-  - ``view`` is the port's view projection (§7.4) -- the observable value. Present
+  - ``view`` is the port's view projection (v0 §7.4) -- the observable value. Present
     for inputs (a supplied value; omitted means "use a typed default"); filled in
     by the runner at run end for outputs (the produced value).
 

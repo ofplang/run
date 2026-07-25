@@ -75,7 +75,7 @@ class Dataflow:
     # `main`-level output port name -> the producing (node, port) (for the final
     # whole-workflow outputs). Covers Object and Pure Data returns alike.
     returns: dict
-    # (consumer node, input port) -> a static literal `value:` bound to it (§11,
+    # (consumer node, input port) -> a static literal `value:` bound to it (v0 §11,
     # Pure Data). The runner seeds these as the port's value in place of a typed
     # default. Recorded by the scheduler's flattener (`data_literals`, D30).
     literals: dict
@@ -129,7 +129,7 @@ def from_workflow(workflow_path) -> Dataflow:
     entry_ports = tuple(workflow.entry_input_ports.keys())
     returns = {name: (endpoint.node, endpoint.port) for name, endpoint in workflow.exit_outputs.items()}
 
-    # Static literal bindings (§11), keyed by the consuming (node, port) -- the same
+    # Static literal bindings (v0 §11), keyed by the consuming (node, port) -- the same
     # key convention as `input_source`, so the value layer can look them up the same
     # way. Recorded by the flattener (D30) so nested-composite literals are already
     # spliced to the leaf atomic that consumes them.
