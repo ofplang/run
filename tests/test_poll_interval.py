@@ -82,7 +82,18 @@ def test_reroute_still_works_under_fixed_interval():
 def test_cli_poll_interval(tmp_path):
     out = tmp_path / "status.yaml"
     code = main(
-        ["run", SIMPLE_WF, "--env", SIMPLE_ENV, "--seed", "0", "--poll-interval", "2", "-o", str(out)]
+        [
+            "run",
+            SIMPLE_WF,
+            "--env",
+            SIMPLE_ENV,
+            "--seed",
+            "0",
+            "--poll-interval",
+            "2",
+            "-o",
+            str(out),
+        ]
     )
     assert code == EXIT_OK
     assert load_document(out)["now"] == 6

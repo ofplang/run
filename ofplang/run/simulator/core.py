@@ -55,10 +55,9 @@ level (D27).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .environment import Environment, device_of, environment_from_dict, load_environment
-from .script import DeviceComputationError, script_device_model
 from .errors import (
     ClockError,
     DeviceDown,
@@ -68,7 +67,7 @@ from .errors import (
     SpotConflict,
     UnknownReference,
 )
-
+from .script import DeviceComputationError, script_device_model
 
 # Typed default value per built-in primitive (D27 F2), used to generate a
 # schema-conformant value from a value-shape descriptor.
@@ -327,7 +326,13 @@ class Simulator:
     # -- dispatch (D14/D15/D16) -------------------------------------------
 
     def dispatch_processing(
-        self, process: str, mode, duration: int | None = None, output_schema=None, inputs=None, definition=None
+        self,
+        process: str,
+        mode,
+        duration: int | None = None,
+        output_schema=None,
+        inputs=None,
+        definition=None,
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -532,7 +537,7 @@ class Simulator:
         generated `outputs` (the value seam, D26). An operation with no signature (a
         legacy dispatch) never carries `outputs`, so its view stays exactly
         ``{"status": ...}`` -- backward compatible."""
-        view = {"status": op.status}
+        view: dict[str, object] = {"status": op.status}
         if op.outputs is not None:
             view["outputs"] = op.outputs
         # A model-driven failure carries a (code, message) reason (D36); an injected
@@ -581,7 +586,9 @@ class Simulator:
     def _register_fault(self, time: int, device: str, action: str) -> None:
         if device not in self._env.devices:
             raise UnknownReference(f"unknown device: {device}")
-        self._faults.append({"time": int(time), "device": device, "action": action, "applied": False})
+        self._faults.append(
+            {"time": int(time), "device": device, "action": action, "applied": False}
+        )
 
     # -- failure scenario (D25) -------------------------------------------
 
@@ -599,7 +606,9 @@ class Simulator:
             raise UnknownReference(f"unknown mode {mode!r} for process {process!r}")
         self._failing_processes.add((process, str(mode)))
 
-    def schedule_transport_failure(self, transporter: str | None, from_spot: str, to_spot: str) -> None:
+    def schedule_transport_failure(
+        self, transporter: str | None, from_spot: str, to_spot: str
+    ) -> None:
         """Declare that every transport operation over `(transporter, from_spot,
         to_spot)` fails instead of completing (D25). The counterpart to
         `schedule_process_failure` for the transport half of the plan."""
@@ -711,6 +720,7 @@ class Simulator:
         else:  # transport
             # A same-spot no-op leaves the object where it is; a real move carries
             # its id from source to destination (physical move keeps identity, D15).
+            assert op.from_spot is not None and op.to_spot is not None  # set for transports
             if op.from_spot != op.to_spot:
                 obj = self._spot_holds.pop(op.from_spot, None)
                 if obj is None:
@@ -727,7 +737,9 @@ class Simulator:
         if op.output_schema is not None:
             model = self._device_model if self._device_model is not None else script_device_model
             try:
-                op.outputs = model(op.process, op.mode, op.inputs or {}, op.output_schema, op.definition)
+                op.outputs = model(
+                    op.process, op.mode, op.inputs or {}, op.output_schema, op.definition
+                )
             except DeviceComputationError as exc:
                 # The device model could not compute the outputs -- e.g. a script
                 # process raised or failed runtime verification (v0 §22.2). Treat it like

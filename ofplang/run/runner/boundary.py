@@ -109,7 +109,9 @@ def _descriptor(desc, port: str, side: str) -> tuple:
         raise RunnerError(f"boundary {side} {port!r} must be a mapping with spot / view")
     unknown = set(desc) - _DESCRIPTOR_KEYS
     if unknown:
-        raise RunnerError(f"boundary {side} {port!r} has unknown key(s): {', '.join(sorted(unknown))}")
+        raise RunnerError(
+            f"boundary {side} {port!r} has unknown key(s): {', '.join(sorted(unknown))}"
+        )
     return desc.get("spot"), ("view" in desc), desc.get("view")
 
 

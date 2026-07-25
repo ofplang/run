@@ -58,9 +58,7 @@ def _is_bookkeeping(activity: dict) -> bool:
     kind = activity.get("kind")
     if kind == "relay":
         return True
-    if kind == "transport" and activity.get("from_spot") == activity.get("to_spot"):
-        return True
-    return False
+    return bool(kind == "transport" and activity.get("from_spot") == activity.get("to_spot"))
 
 
 class Runner:
@@ -137,9 +135,13 @@ class Runner:
         """Observe the backend (status only, D18) and mark newly finished
         operations complete."""
         for rec in self._records:
-            if rec.status == "running" and rec.dispatched:
-                if self.sim.state(rec.uuid)["status"] == "completed":
-                    rec.status = "completed"
+            if (
+                rec.status == "running"
+                and rec.dispatched
+                and rec.uuid is not None
+                and self.sim.state(rec.uuid)["status"] == "completed"
+            ):
+                rec.status = "completed"
 
     def _build_status(self) -> dict:
         """Assemble the execution status (§6/§7) recording the completed run: every

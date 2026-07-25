@@ -118,7 +118,9 @@ def _conforms_to_descriptor(value: Any, descriptor: dict) -> bool:
             return isinstance(value, str)
         return False
     if kind == "array":
-        return isinstance(value, list) and all(_conforms_to_descriptor(v, descriptor["element"]) for v in value)
+        return isinstance(value, list) and all(
+            _conforms_to_descriptor(v, descriptor["element"]) for v in value
+        )
     # record: exactly the declared view fields, each conforming.
     if not isinstance(value, dict):
         return False

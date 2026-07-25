@@ -102,7 +102,9 @@ def test_reroute_when_device_goes_down():
     assert target["input_spots"]["target_in"] == "station_2.core"
     # The re-transport leg station_1.core -> station_2.core is present.
     assert any(
-        a["kind"] == "transport" and a["from_spot"] == "station_1.core" and a["to_spot"] == "station_2.core"
+        a["kind"] == "transport"
+        and a["from_spot"] == "station_1.core"
+        and a["to_spot"] == "station_2.core"
         for a in status["activities"]
     )
 

@@ -52,7 +52,11 @@ def replan(
         return path
 
     try:
-        env_path = _to_file(environment, ".env.yaml") if isinstance(environment, dict) else environment
+        env_path = (
+            _to_file(environment, ".env.yaml")
+            if isinstance(environment, dict)
+            else environment
+        )
         status_path = _to_file(status_document, ".status.yaml")
         return _schedule(
             workflow_path,

@@ -14,6 +14,7 @@ dependencies = ["PyYAML>=6.0", "ofplang-schedule"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "ruff>=0.16", "mypy>=1.11", "types-PyYAML"]
 
 [project.scripts]
 # Standalone command; the umbrella `ofp` CLI (separate repo) exposes this as
@@ -31,3 +32,28 @@ namespaces = true
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["ofplang"]
+# `ofplang` is a PEP 420 namespace package (no __init__.py), so tell mypy how to
+# root it rather than letting it guess module names.
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# The sibling ofplang.schedule pulls in ortools/numpy, whose stubs use 3.12-only
+# syntax that fails to parse under python_version 3.10. Don't follow into them.
+[[tool.mypy.overrides]]
+module = ["numpy.*", "ortools.*"]
+follow_imports = "skip"

@@ -14,7 +14,7 @@ import textwrap
 import pytest
 
 from ofplang.run.cli import EXIT_FAILED, EXIT_OK, main
-from ofplang.run.runner import Runner, RunnerError, load_document, serialize_document
+from ofplang.run.runner import Runner, load_document, serialize_document
 from ofplang.run.simulator import MissingObject
 
 # A source -> transport -> target environment (§5), matching the simulator tests.
@@ -26,17 +26,30 @@ ENV = {
     ],
     "transporters": [{"id": "transport"}],
     "transports": [
-        {"transporter": "transport", "from": "station_0.core", "to": "station_1.core", "duration": 1},
+        {
+            "transporter": "transport",
+            "from": "station_0.core",
+            "to": "station_1.core",
+            "duration": 1,
+        },
     ],
     "processes": {
         "source": {
             "modes": [
-                {"devices": ["station_0"], "duration": 2, "output_spots": {"source_out": "station_0.core"}},
+                {
+                    "devices": ["station_0"],
+                    "duration": 2,
+                    "output_spots": {"source_out": "station_0.core"},
+                },
             ]
         },
         "target": {
             "modes": [
-                {"devices": ["station_1"], "duration": 2, "input_spots": {"target_in": "station_1.core"}},
+                {
+                    "devices": ["station_1"],
+                    "duration": 2,
+                    "input_spots": {"target_in": "station_1.core"},
+                },
             ]
         },
     },
@@ -50,7 +63,14 @@ PLAN_A = {
     "outcome": "optimal",
     "objective": {"kind": "makespan", "value": 5},
     "activities": [
-        {"kind": "processing", "start": 0, "end": 2, "process": "source", "mode": "0", "node": ["Source"]},
+        {
+            "kind": "processing",
+            "start": 0,
+            "end": 2,
+            "process": "source",
+            "mode": "0",
+            "node": ["Source"],
+        },
         {
             "kind": "transport",
             "start": 2,
@@ -58,9 +78,19 @@ PLAN_A = {
             "from_spot": "station_0.core",
             "to_spot": "station_1.core",
             "transporter": "transport",
-            "arc": {"from": {"node": ["Source"], "port": "source_out"}, "to": {"node": ["Target"], "port": "target_in"}},
+            "arc": {
+                "from": {"node": ["Source"], "port": "source_out"},
+                "to": {"node": ["Target"], "port": "target_in"},
+            },
         },
-        {"kind": "processing", "start": 3, "end": 5, "process": "target", "mode": "0", "node": ["Target"]},
+        {
+            "kind": "processing",
+            "start": 3,
+            "end": 5,
+            "process": "target",
+            "mode": "0",
+            "node": ["Target"],
+        },
     ],
 }
 
@@ -78,9 +108,19 @@ PLAN_B = {
             "from_spot": "station_0.core",
             "to_spot": "station_1.core",
             "transporter": "transport",
-            "arc": {"from": {"node": [], "port": "sample"}, "to": {"node": ["Target"], "port": "target_in"}},
+            "arc": {
+                "from": {"node": [], "port": "sample"},
+                "to": {"node": ["Target"], "port": "target_in"},
+            },
         },
-        {"kind": "processing", "start": 1, "end": 3, "process": "target", "mode": "0", "node": ["Target"]},
+        {
+            "kind": "processing",
+            "start": 1,
+            "end": 3,
+            "process": "target",
+            "mode": "0",
+            "node": ["Target"],
+        },
     ],
 }
 
@@ -130,9 +170,19 @@ def test_same_spot_transport_is_bookkeeping():
                 "end": 0,
                 "from_spot": "station_1.core",
                 "to_spot": "station_1.core",
-                "arc": {"from": {"node": [], "port": "sample"}, "to": {"node": ["Target"], "port": "target_in"}},
+                "arc": {
+                    "from": {"node": [], "port": "sample"},
+                    "to": {"node": ["Target"], "port": "target_in"},
+                },
             },
-            {"kind": "processing", "start": 0, "end": 2, "process": "target", "mode": "0", "node": ["Target"]},
+            {
+                "kind": "processing",
+                "start": 0,
+                "end": 2,
+                "process": "target",
+                "mode": "0",
+                "node": ["Target"],
+            },
         ],
     }
     runner = Runner(plan, ENV)
@@ -157,7 +207,10 @@ def test_relay_is_bookkeeping():
                 "from_spot": "station_0.core",
                 "to_spot": "station_1.core",
                 "transporter": "transport",
-                "arc": {"from": {"node": [], "port": "sample"}, "to": {"node": ["Target"], "port": "target_in"}},
+                "arc": {
+                    "from": {"node": [], "port": "sample"},
+                    "to": {"node": ["Target"], "port": "target_in"},
+                },
             },
             {
                 "kind": "relay",
@@ -165,9 +218,19 @@ def test_relay_is_bookkeeping():
                 "end": 1,
                 "seq": 1,
                 "spot": "station_1.core",
-                "arc": {"from": {"node": [], "port": "sample"}, "to": {"node": ["Target"], "port": "target_in"}},
+                "arc": {
+                    "from": {"node": [], "port": "sample"},
+                    "to": {"node": ["Target"], "port": "target_in"},
+                },
             },
-            {"kind": "processing", "start": 1, "end": 3, "process": "target", "mode": "0", "node": ["Target"]},
+            {
+                "kind": "processing",
+                "start": 1,
+                "end": 3,
+                "process": "target",
+                "mode": "0",
+                "node": ["Target"],
+            },
         ],
     }
     runner = Runner(plan, ENV)

@@ -32,7 +32,11 @@ def _boundary(a):
 
 
 def _by_node(status):
-    return {tuple(a["node"]): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    return {
+        tuple(a["node"]): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
 
 
 def test_nested_composite_boundary_is_exposed_to_the_runner():

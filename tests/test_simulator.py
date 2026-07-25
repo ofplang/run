@@ -37,19 +37,32 @@ SIMPLE_ENV = {
     ],
     "transporters": [{"id": "transport"}],
     "transports": [
-        {"transporter": "transport", "from": "station_0.core", "to": "station_1.core", "duration": 1},
+        {
+            "transporter": "transport",
+            "from": "station_0.core",
+            "to": "station_1.core",
+            "duration": 1,
+        },
     ],
     "processes": {
         # `source` has no id -> mode "0"; produces an Object at station_0.core.
         "source": {
             "modes": [
-                {"devices": ["station_0"], "duration": 2, "output_spots": {"source_out": "station_0.core"}},
+                {
+                    "devices": ["station_0"],
+                    "duration": 2,
+                    "output_spots": {"source_out": "station_0.core"},
+                },
             ]
         },
         # `target` consumes an Object at station_1.core; no output.
         "target": {
             "modes": [
-                {"devices": ["station_1"], "duration": 2, "input_spots": {"target_in": "station_1.core"}},
+                {
+                    "devices": ["station_1"],
+                    "duration": 2,
+                    "input_spots": {"target_in": "station_1.core"},
+                },
             ]
         },
         # In-place transform: reads and writes the same spot.
@@ -247,7 +260,11 @@ def test_device_model_computes_outputs_from_inputs():
 
     sim = make_sim(model)
     uid = sim.dispatch_processing(
-        "source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41}, definition={"kind": "atomic"}
+        "source",
+        "0",
+        output_schema={"source_out": _INT},
+        inputs={"seed": 41},
+        definition={"kind": "atomic"},
     )
     sim.advance(2)
     assert sim.state(uid)["outputs"] == {"source_out": 42}  # computed, not the default 0
@@ -260,7 +277,9 @@ def test_device_model_left_default_when_absent():
     # Without a model the backend uses the built-in default: a typed default for an
     # unmapped output (source_out is not in any objects.map here).
     sim = make_sim()  # no device model
-    uid = sim.dispatch_processing("source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41})
+    uid = sim.dispatch_processing(
+        "source", "0", output_schema={"source_out": _INT}, inputs={"seed": 41}
+    )
     sim.advance(2)
     assert sim.state(uid)["outputs"] == {"source_out": 0}
 
@@ -362,7 +381,7 @@ def test_transport_happy_path_moves_object():
 def test_transport_duration_from_table():
     sim = make_sim()
     sim.place("station_0.core")
-    uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core")
+    sim.dispatch_transport("transport", "station_0.core", "station_1.core")
     sim.advance(100)
     (event,) = sim._history()
     assert event.time == 1  # from the transport table, not overridden

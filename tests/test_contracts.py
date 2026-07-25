@@ -66,7 +66,9 @@ def test_primitive_and_array_ports(tmp_path):
 def test_data_nominal_resolves_its_view_schema(tmp_path):
     c = _contracts(tmp_path)
     reading = c.input_type("p", "r")
-    assert reading == Nominal("Reading", "data", {"mean": Primitive("Float"), "n": Primitive("Int")})
+    assert reading == Nominal(
+        "Reading", "data", {"mean": Primitive("Float"), "n": Primitive("Int")}
+    )
     assert not is_object_bearing(reading)
 
 
@@ -127,7 +129,10 @@ def test_to_descriptor_produces_neutral_value_shape(tmp_path):
     # not affect the value shape).
     assert to_descriptor(c.input_type("p", "r")) == {
         "kind": "record",
-        "fields": {"mean": {"kind": "primitive", "name": "Float"}, "n": {"kind": "primitive", "name": "Int"}},
+        "fields": {
+            "mean": {"kind": "primitive", "name": "Float"},
+            "n": {"kind": "primitive", "name": "Int"},
+        },
     }
     assert to_descriptor(c.output_type("p", "tube")) == {"kind": "record", "fields": {}}  # no view
 
@@ -179,7 +184,9 @@ def test_conforms_empty_view_and_object_nominal():
 
 
 def test_conforms_nested_record_with_array_field():
-    t = Nominal("Batch", "data", {"labels": ArrayType(Primitive("String")), "size": Primitive("Int")})
+    t = Nominal(
+        "Batch", "data", {"labels": ArrayType(Primitive("String")), "size": Primitive("Int")}
+    )
     assert conforms({"labels": ["a", "b"], "size": 2}, t)
     assert not conforms({"labels": [1], "size": 2}, t)
 
@@ -202,7 +209,11 @@ def test_default_value_produces_conformant_typed_defaults(tmp_path):
     assert default_value(c.input_type("p", "flags")) == []
     assert default_value(c.input_type("p", "r")) == {"mean": 0.0, "n": 0}
     assert default_value(c.output_type("p", "tube")) == {}
-    for resolved in (c.output_type("p", "score"), c.input_type("p", "r"), c.output_type("p", "plates")):
+    for resolved in (
+        c.output_type("p", "score"),
+        c.input_type("p", "r"),
+        c.output_type("p", "plates"),
+    ):
         assert conforms(default_value(resolved), resolved)
 
 

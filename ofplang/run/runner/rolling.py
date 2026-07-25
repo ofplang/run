@@ -38,11 +38,12 @@ from dataclasses import dataclass
 
 from ..simulator import Simulator
 from .boundary import parse_boundary
-from .contract_eval import evaluate, parse as parse_contract, referenced_ports
+from .contract_eval import evaluate, referenced_ports
+from .contract_eval import parse as parse_contract
 from .contracts import ArrayType, Contracts, conforms, to_descriptor, with_static_views
 from .dataflow import from_workflow
 from .loader import load_document
-from .provenance import Committed, CommitLog
+from .provenance import CommitLog, Committed
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
@@ -104,7 +105,9 @@ def _reduce_environment(environment: dict, down: set[str]) -> dict:
     reduced = copy.deepcopy(environment)
     for process in (reduced.get("processes") or {}).values():
         process["modes"] = [
-            mode for mode in (process.get("modes") or []) if not (set(mode.get("devices") or []) & down)
+            mode
+            for mode in (process.get("modes") or [])
+            if not (set(mode.get("devices") or []) & down)
         ]
     return reduced
 
@@ -174,7 +177,9 @@ class RollingRunner:
         # Whether the entry process is a composite (the usual case). Its contracts are
         # the whole-workflow envelope, checked at run start / run end (D33); an atomic
         # entry is instead a single activity, checked on the activity path.
-        self._entry_is_composite = (self._process_defs.get(self.contracts.entry) or {}).get("kind") == "composite"
+        self._entry_is_composite = (
+            (self._process_defs.get(self.contracts.entry) or {}).get("kind") == "composite"
+        )
         # Nested composite contract checks (D34): the composite invocation boundaries
         # (keyed by node path) and the per-invocation sets of already-checked contracts,
         # so each `requires` / `ensures` fires once, when its values become available.
@@ -221,7 +226,9 @@ class RollingRunner:
         # set (ideally >= poll_interval); the runner only validates it.
         if duration_model is not None:
             if poll_interval is None:
-                raise RunnerError("duration variance requires poll_interval (fixed-interval polling)")
+                raise RunnerError(
+                    "duration variance requires poll_interval (fixed-interval polling)"
+                )
             if running_task_margin < 1:
                 raise RunnerError(
                     "duration variance requires running_task_margin >= 1 "
@@ -294,10 +301,17 @@ class RollingRunner:
         # activity runs, `self.failed`/`_stopping` are set, and the loop below breaks
         # immediately (nothing is running), so the final status is emptily terminal.
         entry = self.contracts.entry
-        if self._entry_is_composite and self._contract_asts.get(entry, {}).get("requires"):
-            if self._violated_contract(entry, "requires", self._main_contract_inputs(), {}, "main") is not None:
-                self.failed = True
-                self._stopping = True
+        if (
+            self._entry_is_composite
+            and entry is not None
+            and self._contract_asts.get(entry, {}).get("requires")
+            and self._violated_contract(
+                entry, "requires", self._main_contract_inputs(), {}, "main"
+            )
+            is not None
+        ):
+            self.failed = True
+            self._stopping = True
 
         # Atomic preconditions that are knowable at run start -- `requires` referencing
         # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
@@ -358,9 +372,16 @@ class RollingRunner:
             # `completed` -- the failure is at the whole-workflow boundary, not any one
             # activity. Only checked on an otherwise-successful run (the guard above).
             entry = self.contracts.entry
-            if self._entry_is_composite and self._contract_asts.get(entry, {}).get("ensures"):
-                if self._violated_contract(entry, "ensures", self._main_contract_inputs(), self.outputs, "main") is not None:
-                    self.failed = True
+            if (
+                self._entry_is_composite
+                and entry is not None
+                and self._contract_asts.get(entry, {}).get("ensures")
+                and self._violated_contract(
+                    entry, "ensures", self._main_contract_inputs(), self.outputs, "main"
+                )
+                is not None
+            ):
+                self.failed = True
         # Echo the produced output views back into a result document of the same
         # boundary schema (D28), for `--boundary-out`.
         self.result_boundary = self.boundary.result(self.outputs)
@@ -369,7 +390,13 @@ class RollingRunner:
         # reason (D36) is NOT put in the status -- it stays a valid §6 document -- but is
         # exposed via `self.failure` (and printed by the CLI).
         cancelled = self._cancelled_activities() if self._stopping else None
-        return build_status(self.log.records(), self.now, self.interface, self._last_time, cancelled)
+        return build_status(
+            self.log.records(),
+            self.now,
+            self.interface,
+            self._last_time,
+            cancelled,
+        )
 
     def _check_output_spots(self) -> None:
         """Verify every pinned Object output landed on its declared delivery spot
@@ -418,7 +445,10 @@ class RollingRunner:
                     preflight = [
                         (expr, ast)
                         for expr, ast in exprs
-                        if all(self.contracts.input_phase(name, port) != "data" for _s, port in referenced_ports(ast))
+                        if all(
+                            self.contracts.input_phase(name, port) != "data"
+                            for _s, port in referenced_ports(ast)
+                        )
                     ]
                     runtime = [pair for pair in exprs if pair not in preflight]
                     if preflight:
@@ -449,7 +479,12 @@ class RollingRunner:
             if not checkable:
                 continue
             inputs = assemble_inputs(self.dataflow, self.contracts, self.values, node)
-            if self._violated_exprs(process, "requires_preflight", checkable, inputs, {}, self._fmt_node(node)) is not None:
+            if (
+                self._violated_exprs(
+                    process, "requires_preflight", checkable, inputs, {}, self._fmt_node(node)
+                )
+                is not None
+            ):
                 self.failed = True
                 self._stopping = True
                 return
@@ -507,20 +542,32 @@ class RollingRunner:
         checkable, deferred = [], []
         for pair in candidates:
             _expr, ast = pair
-            if all(self._input_available_at_start(node, port) for _s, port in referenced_ports(ast)):
+            if all(
+                self._input_available_at_start(node, port)
+                for _s, port in referenced_ports(ast)
+            ):
                 checkable.append(pair)
             else:
                 deferred.append(pair)
         return checkable, deferred
 
-    def _violated_contract(self, process: str, section: str, inputs: dict, outputs: dict, subject: str):
+    def _violated_contract(
+        self, process: str, section: str, inputs: dict, outputs: dict, subject: str
+    ):
         """Evaluate `process`'s stored `section` (requires / ensures) contracts for
         `subject`; see `_violated_exprs`."""
         return self._violated_exprs(
-            process, section, self._contract_asts.get(process, {}).get(section) or [], inputs, outputs, subject
+            process,
+            section,
+            self._contract_asts.get(process, {}).get(section) or [],
+            inputs,
+            outputs,
+            subject,
         )
 
-    def _violated_exprs(self, process: str, section: str, exprs, inputs: dict, outputs: dict, subject: str):
+    def _violated_exprs(
+        self, process: str, section: str, exprs, inputs: dict, outputs: dict, subject: str
+    ):
         """Evaluate an explicit list of `(expr, ast)` contracts for `subject` and return
         the first violated expression, or None if all hold.
 
@@ -583,10 +630,19 @@ class RollingRunner:
                 continue  # this composite declares no contracts
             # `requires`: over the composite's inputs, checked before its body's
             # input-dependent activities can run (they wait on the same values).
-            if "requires" in asts and path not in self._checked_requires and self._composite_ready(b.inputs):
+            if (
+                "requires" in asts
+                and path not in self._checked_requires
+                and self._composite_ready(b.inputs)
+            ):
                 self._checked_requires.add(path)
                 inputs = self._composite_values(b.inputs, b.input_literals)
-                if self._violated_contract(b.process, "requires", inputs, {}, self._fmt_node(path)) is not None:
+                if (
+                    self._violated_contract(
+                        b.process, "requires", inputs, {}, self._fmt_node(path)
+                    )
+                    is not None
+                ):
                     self.failed = True
                     self._stopping = True
                     return
@@ -601,7 +657,12 @@ class RollingRunner:
                 self._checked_ensures.add(path)
                 inputs = self._composite_values(b.inputs, b.input_literals)
                 outputs = self._composite_values(b.outputs, b.output_literals)
-                if self._violated_contract(b.process, "ensures", inputs, outputs, self._fmt_node(path)) is not None:
+                if (
+                    self._violated_contract(
+                        b.process, "ensures", inputs, outputs, self._fmt_node(path)
+                    )
+                    is not None
+                ):
                     self.failed = True
                     self._stopping = True
                     return
@@ -626,9 +687,13 @@ class RollingRunner:
         `requires` always becomes checkable and the gate always eventually opens."""
         node = tuple(node)
         for path, boundary in self._composites.items():
-            if len(path) < len(node) and node[: len(path)] == path:
-                if "requires" in (self._contract_asts.get(boundary.process) or {}) and path not in self._checked_requires:
-                    return False
+            if (
+                len(path) < len(node)
+                and node[: len(path)] == path
+                and "requires" in (self._contract_asts.get(boundary.process) or {})
+                and path not in self._checked_requires
+            ):
+                return False
         return True
 
     def _replan_and_dispatch(self) -> list[dict]:
@@ -756,7 +821,10 @@ class RollingRunner:
             )
         elif kind == "transport":
             uuid = self.sim.dispatch_transport(
-                activity.get("transporter"), activity["from_spot"], activity["to_spot"], duration=actual
+                activity.get("transporter"),
+                activity["from_spot"],
+                activity["to_spot"],
+                duration=actual,
             )
         else:  # pragma: no cover - schema guarantees processing/transport/relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
@@ -813,7 +881,8 @@ class RollingRunner:
                         self._stopping = True
                         self._record_failure(
                             "backend_output_type",
-                            f"{subject}: output {nonconformant!r} does not conform to its declared type",
+                            f"{subject}: output {nonconformant!r} does not conform "
+                            "to its declared type",
                             subject,
                         )
                         continue
@@ -826,9 +895,14 @@ class RollingRunner:
                 # processing activities carry a `process` (a transport leg does not).
                 process = rec.activity.get("process")
                 if process is not None and self._contract_asts.get(process, {}).get("ensures"):
-                    inputs = assemble_inputs(self.dataflow, self.contracts, self.values, rec.activity["node"])
+                    inputs = assemble_inputs(
+                        self.dataflow, self.contracts, self.values, rec.activity["node"]
+                    )
                     subject = self._fmt_node(tuple(rec.activity["node"]))
-                    if self._violated_contract(process, "ensures", inputs, outputs or {}, subject) is not None:
+                    if (
+                        self._violated_contract(process, "ensures", inputs, outputs or {}, subject)
+                        is not None
+                    ):
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True
@@ -876,7 +950,12 @@ class RollingRunner:
             e = e or {}
             return (tuple(e.get("node") or ()), e.get("port"))
 
-        return ("transport", endpoint(arc.get("from")), endpoint(arc.get("to")), activity.get("seq"))
+        return (
+            "transport",
+            endpoint(arc.get("from")),
+            endpoint(arc.get("to")),
+            activity.get("seq"),
+        )
 
     @staticmethod
     def _failure_message(report) -> str:

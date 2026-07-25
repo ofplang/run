@@ -50,7 +50,12 @@ def test_run_phase_requires_is_classified_preflight():
 def test_data_phase_requires_stays_runtime():
     # `score`'s requires reads a data-phase input, so it is NOT preflighted -- it stays
     # a dispatch-time check.
-    runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, {"boundary": {"inputs": {"raw": {"view": 1}}}}, random_seed=0)
+    runner = RollingRunner(
+        CONTRACT_WF,
+        CONTRACT_ENV,
+        {"boundary": {"inputs": {"raw": {"view": 1}}}},
+        random_seed=0,
+    )
     assert "requires" in runner._contract_asts["score"]
     assert "requires_preflight" not in runner._contract_asts["score"]
 
@@ -85,7 +90,12 @@ def test_producer_fed_run_phase_requires_is_deferred_to_dispatch():
     # (process-level, phase-based classification retained). But at the Check node that
     # input is fed by the producer Src, so it is not fixed at run start: the per-node
     # split defers it (it is not checkable at run start, and is checked at dispatch).
-    runner = RollingRunner(PROD_WF, PROD_ENV, {"boundary": {"inputs": {"seed": {"view": 5}}}}, random_seed=0)
+    runner = RollingRunner(
+        PROD_WF,
+        PROD_ENV,
+        {"boundary": {"inputs": {"seed": {"view": 5}}}},
+        random_seed=0,
+    )
     assert "requires_preflight" in runner._contract_asts["check"]
     checkable, deferred = runner._split_preflight(("Check",), "check")
     assert not checkable and len(deferred) == 1
@@ -122,10 +132,15 @@ def test_producer_fed_run_phase_holds_completes(poll_interval):
 def test_preflight_violation_is_observed_at_run_start():
     trace: list[dict] = []
     b = {"boundary": {"inputs": {"seed": {"view": 10}, "limit": {"view": -1}}}}
-    runner = RollingRunner(WF, ENV, b, poll_interval=None, random_seed=0, contract_observer=trace.append)
+    runner = RollingRunner(
+        WF, ENV, b, poll_interval=None, random_seed=0, contract_observer=trace.append
+    )
     runner.run()
     # The observer saw the preflight check fail, at run start (t=0).
     assert any(
-        r["subject"] == "Check" and r["section"] == "requires_preflight" and r["held"] is False and r["now"] == 0
+        r["subject"] == "Check"
+        and r["section"] == "requires_preflight"
+        and r["held"] is False
+        and r["now"] == 0
         for r in trace
     )

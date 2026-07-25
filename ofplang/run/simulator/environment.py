@@ -69,7 +69,7 @@ def environment_from_dict(raw: dict) -> Environment:
 
     # time.unit -- carried through for reference; the simulator works in the
     # integer ticks of this unit (§4.1).
-    time_unit = (raw.get("time") or {}).get("unit")
+    time_unit = (raw.get("time") or {}).get("unit", "")
 
     # Devices and their spots. The globally unique spot id is the qualified form
     # "<device>.<spot>" (§8.2); build the set of all of them for existence checks.
@@ -119,7 +119,7 @@ def environment_from_dict(raw: dict) -> Environment:
 def load_environment(path) -> Environment:
     """Load an execution environment definition (§5) from a YAML file."""
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return environment_from_dict(raw)
 

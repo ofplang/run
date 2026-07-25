@@ -127,7 +127,13 @@ def _boundary(raw):
 @pytest.mark.parametrize("poll_interval", [None, 1])
 def test_contracts_hold_run_completes(poll_interval):
     # raw = 72: requires (raw >= 0) holds, and margin = 72 - 60 = 12 satisfies ensures.
-    runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        CONTRACT_WF,
+        CONTRACT_ENV,
+        _boundary(72),
+        poll_interval=poll_interval,
+        random_seed=0,
+    )
     status = runner.run()
 
     assert not runner.failed
@@ -139,11 +145,21 @@ def test_contracts_hold_run_completes(poll_interval):
 def test_requires_violation_stops_before_dispatch(poll_interval):
     # raw = -5 violates `requires: inputs.raw.view >= 0`. `score` must not run: it is
     # recorded failed before dispatch and its downstream `report` is cancelled (D25).
-    runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(-5), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        CONTRACT_WF,
+        CONTRACT_ENV,
+        _boundary(-5),
+        poll_interval=poll_interval,
+        random_seed=0,
+    )
     status = runner.run()
 
     assert runner.failed
-    statuses = {a.get("process"): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    statuses = {
+        a.get("process"): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
     assert statuses.get("score") == "failed"
     assert statuses.get("report") == "cancelled"
     # `score` never produced a value, so no whole-workflow output was assembled.
@@ -155,7 +171,9 @@ def test_violated_exprs_treats_arithmetic_error_as_violation():
     # contract violation, not a crash (§9.2/§9.3): the wrapper returns the expr.
     runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), random_seed=0)
     ast = parse("inputs.a.view / inputs.b.view >= 1")
-    violated = runner._violated_exprs("score", "requires", [("expr", ast)], {"a": 1, "b": 0}, {}, "x")
+    violated = runner._violated_exprs(
+        "score", "requires", [("expr", ast)], {"a": 1, "b": 0}, {}, "x"
+    )
     assert violated == "expr"
 
 
@@ -181,11 +199,21 @@ def test_ensures_violation_stops_at_completion(poll_interval, tmp_path):
         ),
         encoding="utf-8",
     )
-    runner = RollingRunner(str(wf), CONTRACT_ENV, _boundary(72), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        str(wf),
+        CONTRACT_ENV,
+        _boundary(72),
+        poll_interval=poll_interval,
+        random_seed=0,
+    )
     status = runner.run()
 
     assert runner.failed
-    statuses = {a.get("process"): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    statuses = {
+        a.get("process"): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
     assert statuses.get("score") == "failed"
     assert statuses.get("report") == "cancelled"
 
@@ -203,7 +231,13 @@ def test_ensures_failed_output_is_withheld(poll_interval, tmp_path):
         ),
         encoding="utf-8",
     )
-    runner = RollingRunner(str(wf), CONTRACT_ENV, _boundary(72), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        str(wf),
+        CONTRACT_ENV,
+        _boundary(72),
+        poll_interval=poll_interval,
+        random_seed=0,
+    )
     runner.run()
     assert runner.failed
     assert runner.outputs == {}  # margin withheld (ensures-failed); doubled never produced

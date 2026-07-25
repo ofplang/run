@@ -116,7 +116,12 @@ def test_variance_composes_with_reroute():
         return planned + 3 if activity["kind"] == "transport" else planned
 
     runner = RollingRunner(
-        SIMPLE_WF, REROUTE_ENV, random_seed=0, poll_interval=2, running_task_margin=2, duration_model=model
+        SIMPLE_WF,
+        REROUTE_ENV,
+        random_seed=0,
+        poll_interval=2,
+        running_task_margin=2,
+        duration_model=model,
     )
     runner.sim.schedule_device_down(3, "station_1")
     status = runner.run()

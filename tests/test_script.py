@@ -165,7 +165,9 @@ def _boundary(a, b):
 def test_script_workflow_computes_whole_workflow_outputs(poll_interval):
     # The two chained script processes compute the whole-workflow outputs through the
     # value layer, with no injected device model (the built-in default runs them).
-    runner = RollingRunner(SCRIPT_WF, SCRIPT_ENV, _boundary(2, 3), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        SCRIPT_WF, SCRIPT_ENV, _boundary(2, 3), poll_interval=poll_interval, random_seed=0
+    )
     status = runner.run()
 
     assert not runner.failed
@@ -186,11 +188,17 @@ def test_failing_script_stops_the_run_gracefully(poll_interval, tmp_path):
         SCRIPT_WORKFLOW_WITH_ADD_CODE.replace("__ADD_CODE__", 'return {"wrong": x + y}'),
         encoding="utf-8",
     )
-    runner = RollingRunner(str(wf), SCRIPT_ENV, _boundary(2, 3), poll_interval=poll_interval, random_seed=0)
+    runner = RollingRunner(
+        str(wf), SCRIPT_ENV, _boundary(2, 3), poll_interval=poll_interval, random_seed=0
+    )
     status = runner.run()
 
     assert runner.failed
-    statuses = {a.get("process"): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    statuses = {
+        a.get("process"): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
     assert statuses.get("add") == "failed"
     assert statuses.get("label") == "cancelled"
 

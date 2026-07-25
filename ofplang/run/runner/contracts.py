@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TypeAlias
 
 import yaml
 
@@ -58,7 +59,7 @@ class ArrayType:
     """`Array<T>` (v0 §7.1); its value is a list of `element`-shaped values. Object-
     bearing iff its element is (v0 §7.1 / v0 §5.2)."""
 
-    element: "ResolvedType"
+    element: ResolvedType
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ class Nominal:
     static_view: dict = field(default_factory=dict)
 
 
-ResolvedType = "Primitive | ArrayType | Nominal"
+ResolvedType: TypeAlias = "Primitive | ArrayType | Nominal"
 
 
 def is_object_bearing(resolved) -> bool:
@@ -142,7 +143,11 @@ def default_value(resolved):
     if isinstance(resolved, ArrayType):
         return []
     return {
-        field: resolved.static_view[field] if field in resolved.static_view else default_value(field_type)
+        field: (
+            resolved.static_view[field]
+            if field in resolved.static_view
+            else default_value(field_type)
+        )
         for field, field_type in resolved.view.items()
     }
 
@@ -159,7 +164,11 @@ def with_static_views(value, resolved):
     Array's elements are each projected (so an Array of a type with static views is
     handled); a primitive, or a nominal with no static fields, is returned unchanged."""
     if isinstance(resolved, ArrayType):
-        return [with_static_views(item, resolved.element) for item in value] if isinstance(value, list) else value
+        return (
+            [with_static_views(item, resolved.element) for item in value]
+            if isinstance(value, list)
+            else value
+        )
     if isinstance(resolved, Nominal) and resolved.static_view and isinstance(value, dict):
         return {**value, **resolved.static_view}
     return value
@@ -195,7 +204,7 @@ def _build_registry(types_section: dict) -> dict:
     registry: dict = {}
     for name, spec in (types_section or {}).items():
         spec = spec or {}
-        registry[name] = Nominal(name, spec.get("domain"), view={})
+        registry[name] = Nominal(name, spec.get("domain", ""), view={})
     for name, spec in (types_section or {}).items():
         view_raw = (spec or {}).get("view") or {}
         view: dict = {}
@@ -240,7 +249,7 @@ class Contracts:
         self.entry = entry
 
     @classmethod
-    def from_workflow(cls, workflow_path) -> "Contracts":
+    def from_workflow(cls, workflow_path) -> Contracts:
         """Resolve the contracts of the workflow at `workflow_path` (single file;
         `$import` is out of F1 scope). Assumes valid v0 input."""
         data = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8"))
@@ -252,8 +261,14 @@ class Contracts:
         for name, spec in raw_processes.items():
             spec = spec or {}
             raw_inputs = spec.get("inputs") or {}
-            inputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in raw_inputs.items()}
-            outputs = {p: _parse((ps or {}).get("type", ""), registry) for p, ps in (spec.get("outputs") or {}).items()}
+            inputs = {
+                p: _parse((ps or {}).get("type", ""), registry)
+                for p, ps in raw_inputs.items()
+            }
+            outputs = {
+                p: _parse((ps or {}).get("type", ""), registry)
+                for p, ps in (spec.get("outputs") or {}).items()
+            }
             # Each input port's declared phase (v0 §6), defaulting to `data` (a runtime
             # value) when absent -- so a contract over it is treated as runtime (never
             # wrongly hoisted to a run-start preflight, D37).

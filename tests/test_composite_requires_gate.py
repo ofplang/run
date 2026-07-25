@@ -28,7 +28,11 @@ def _boundary(a):
 
 
 def _by_node(status):
-    return {"/".join(a["node"]): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    return {
+        "/".join(a["node"]): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
 
 
 @pytest.mark.parametrize("poll_interval", [None, 1])
@@ -64,4 +68,4 @@ def test_gate_helper_reflects_checked_requires():
     assert runner._requires_gate_open(("Pre",)) is True         # not under a nested composite
     assert runner._requires_gate_open(("W", "Make")) is False   # under W, requires not yet checked
     runner._checked_requires.add(("W",))
-    assert runner._requires_gate_open(("W", "Make")) is True     # opens once W's requires is checked
+    assert runner._requires_gate_open(("W", "Make")) is True  # opens once W's requires is checked

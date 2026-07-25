@@ -12,7 +12,7 @@ import yaml
 
 def load_document(path) -> dict:
     """Read a §6 execution document (plan or status) from a YAML file."""
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

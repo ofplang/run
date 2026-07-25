@@ -42,7 +42,11 @@ def _variant(tmp_path, old, new):
 
 def _run(workflow, raw):
     runner = RollingRunner(
-        workflow, ENV, {"boundary": {"inputs": {"raw": {"view": raw}}}}, poll_interval=None, random_seed=0
+        workflow,
+        ENV,
+        {"boundary": {"inputs": {"raw": {"view": raw}}}},
+        poll_interval=None,
+        random_seed=0,
     )
     runner.run()
     return runner
@@ -61,7 +65,11 @@ def test_requires_violation_reason():
 
 
 def test_ensures_violation_reason(tmp_path):
-    wf = _variant(tmp_path, 'return {"margin": raw - threshold}', 'return {"margin": raw + threshold}')
+    wf = _variant(
+        tmp_path,
+        'return {"margin": raw - threshold}',
+        'return {"margin": raw + threshold}',
+    )
     runner = _run(wf, 72)
     assert runner.failed
     assert runner.failure.kind == "contract_ensures"
@@ -133,4 +141,9 @@ def test_contract_observer_records_a_violation():
 
     assert runner.failed
     # The observer saw the requires check fail (held is False).
-    assert any(r["subject"] == "Score" and r["section"] == "requires" and r["held"] is False for r in trace)
+    assert any(
+        r["subject"] == "Score"
+        and r["section"] == "requires"
+        and r["held"] is False
+        for r in trace
+    )

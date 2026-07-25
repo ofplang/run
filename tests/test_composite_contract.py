@@ -30,7 +30,11 @@ def _boundary(raw):
 
 
 def _processing(status):
-    return {a.get("process"): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
+    return {
+        a.get("process"): a["status"]
+        for a in status["activities"]
+        if a.get("kind") == "processing"
+    }
 
 
 def test_entry_composite_contracts_are_parsed():
@@ -39,7 +43,10 @@ def test_entry_composite_contracts_are_parsed():
     runner = RollingRunner(WF, ENV, _boundary(72), random_seed=0)
     assert runner._entry_is_composite is True
     assert "main" in runner._contract_asts
-    assert "requires" in runner._contract_asts["main"] and "ensures" in runner._contract_asts["main"]
+    assert (
+        "requires" in runner._contract_asts["main"]
+        and "ensures" in runner._contract_asts["main"]
+    )
 
 
 @pytest.mark.parametrize("poll_interval", [None, 1])

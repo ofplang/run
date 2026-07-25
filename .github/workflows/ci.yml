@@ -24,3 +24,27 @@ jobs:
       - run: pip install "ofplang-schedule @ git+https://github.com/ofplang/schedule.git@main"
       - run: pip install -e ".[test]"
       - run: pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check ofplang tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # mypy resolves `ofplang.schedule`, so install the sibling repo from git too.
+      - run: pip install "ofplang-schedule @ git+https://github.com/ofplang/schedule.git@main"
+      - run: pip install -e ".[dev]"
+      - run: mypy

@@ -109,8 +109,14 @@ def from_workflow(workflow_path) -> Dataflow:
     # Per-node process and port names. `workflow.processes` holds the signatures of
     # exactly the atomic processes the activities invoke.
     process_of = {a.path: a.process for a in workflow.activities}
-    in_ports = {a.path: tuple(p.name for p in workflow.processes[a.process].inputs) for a in workflow.activities}
-    out_ports = {a.path: tuple(p.name for p in workflow.processes[a.process].outputs) for a in workflow.activities}
+    in_ports = {
+        a.path: tuple(p.name for p in workflow.processes[a.process].inputs)
+        for a in workflow.activities
+    }
+    out_ports = {
+        a.path: tuple(p.name for p in workflow.processes[a.process].outputs)
+        for a in workflow.activities
+    }
 
     # Invert every arc to a per-consumer-input source. Object (`arcs`) and Pure
     # Data (`data_arcs`) are routed identically at the value layer -- the physical
@@ -127,13 +133,19 @@ def from_workflow(workflow_path) -> Dataflow:
     # the atomic that produces it (`exit_outputs` records both Object and Pure Data
     # returns; see D26-0).
     entry_ports = tuple(workflow.entry_input_ports.keys())
-    returns = {name: (endpoint.node, endpoint.port) for name, endpoint in workflow.exit_outputs.items()}
+    returns = {
+        name: (endpoint.node, endpoint.port)
+        for name, endpoint in workflow.exit_outputs.items()
+    }
 
     # Static literal bindings (v0 §11), keyed by the consuming (node, port) -- the same
     # key convention as `input_source`, so the value layer can look them up the same
     # way. Recorded by the flattener (D30) so nested-composite literals are already
     # spliced to the leaf atomic that consumes them.
-    literals = {(endpoint.node, endpoint.port): value for endpoint, value in workflow.data_literals.items()}
+    literals = {
+        (endpoint.node, endpoint.port): value
+        for endpoint, value in workflow.data_literals.items()
+    }
 
     # Nested composite boundaries (D34): convert each schedule `CompositeIO`'s
     # Endpoints into value-store keys `(node, port)`, so the runner can read a
@@ -149,4 +161,13 @@ def from_workflow(workflow_path) -> Dataflow:
         for path, io in workflow.composites.items()
     }
 
-    return Dataflow(process_of, in_ports, out_ports, input_source, entry_ports, returns, literals, composites)
+    return Dataflow(
+        process_of,
+        in_ports,
+        out_ports,
+        input_source,
+        entry_ports,
+        returns,
+        literals,
+        composites,
+    )

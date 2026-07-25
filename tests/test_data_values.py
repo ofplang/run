@@ -110,7 +110,12 @@ def test_boundary_rejects_nonconformant_and_unknown_entries():
         bad_value.run()
 
     with pytest.raises(RunnerError):
-        RollingRunner(TYPED_WF, ENV, _boundary(extra_inputs={"nope": {"view": {"barcode": "X"}}}), random_seed=0)
+        RollingRunner(
+            TYPED_WF,
+            ENV,
+            _boundary(extra_inputs={"nope": {"view": {"barcode": "X"}}}),
+            random_seed=0,
+        )
 
 
 COUNT_WF = str(FIXTURES / "count_chain.workflow.yaml")
@@ -119,7 +124,7 @@ COUNT_ENV = str(FIXTURES / "count_chain.env.yaml")
 
 def _echo_inc(process, mode, inputs, output_schema, definition):
     """A device model for `inc`: echo the input `x` to every output port."""
-    return {port: inputs["x"] for port in output_schema}
+    return dict.fromkeys(output_schema, inputs["x"])
 
 
 def test_device_model_propagates_job_value_end_to_end():
@@ -143,9 +148,11 @@ def test_device_model_receives_the_process_definition():
 
     def capture(process, mode, inputs, output_schema, definition):
         seen[process] = definition
-        return {port: inputs["x"] for port in output_schema}  # echo the Count
+        return dict.fromkeys(output_schema, inputs["x"])  # echo the Count
 
-    runner = RollingRunner(COUNT_WF, COUNT_ENV, _count_boundary(1), device_model=capture, random_seed=0)
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, _count_boundary(1), device_model=capture, random_seed=0
+    )
     runner.run()
     assert "inc" in seen
     definition = seen["inc"]
@@ -167,7 +174,7 @@ def test_static_literal_reaches_backend_and_output():
 
     def echo(process, mode, inputs, output_schema, definition):
         seen.update(inputs)
-        return {port: inputs["seed"] for port in output_schema}
+        return dict.fromkeys(output_schema, inputs["seed"])
 
     runner = RollingRunner(LITERAL_WF, LITERAL_ENV, device_model=echo, random_seed=0)
     status = runner.run()
@@ -218,13 +225,17 @@ def test_device_model_output_is_contract_checked():
     # run stops *gracefully* -- the activity is marked failed and the reason recorded
     # -- like a script failure, rather than raising a hard RunnerError (review #6).
     def bad_model(process, mode, inputs, output_schema, definition):
-        return {port: "not-an-int-record" for port in output_schema}
+        return dict.fromkeys(output_schema, "not-an-int-record")
 
-    runner = RollingRunner(COUNT_WF, COUNT_ENV, device_model=bad_model, poll_interval=1, random_seed=0)
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, device_model=bad_model, poll_interval=1, random_seed=0
+    )
     status = runner.run()  # must not raise
     assert runner.failed
     assert runner.failure is not None and runner.failure.kind == "backend_output_type"
-    assert any(a["status"] == "failed" for a in status["activities"] if a.get("kind") == "processing")
+    assert any(
+        a["status"] == "failed" for a in status["activities"] if a.get("kind") == "processing"
+    )
 
 
 def test_cli_writes_result_boundary(tmp_path):

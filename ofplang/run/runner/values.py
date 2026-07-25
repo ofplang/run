@@ -76,7 +76,9 @@ def seed_entry(dataflow, contracts, store: ValueStore, job: dict | None = None) 
         if port in job:
             value = job[port]
             if resolved is not None and not conforms(value, resolved):
-                raise RunnerError(f"job value for entry input {port!r} does not conform to its type")
+                raise RunnerError(
+                    f"job value for entry input {port!r} does not conform to its type"
+                )
         else:
             value = default_value(resolved) if resolved is not None else {}
         # Project any type-level static view values onto the seeded value (D35), so a

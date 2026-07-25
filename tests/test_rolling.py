@@ -98,7 +98,18 @@ def test_cli_run_boundary(tmp_path):
     out = tmp_path / "status.yaml"
     boundary_doc = str(FIXTURES / "interface_load.boundary.yaml")
     code = main(
-        ["run", IFACE_WF, "--env", IFACE_ENV, "--boundary", boundary_doc, "--seed", "0", "-o", str(out)]
+        [
+            "run",
+            IFACE_WF,
+            "--env",
+            IFACE_ENV,
+            "--boundary",
+            boundary_doc,
+            "--seed",
+            "0",
+            "-o",
+            str(out),
+        ]
     )
     assert code == EXIT_OK
     status = load_document(out)

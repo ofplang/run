@@ -65,32 +65,48 @@ def _tokenize(expr: str) -> list[_Tok]:
             i += 1
             continue
         if c == "(":
-            toks.append(_Tok("lparen", "(")); i += 1; continue
+            toks.append(_Tok("lparen", "("))
+            i += 1
+            continue
         if c == ")":
-            toks.append(_Tok("rparen", ")")); i += 1; continue
+            toks.append(_Tok("rparen", ")"))
+            i += 1
+            continue
         if c == '"':
             m = _STRING_RE.match(expr, i)
             if not m:
                 raise ContractSyntaxError(f"unterminated string in contract expression: {expr!r}")
-            toks.append(_Tok("str", m.group())); i = m.end(); continue
+            toks.append(_Tok("str", m.group()))
+            i = m.end()
+            continue
         # Float before Int (a Float carries the '.').
         m = _FLOAT_RE.match(expr, i)
         if m:
-            toks.append(_Tok("float", m.group())); i = m.end(); continue
+            toks.append(_Tok("float", m.group()))
+            i = m.end()
+            continue
         m = _INT_RE.match(expr, i)
         if m:
-            toks.append(_Tok("int", m.group())); i = m.end(); continue
+            toks.append(_Tok("int", m.group()))
+            i = m.end()
+            continue
         # A dotted word: a keyword, else a reference path.
         m = _PATH_RE.match(expr, i)
         if m:
             text = m.group()
-            toks.append(_Tok("kw" if text in _KEYWORDS else "ref", text)); i = m.end(); continue
+            toks.append(_Tok("kw" if text in _KEYWORDS else "ref", text))
+            i = m.end()
+            continue
         # An operator (try two-character forms before one-character).
         for op in _OPS:
             if expr.startswith(op, i):
-                toks.append(_Tok("op", op)); i += len(op); break
+                toks.append(_Tok("op", op))
+                i += len(op)
+                break
         else:
-            raise ContractSyntaxError(f"unexpected character {c!r} in contract expression: {expr!r}")
+            raise ContractSyntaxError(
+                f"unexpected character {c!r} in contract expression: {expr!r}"
+            )
     return toks
 
 

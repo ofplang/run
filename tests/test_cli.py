@@ -66,7 +66,10 @@ def test_run_malformed_contract_is_usage_error(tmp_path, capsys):
     wf_text = (EXAMPLES / "count_chain.workflow.yaml").read_text(encoding="utf-8")
     wf_text = wf_text.replace(
         "  inc:\n    kind: atomic\n",
-        '  inc:\n    kind: atomic\n    contracts:\n      requires:\n        - expr: "inputs.x.view.value >>>"\n',
+        (
+            '  inc:\n    kind: atomic\n    contracts:\n'
+            '      requires:\n        - expr: "inputs.x.view.value >>>"\n'
+        ),
     )
     wf = tmp_path / "bad_contract.workflow.yaml"
     wf.write_text(wf_text, encoding="utf-8")

@@ -25,6 +25,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 
@@ -46,7 +47,10 @@ EXIT_USAGE = 2
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ofp-run", description="Run ofplang v0 workflows / plans.")
+    parser = argparse.ArgumentParser(
+        prog="ofp-run",
+        description="Run ofplang v0 workflows / plans.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # `run` -- rolling-horizon: drive a workflow to completion, replanning as it goes.
@@ -61,8 +65,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "outputs. `spot` places a boundary Object; `view` supplies an input value "
         "(unsupplied entry inputs default)",
     )
-    r.add_argument("--seed", type=int, metavar="N", help="scheduler random seed (reproducible replans)")
-    r.add_argument("--margin", type=int, default=0, metavar="M", help="running-task margin for replans")
+    r.add_argument(
+        "--seed",
+        type=int,
+        metavar="N",
+        help="scheduler random seed (reproducible replans)",
+    )
+    r.add_argument(
+        "--margin",
+        type=int,
+        default=0,
+        metavar="M",
+        help="running-task margin for replans",
+    )
     r.add_argument(
         "--poll-interval",
         type=int,
@@ -70,7 +85,12 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="D",
         help="poll every D time units (fixed-interval, with completion-time estimation; default 1)",
     )
-    r.add_argument("-o", "--output", metavar="OUT", help="write the final status YAML here (default: stdout)")
+    r.add_argument(
+        "-o",
+        "--output",
+        metavar="OUT",
+        help="write the final status YAML here (default: stdout)",
+    )
     r.add_argument(
         "--boundary-out",
         metavar="FILE",
@@ -83,7 +103,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("replay", help="replay an execution plan on the simulator")
     p.add_argument("plan", metavar="PLAN", help="execution plan YAML (from ofp-schedule)")
     p.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
-    p.add_argument("-o", "--output", metavar="OUT", help="write the resulting status YAML here (default: stdout)")
+    p.add_argument(
+        "-o",
+        "--output",
+        metavar="OUT",
+        help="write the resulting status YAML here (default: stdout)",
+    )
 
     return parser
 
@@ -121,7 +146,10 @@ def _cmd_run(args) -> int:
         if err is not None:
             return err
         if not isinstance(boundary, dict):
-            print(f"ofp-run: boundary document must be a mapping: {args.boundary!r}", file=sys.stderr)
+            print(
+                f"ofp-run: boundary document must be a mapping: {args.boundary!r}",
+                file=sys.stderr,
+            )
             return EXIT_USAGE
 
     try:
@@ -148,7 +176,9 @@ def _cmd_run(args) -> int:
     # supplied boundary with the produced output views filled in, written separately
     # so the §6/§7 status document stays value-free.
     if args.boundary_out:
-        Path(args.boundary_out).write_text(serialize_document(runner.result_boundary), encoding="utf-8")
+        Path(args.boundary_out).write_text(
+            serialize_document(runner.result_boundary), encoding="utf-8"
+        )
 
     # An activity failure stops the run without raising: the status is still emitted
     # (it carries the failed / cancelled activities), but the run counts as failed.
@@ -170,6 +200,7 @@ def _cmd_replay(args) -> int:
     plan, err = _read_document(args.plan, "plan")
     if err is not None:
         return err
+    assert plan is not None  # err is None => a document was loaded
     if not Path(args.env).is_file():
         print(f"ofp-run: environment not found: {args.env!r}", file=sys.stderr)
         return EXIT_USAGE
@@ -191,10 +222,9 @@ def _cmd_replay(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     # Emit UTF-8 to stdout regardless of the console's default encoding (e.g. a
     # cp932 Windows console), so piped output never hits an encode error.
-    try:
+    # AttributeError/ValueError when stdout is not a real TextIO (e.g. under capture).
+    with contextlib.suppress(AttributeError, ValueError):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):  # pragma: no cover - not a real TextIO (e.g. under capture)
-        pass
 
     args = _build_parser().parse_args(argv)
     if args.command == "run":

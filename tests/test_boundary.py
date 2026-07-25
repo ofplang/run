@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from ofplang.run.runner.boundary import Boundary, parse_boundary
+from ofplang.run.runner.boundary import parse_boundary
 from ofplang.run.runner.contracts import Contracts
 from ofplang.run.runner.runner import RunnerError
 
@@ -72,7 +72,11 @@ def test_object_output_projects_spot():
 def test_output_view_on_input_is_ignored():
     """A `view` on an input-side output descriptor is ignored (outputs are produced),
     so a result document round-trips as an input document."""
-    doc = {"boundary": {"outputs": {"result": {"spot": "unloader.slot", "view": {"barcode": "STALE"}}}}}
+    doc = {
+        "boundary": {
+            "outputs": {"result": {"spot": "unloader.slot", "view": {"barcode": "STALE"}}}
+        }
+    }
     b = parse_boundary(doc, _contracts(LOAD))
     assert b.output_spots == {"result": "unloader.slot"}
     assert b.job == {}  # nothing from the output view leaks into the seed
