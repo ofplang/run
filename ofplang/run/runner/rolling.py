@@ -525,8 +525,14 @@ class RollingRunner:
         for expr, ast in exprs:
             try:
                 held = bool(evaluate(ast, resolve))
-            except Exception:
-                held = False  # a runtime evaluation error counts as a violation (v0 §9.2)
+            except (ArithmeticError, TypeError):
+                # A genuine runtime *evaluation* error over the view values -- e.g.
+                # division by zero (ArithmeticError) or an operand-type mismatch
+                # (TypeError) -- counts as a contract violation (v0 §9.2/§9.3).
+                # Structural / lookup errors (a missing port in `resolve`, i.e. a
+                # runner bug) are NOT swallowed here: they propagate rather than being
+                # mis-reported as a user-facing contract violation.
+                held = False
             if self._contract_observer is not None:
                 self._contract_observer(
                     {"subject": subject, "process": process, "section": section,

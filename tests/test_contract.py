@@ -150,6 +150,25 @@ def test_requires_violation_stops_before_dispatch(poll_interval):
     assert runner.outputs == {}
 
 
+def test_violated_exprs_treats_arithmetic_error_as_violation():
+    # A runtime evaluation error over the view values (division by zero) is a
+    # contract violation, not a crash (§9.2/§9.3): the wrapper returns the expr.
+    runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), random_seed=0)
+    ast = parse("inputs.a.view / inputs.b.view >= 1")
+    violated = runner._violated_exprs("score", "requires", [("expr", ast)], {"a": 1, "b": 0}, {}, "x")
+    assert violated == "expr"
+
+
+def test_violated_exprs_propagates_internal_lookup_error():
+    # A structural error -- a referenced port missing from the resolver dict, i.e. a
+    # runner bug -- must NOT be swallowed as a user-facing contract violation; it
+    # propagates so the real fault is not hidden.
+    runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), random_seed=0)
+    ast = parse("inputs.missing.view >= 0")
+    with pytest.raises(KeyError):
+        runner._violated_exprs("score", "requires", [("expr", ast)], {}, {}, "x")
+
+
 @pytest.mark.parametrize("poll_interval", [None, 1])
 def test_ensures_violation_stops_at_completion(poll_interval, tmp_path):
     # A script whose `margin` breaks `ensures: margin == raw - threshold` (it adds
