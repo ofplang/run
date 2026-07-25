@@ -779,17 +779,33 @@ class RollingRunner:
                 if outputs is not None:
                     process = rec.activity["process"]
                     normalized: dict = {}
+                    nonconformant = None
                     for port, value in outputs.items():
                         resolved = self.contracts.output_type(process, port)
                         if not conforms(value, resolved):
-                            raise RunnerError(
-                                f"backend output {process}.{port!r} does not conform to its declared type"
-                            )
+                            nonconformant = port
+                            break
                         # Project type-level static view values onto the produced value
                         # (D35): the stored / downstream / contract-visible value carries
                         # the static constant even if the backend emitted a default (or a
                         # differing value, option A).
                         normalized[port] = with_static_views(value, resolved)
+                    if nonconformant is not None:
+                        # A backend / device-model output that does not conform to its
+                        # declared type is a runtime verification failure (§22.2 / §9.3).
+                        # Stop gracefully (D25) -- mark the (physically completed)
+                        # activity failed and record why -- symmetric with a script's
+                        # graceful failure, rather than raising a hard RunnerError.
+                        subject = self._fmt_node(tuple(rec.activity["node"]))
+                        rec.status = "failed"
+                        self.failed = True
+                        self._stopping = True
+                        self._record_failure(
+                            "backend_output_type",
+                            f"{subject}: output {nonconformant!r} does not conform to its declared type",
+                            subject,
+                        )
+                        continue
                     record_outputs(self.values, tuple(rec.activity["node"]), normalized)
                     outputs = normalized
                 # Postcondition contracts (v0 §9 `ensures`, D32): checked once the outputs

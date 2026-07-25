@@ -214,13 +214,17 @@ def test_default_carries_mapped_object_without_a_device_model():
 
 def test_device_model_output_is_contract_checked():
     # A model that returns a non-conformant value is caught at poll (the F4a
-    # conformance check, now live under a device model).
+    # conformance check). It is a runtime verification failure (§22.2 / §9.3), so the
+    # run stops *gracefully* -- the activity is marked failed and the reason recorded
+    # -- like a script failure, rather than raising a hard RunnerError (review #6).
     def bad_model(process, mode, inputs, output_schema, definition):
         return {port: "not-an-int-record" for port in output_schema}
 
-    runner = RollingRunner(COUNT_WF, COUNT_ENV, device_model=bad_model, random_seed=0)
-    with pytest.raises(RunnerError):
-        runner.run()
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, device_model=bad_model, poll_interval=1, random_seed=0)
+    status = runner.run()  # must not raise
+    assert runner.failed
+    assert runner.failure is not None and runner.failure.kind == "backend_output_type"
+    assert any(a["status"] == "failed" for a in status["activities"] if a.get("kind") == "processing")
 
 
 def test_cli_writes_result_boundary(tmp_path):
