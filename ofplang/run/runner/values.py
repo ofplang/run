@@ -46,6 +46,12 @@ class ValueStore:
     def has(self, node, port: str) -> bool:
         return (tuple(node), port) in self._values
 
+    def discard(self, node, port: str) -> None:
+        """Remove a recorded value if present (a no-op otherwise). Used to withdraw
+        an output that was recorded for a contract check but must not be surfaced --
+        e.g. an invocation whose `ensures` then failed."""
+        self._values.pop((tuple(node), port), None)
+
     def snapshot(self) -> dict:
         """A copy of the whole store (debug / inspection; the runner exposes the
         final outputs through this rather than the §6/§7 document in v0-lite)."""

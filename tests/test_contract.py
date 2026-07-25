@@ -188,3 +188,22 @@ def test_ensures_violation_stops_at_completion(poll_interval, tmp_path):
     statuses = {a.get("process"): a["status"] for a in status["activities"] if a.get("kind") == "processing"}
     assert statuses.get("score") == "failed"
     assert statuses.get("report") == "cancelled"
+
+
+@pytest.mark.parametrize("poll_interval", [None, 1])
+def test_ensures_failed_output_is_withheld(poll_interval, tmp_path):
+    # `Score.margin` feeds `returns.margin`, but on the ensures violation the value
+    # that failed its postcondition must not surface as a produced workflow output
+    # (review #5): it is withdrawn from the store, so self.outputs omits it rather
+    # than echoing the tainted value.
+    wf = tmp_path / "bad_ensures.workflow.yaml"
+    wf.write_text(
+        Path(CONTRACT_WF).read_text(encoding="utf-8").replace(
+            'return {"margin": raw - threshold}', 'return {"margin": raw + threshold}'
+        ),
+        encoding="utf-8",
+    )
+    runner = RollingRunner(str(wf), CONTRACT_ENV, _boundary(72), poll_interval=poll_interval, random_seed=0)
+    runner.run()
+    assert runner.failed
+    assert runner.outputs == {}  # margin withheld (ensures-failed); doubled never produced

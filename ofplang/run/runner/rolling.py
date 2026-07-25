@@ -805,6 +805,13 @@ class RollingRunner:
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True
+                        # Withdraw this invocation's outputs (review #5): they were
+                        # recorded above so `ensures` could read them, but a value that
+                        # failed its postcondition must not surface as a produced
+                        # workflow output via collect_outputs / the result boundary.
+                        node = tuple(rec.activity["node"])
+                        for port in outputs or {}:
+                            self.values.discard(node, port)
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now
