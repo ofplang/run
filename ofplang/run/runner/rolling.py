@@ -14,7 +14,10 @@ What this layer covers, added incrementally:
 
 * rolling-horizon core (D9/D20): the replan loop above.
 * re-routing (D21): when a device goes down, the environment scheduled against is
-  reduced (its process modes dropped) so the scheduler re-routes pending work.
+  reduced so the scheduler re-routes pending work. What is dropped is the down
+  device's `down_scope` (see `DownScope`): by default both its process modes and
+  its spots' transports (fully unreachable, safe for real hardware), or modes only
+  (`PROCESSING`, so material can still be moved off it -- the classic re-route).
 * poll modes (D22): fixed-interval polling is the standard -- an integer
   `poll_interval` (default 1) polls every that many units and estimates each
   completion time as the observing poll. `poll_interval=None` advances to plan
@@ -36,6 +39,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from ..backend import Backend
 from ..simulator import VirtualTimeSimulator
@@ -96,21 +100,71 @@ def _normalize_mode_ids(environment: dict) -> dict:
     return env
 
 
-def _reduce_environment(environment: dict, down: set[str]) -> dict:
-    """Return a copy of `environment` with every process mode that uses a down
-    device removed, keeping the device/spot/transport definitions (spec §7, D21).
+class DownScope(str, Enum):
+    """How a down device is reduced out of the environment handed to the scheduler.
 
-    Dropping only the modes is how a re-route is triggered: committed transports to
-    a down device's spot stay valid, and a re-transport can still route through it,
-    but no new processing is scheduled there.
+    A down device can be made unschedulable along two independent axes: its process
+    modes (processing) and the transports touching its spots (moving material on/off
+    it). Which axes apply is the deactivation's *scope*:
+
+    * ``BOTH`` (default) -- the device is fully unreachable: its modes *and* its
+      spots' transports are dropped. The safe choice for real hardware, where a
+      safety-stopped or disconnected device rejects transports too; a plan that
+      still routed material onto it would fail at dispatch.
+    * ``PROCESSING`` -- drop only the modes; keep the transports. Material can still
+      be moved off the down device (the classic re-route). Valid *only* with a
+      backend that physically permits transports to/from a down device -- the
+      `Simulator` does (D21); a real safety-stopped device does not.
+    * ``TRANSPORT`` -- drop only the transports; keep the modes. For completeness (a
+      device reachable for processing but not for material movement); rarely needed.
+
+    The scope must match what the backend actually allows, or a planned-then-rejected
+    transport crashes the dispatch -- which is why ``BOTH`` is the safe default.
+    """
+
+    BOTH = "both"
+    PROCESSING = "processing"
+    TRANSPORT = "transport"
+
+
+def _reduce_environment(
+    environment: dict, down: set[str], scope: DownScope = DownScope.BOTH
+) -> dict:
+    """Return a copy of `environment` with a down device made unschedulable, along
+    the axes selected by `scope` (spec §7, D21; see `DownScope`).
+
+    With `scope` covering processing, every process mode using a down device is
+    removed; with `scope` covering transport, every transport touching one of its
+    spots is removed. Device/spot definitions are always kept (an isolated spot the
+    scheduler simply never routes to). Only new scheduling is affected -- transports
+    already committed in the history are untouched. Recovery is automatic: the
+    reduction is recomputed from the full environment each replan, so a device no
+    longer in `down` returns with its modes and transports.
     """
     reduced = copy.deepcopy(environment)
-    for process in (reduced.get("processes") or {}).values():
-        process["modes"] = [
-            mode
-            for mode in (process.get("modes") or [])
-            if not (set(mode.get("devices") or []) & down)
-        ]
+    if scope in (DownScope.BOTH, DownScope.PROCESSING):
+        for process in (reduced.get("processes") or {}).values():
+            process["modes"] = [
+                mode
+                for mode in (process.get("modes") or [])
+                if not (set(mode.get("devices") or []) & down)
+            ]
+    if scope in (DownScope.BOTH, DownScope.TRANSPORT):
+        # Qualified spots ("<device>.<spot>", §8.2) owned by a down device: a
+        # transport with either endpoint here can no longer be planned.
+        down_spots = {
+            f"{device['id']}.{spot}"
+            for device in (reduced.get("devices") or [])
+            if device.get("id") in down
+            for spot in (device.get("spots") or [])
+        }
+        if down_spots:
+            reduced["transports"] = [
+                transport
+                for transport in (reduced.get("transports") or [])
+                if transport.get("from") not in down_spots
+                and transport.get("to") not in down_spots
+            ]
     return reduced
 
 
@@ -137,9 +191,16 @@ class RollingRunner:
         duration_model=None,
         contract_observer=None,
         max_ticks: int = 100_000,
+        down_scope: DownScope = DownScope.BOTH,
     ):
         self.workflow_path = str(workflow_path)
         self.environment_path = str(environment_path)
+        # How a down device is reduced out of the scheduling environment (D21): by
+        # default fully unreachable (modes + its spots' transports), the safe choice
+        # for real hardware. `DownScope.PROCESSING` keeps the transports for the
+        # classic re-route (valid only with a backend that permits them, e.g. the
+        # Simulator). See `DownScope` and `_reduce_environment`.
+        self._down_scope = down_scope
         # Keep the environment as a dict too: when devices go down we schedule
         # against a reduced copy of it (D21), while the backend keeps the full one.
         # Mode ids are pinned up front so they stay stable when modes are dropped.
@@ -725,11 +786,16 @@ class RollingRunner:
         pending (non-relay) activities (also remembered for cancellation)."""
         # Discover which devices are down and schedule against the normalized
         # environment reflecting it: the full env when nothing is down, or a reduced
-        # copy (down devices' process modes dropped) that triggers a re-route (D21).
+        # copy (the down devices' `down_scope` dropped -- modes and/or their spots'
+        # transports) that triggers a re-route (D21).
         # Always the normalized dict, so the scheduler and the backend agree on mode
         # ids. Committed history is fed back so it is fixed and the rest re-optimised.
         down = set(self.sim.down_devices())
-        environment = _reduce_environment(self._environment, down) if down else self._environment
+        environment = (
+            _reduce_environment(self._environment, down, self._down_scope)
+            if down
+            else self._environment
+        )
         status_doc = build_status(self.log.records(), self.now, self.interface)
         report = replan(
             self.workflow_path,

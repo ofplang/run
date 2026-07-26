@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
-from ofplang.run.runner import RollingRunner, RunnerError  # noqa: E402
+from ofplang.run.runner import DownScope, RollingRunner, RunnerError  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
@@ -110,8 +110,8 @@ REROUTE_ENV = str(FIXTURES / "reroute.env.yaml")
 
 def test_variance_composes_with_reroute():
     # Variance and re-routing compose: station_1 goes down (target re-routes to
-    # station_2) while every transport overruns (planned + 3). The run still
-    # completes on the re-routed device.
+    # station_2, PROCESSING scope so material is re-transported off it) while every
+    # transport overruns (planned + 3). The run still completes on the re-routed device.
     def model(activity, planned):
         return planned + 3 if activity["kind"] == "transport" else planned
 
@@ -122,6 +122,7 @@ def test_variance_composes_with_reroute():
         poll_interval=2,
         running_task_margin=2,
         duration_model=model,
+        down_scope=DownScope.PROCESSING,
     )
     runner.sim.schedule_device_down(3, "station_1")
     status = runner.run()

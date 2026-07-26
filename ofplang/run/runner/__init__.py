@@ -20,13 +20,14 @@ from __future__ import annotations
 
 from .contract_eval import ContractSyntaxError
 from .loader import load_document, serialize_document
-from .rolling import RollingRunner
+from .rolling import DownScope, RollingRunner
 from .runner import Runner, RunnerError
 
 __all__ = [
     "Runner",
     "RollingRunner",
     "RunnerError",
+    "DownScope",
     "ContractSyntaxError",
     "load_document",
     "serialize_document",

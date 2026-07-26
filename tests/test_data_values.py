@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
-from ofplang.run.runner import RollingRunner, RunnerError, load_document  # noqa: E402
+from ofplang.run.runner import DownScope, RollingRunner, RunnerError, load_document  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 WF = str(FIXTURES / "nested_returns.workflow.yaml")
@@ -343,7 +343,9 @@ def test_create_workflow_records_producer_but_has_no_outputs():
 def test_values_survive_reroute():
     # A device goes down and the run re-routes (the plan and its spots change), but
     # values are keyed by workflow node path, so the producer's value is unaffected.
-    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0)
+    # PROCESSING scope: only the down device's modes are dropped, so material already
+    # on station_1 is re-transported off to station_2 (the classic re-route).
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0, down_scope=DownScope.PROCESSING)
     runner.sim.schedule_device_down(3, "station_1")
     status = runner.run()
     assert status["now"] == 9  # re-routed makespan

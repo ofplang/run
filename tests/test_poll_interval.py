@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.cli import EXIT_OK, main  # noqa: E402
-from ofplang.run.runner import RollingRunner, load_document  # noqa: E402
+from ofplang.run.runner import DownScope, RollingRunner, load_document  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
@@ -68,9 +68,12 @@ def test_estimated_end_is_an_upper_bound_of_the_true_finish():
 
 
 def test_reroute_still_works_under_fixed_interval():
-    # Re-routing (2b-2a) composes with fixed-interval polling: station_1 goes down,
-    # the runner re-routes target to station_2, and the run still completes.
-    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0, poll_interval=2)
+    # Re-routing (2b-2a) composes with fixed-interval polling: station_1 goes down and
+    # the runner re-routes target to station_2 (PROCESSING scope, so material is
+    # re-transported off the down device), and the run still completes.
+    runner = RollingRunner(
+        SIMPLE_WF, REROUTE_ENV, random_seed=0, poll_interval=2, down_scope=DownScope.PROCESSING
+    )
     runner.sim.schedule_device_down(3, "station_1")
     status = runner.run()
     assert all(a["status"] == "completed" for a in status["activities"])
