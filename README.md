@@ -1,6 +1,7 @@
 # ofplang run
 
 [![CI](https://github.com/ofplang/run/actions/workflows/ci.yml/badge.svg)](https://github.com/ofplang/run/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ofplang-run.svg)](https://pypi.org/project/ofplang-run/)
 
 A runner for **Object-flow Programming Language v0** — a YAML-based dataflow
 workflow IR with linear Object tracking. The language is defined in the
@@ -99,20 +100,21 @@ without real hardware; the same dispatch contract targets real hardware later.
 ## Install
 
 ```sh
-pip install -e ".[test]"
+pip install ofplang-run
 ```
 
-Requires Python 3.10+. `replay` needs only PyYAML. `run` (rolling-horizon) calls
-the sibling [`ofplang-schedule`](https://github.com/ofplang/schedule), and the CLI
-front door uses [`ofplang-validate`](https://github.com/ofplang/validate); install
-both editable alongside this repo:
+Requires Python 3.10+. Runtime dependencies (pulled in automatically) are PyYAML,
+the sibling [`ofplang-schedule`](https://pypi.org/project/ofplang-schedule/) that
+`run` (rolling-horizon) calls each tick, and
+[`ofplang-validate`](https://pypi.org/project/ofplang-validate/) used by the CLI
+front door. The runner *library* never imports validate (and the per-tick replans
+never re-validate), so it stays a one-shot CLI front door.
+
+For development, install editable with the test extra from a clone:
 
 ```sh
-pip install -e ../ofplang-schedule -e ../ofplang-validate
+pip install -e ".[test]"
 ```
-
-The runner *library* never imports validate (and the per-tick replans never
-re-validate), so it stays a one-shot CLI front door.
 
 ## Command line
 
