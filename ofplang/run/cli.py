@@ -16,6 +16,13 @@ All real logic lives in the library (`ofplang.run.runner` / `ofplang.run.simulat
 so the CLI cannot drift from it; this file only parses arguments, reports errors,
 and maps outcomes to exit codes.
 
+`run` first runs the workflow through `ofplang-validate` as a one-shot front door
+(extension-tolerant) so a malformed workflow fails with clear diagnostics rather
+than being silently mis-run; the runner library itself trusts its input, and the
+per-tick replans never re-validate. Pass `--no-validate` to skip this (e.g. when
+already validated upstream). `replay` takes a plan, not a workflow, so it is not
+front-door validated here.
+
 Exit codes:
     0  success (the workflow / plan ran to completion)
     1  execution failed (an activity errored, or a replan is infeasible)
@@ -30,6 +37,8 @@ import sys
 from pathlib import Path
 
 import yaml
+from ofplang.validate import EXTENSION_TOLERANT
+from ofplang.validate import validate as validate_workflow
 
 from ofplang.run.runner import (
     ContractSyntaxError,
@@ -98,6 +107,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--boundary, with each produced output's `view` filled in; a run-local "
         "artifact, not part of the §6/§7 status document",
     )
+    r.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="skip the one-shot ofplang-validate front-door check of the workflow "
+        "(use when it was already validated upstream, e.g. by the `ofp` umbrella CLI)",
+    )
 
     # `replay` -- replay a pre-made execution plan on the simulator (no replanning).
     p = sub.add_parser("replay", help="replay an execution plan on the simulator")
@@ -130,12 +145,42 @@ def _emit(status: dict, output) -> None:
         sys.stdout.write(text)
 
 
+def _front_door_validate(workflow_path: str) -> bool:
+    """Validate a workflow as portable v0 before running (spec §2/§3, etc.).
+
+    The runner trusts its input; this CLI front door runs the full
+    ofplang-validate pass once so a malformed workflow fails with clear
+    diagnostics instead of being silently mis-run. Returns True if the workflow
+    is valid; otherwise prints each error and returns False. Uses
+    extension-tolerant mode so `x-` extension keys are not rejected at the door.
+    """
+    result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT)
+    if result.ok:
+        return True
+    for diag in result.diagnostics:
+        if diag.file and diag.line:
+            locator = f"{diag.file}:{diag.line}:{diag.col}"
+        else:
+            locator = diag.path or "<root>"
+        detail = f"  {diag.path}" if diag.file and diag.path else ""
+        message = f"  {diag.message}" if diag.message else ""
+        print(f"{locator}: error {diag.code}{detail}{message}", file=sys.stderr)
+    return False
+
+
 def _cmd_run(args) -> int:
     # Inputs must exist; a missing file is a usage error, not a failure.
     for label, path in (("workflow", args.workflow), ("environment", args.env)):
         if not Path(path).is_file():
             print(f"ofp-run: {label} not found: {path!r}", file=sys.stderr)
             return EXIT_USAGE
+
+    # Front door: validate the workflow as portable v0 once, unless suppressed.
+    # A malformed workflow never ran, so this is a usage/input error (EXIT_USAGE),
+    # kept distinct from an execution failure (EXIT_FAILED). The runner library —
+    # including the per-tick replans that call ofplang.schedule — is not invoked.
+    if not args.no_validate and not _front_door_validate(args.workflow):
+        return EXIT_USAGE
 
     # The run boundary (D28): the single run-facing I/O document (spot placement +
     # input views). Passed to the runner verbatim; it parses / validates it against

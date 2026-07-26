@@ -103,12 +103,16 @@ pip install -e ".[test]"
 ```
 
 Requires Python 3.10+. `replay` needs only PyYAML. `run` (rolling-horizon) calls
-the sibling [`ofplang-schedule`](https://github.com/ofplang/schedule); install it
-editable alongside this repo:
+the sibling [`ofplang-schedule`](https://github.com/ofplang/schedule), and the CLI
+front door uses [`ofplang-validate`](https://github.com/ofplang/validate); install
+both editable alongside this repo:
 
 ```sh
-pip install -e ../ofplang-schedule
+pip install -e ../ofplang-schedule -e ../ofplang-validate
 ```
+
+The runner *library* never imports validate (and the per-tick replans never
+re-validate), so it stays a one-shot CLI front door.
 
 ## Command line
 

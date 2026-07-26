@@ -7,10 +7,14 @@ name = "ofplang-run"
 version = "0.0.0"
 description = "Object-flow programming language v0 runner"
 requires-python = ">=3.10"
-# `ofplang-schedule` is a local sibling repo (not published); install it editable
-# alongside this one: `pip install -e ../ofplang-schedule`. The rolling-horizon
-# runner (`ofp-run run`) calls it in-process; `ofp-run replay` does not need it.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule"]
+# `ofplang-schedule` and `ofplang-validate` are local sibling repos (not
+# published); install them editable alongside this one:
+#   pip install -e ../ofplang-schedule -e ../ofplang-validate
+# The rolling-horizon runner (`ofp-run run`) calls schedule in-process; `ofp-run
+# replay` does not need it. ofplang-validate is imported only by the CLI front
+# door (cli.py) to validate a workflow once before running; the runner library
+# never calls it, so library users take no validation overhead.
+dependencies = ["PyYAML>=6.0", "ofplang-schedule", "ofplang-validate"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]

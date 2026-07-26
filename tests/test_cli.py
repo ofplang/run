@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ofplang.run.cli import EXIT_USAGE, main
+from ofplang.run.cli import EXIT_OK, EXIT_USAGE, main
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 _BROKEN_YAML = "a: [1, 2\nb: :::\n"
@@ -50,19 +50,32 @@ def test_replay_missing_plan_is_usage_error(capsys):
     assert "cannot read plan" in capsys.readouterr().err
 
 
-def test_run_malformed_workflow_is_usage_error(tmp_path, capsys):
-    # A malformed workflow (valid env) is an input error (exit 2), not an
-    # uncaught traceback -- the runner is the untrusted boundary.
+def test_run_malformed_workflow_is_caught_by_front_door(tmp_path, capsys):
+    # A malformed workflow is rejected by the ofplang-validate front door. For
+    # `run`, anything that stops it before execution is a usage error (exit 2);
+    # the failure is reported with its validate error code.
     bad = tmp_path / "broken.workflow.yaml"
     bad.write_text(_BROKEN_YAML, encoding="utf-8")
     code = main(["run", str(bad), "--env", str(EXAMPLES / "count_chain.env.yaml")])
     assert code == EXIT_USAGE
+    assert "wrong_value_kind" in capsys.readouterr().err
+
+
+def test_run_no_validate_bypasses_front_door_on_malformed(tmp_path, capsys):
+    # With --no-validate the front door is skipped, so a malformed workflow falls
+    # through to the runner's own input guard: still a usage error (exit 2).
+    bad = tmp_path / "broken.workflow.yaml"
+    bad.write_text(_BROKEN_YAML, encoding="utf-8")
+    code = main(
+        ["run", str(bad), "--env", str(EXAMPLES / "count_chain.env.yaml"), "--no-validate"]
+    )
+    assert code == EXIT_USAGE
     assert "invalid input" in capsys.readouterr().err
 
 
-def test_run_malformed_contract_is_usage_error(tmp_path, capsys):
-    # An unparsable contract expression is an input error (exit 2), not a
-    # traceback or a spurious "execution failed".
+def test_run_malformed_contract_is_caught_by_front_door(tmp_path, capsys):
+    # An unparsable contract expression is caught by the front door (exit 2),
+    # reported with its validate code rather than reaching the runner.
     wf_text = (EXAMPLES / "count_chain.workflow.yaml").read_text(encoding="utf-8")
     wf_text = wf_text.replace(
         "  inc:\n    kind: atomic\n",
@@ -75,4 +88,41 @@ def test_run_malformed_contract_is_usage_error(tmp_path, capsys):
     wf.write_text(wf_text, encoding="utf-8")
     code = main(["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml")])
     assert code == EXIT_USAGE
-    assert "invalid input" in capsys.readouterr().err
+    assert "contract_parse_error" in capsys.readouterr().err
+
+
+def _count_chain_with_bogus_key(tmp_path) -> Path:
+    """A parseable count_chain workflow that is invalid v0 (unknown top-level key)
+    but that the runner still tolerates — it reads only the keys it needs."""
+    src = (EXAMPLES / "count_chain.workflow.yaml").read_text(encoding="utf-8")
+    wf = tmp_path / "bogus.workflow.yaml"
+    wf.write_text("bogus_key: 1\n" + src, encoding="utf-8")
+    return wf
+
+
+def test_run_invalid_v0_workflow_is_usage_error(tmp_path, capsys):
+    # A parseable-but-invalid-v0 workflow (not just malformed YAML) is caught by
+    # the front door with its specific validate code.
+    wf = _count_chain_with_bogus_key(tmp_path)
+    code = main(["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml")])
+    assert code == EXIT_USAGE
+    assert "unknown_key" in capsys.readouterr().err
+
+
+def test_run_no_validate_runs_invalid_v0(tmp_path):
+    # --no-validate lets an invalid-v0-but-runnable workflow through: the runner
+    # ignores the unknown key and drives it to completion.
+    wf = _count_chain_with_bogus_key(tmp_path)
+    out = tmp_path / "status.yaml"
+    code = main(
+        [
+            "run",
+            str(wf),
+            "--env",
+            str(EXAMPLES / "count_chain.env.yaml"),
+            "--no-validate",
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_OK

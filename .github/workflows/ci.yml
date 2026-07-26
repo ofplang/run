@@ -19,8 +19,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # `ofplang-schedule` is a sibling repo, not on PyPI. Install it from git so
-      # the runner's schedule-dependent tests (importorskip'd otherwise) run.
+      # `ofplang-schedule` and `ofplang-validate` are sibling repos, not on PyPI.
+      # Install them from git so the runner's schedule-dependent tests and the CLI
+      # front door resolve. validate first: schedule itself depends on it.
+      - run: pip install "ofplang-validate @ git+https://github.com/ofplang/validate.git@main"
       - run: pip install "ofplang-schedule @ git+https://github.com/ofplang/schedule.git@main"
       - run: pip install -e ".[test]"
       - run: pytest
@@ -46,7 +48,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # mypy resolves `ofplang.schedule`, so install the sibling repo from git too.
+      # mypy resolves `ofplang.schedule` and `ofplang.validate`, so install both
+      # sibling repos from git too (validate first: schedule depends on it).
+      - run: pip install "ofplang-validate @ git+https://github.com/ofplang/validate.git@main"
       - run: pip install "ofplang-schedule @ git+https://github.com/ofplang/schedule.git@main"
       - run: pip install -e ".[dev]"
       - run: mypy
