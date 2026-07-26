@@ -20,8 +20,10 @@ and maps outcomes to exit codes.
 (extension-tolerant) so a malformed workflow fails with clear diagnostics rather
 than being silently mis-run; the runner library itself trusts its input, and the
 per-tick replans never re-validate. Pass `--no-validate` to skip this (e.g. when
-already validated upstream). `replay` takes a plan, not a workflow, so it is not
-front-door validated here.
+already validated upstream). A separate capability gate — always on — then rejects
+valid v0 that uses a feature the runner does not support (generic processes,
+`$import`) as a clean usage error. `replay` takes a plan, not a workflow, so it is
+not front-door validated here.
 
 Exit codes:
     0  success (the workflow / plan ran to completion)
@@ -168,6 +170,40 @@ def _front_door_validate(workflow_path: str) -> bool:
     return False
 
 
+def _import_key_present(obj) -> bool:
+    """True if a `$import` key appears anywhere in the document (spec 3)."""
+    if isinstance(obj, dict):
+        return "$import" in obj or any(_import_key_present(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_import_key_present(v) for v in obj)
+    return False
+
+
+def _capability_gate(workflow_path: str) -> str | None:
+    """Return a reason if the workflow uses a valid-v0 feature the runner does
+    not support, so it is rejected cleanly instead of mis-run; else None.
+
+    The runner handles a subset of valid v0. Generic processes (`generic_processes`)
+    are not instantiated here, and `$import` is not resolved (the runner assumes an
+    expanded document); either would otherwise surface as a confusing deep error.
+    Always checked, independent of the `--no-validate` front door."""
+    try:
+        data = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None  # a parse problem is handled by the front door / runner
+    if not isinstance(data, dict):
+        return None
+    if _import_key_present(data):
+        return "workflow contains a $import; it must be expanded before running"
+    for name, proc in (data.get("processes") or {}).items():
+        if isinstance(proc, dict) and proc.get("type_params") is not None:
+            return (
+                f"process {name!r} uses generic type parameters "
+                "(generic_processes), which the runner does not support"
+            )
+    return None
+
+
 def _cmd_run(args) -> int:
     # Inputs must exist; a missing file is a usage error, not a failure.
     for label, path in (("workflow", args.workflow), ("environment", args.env)):
@@ -180,6 +216,15 @@ def _cmd_run(args) -> int:
     # kept distinct from an execution failure (EXIT_FAILED). The runner library —
     # including the per-tick replans that call ofplang.schedule — is not invoked.
     if not args.no_validate and not _front_door_validate(args.workflow):
+        return EXIT_USAGE
+
+    # Capability gate (always on, even under --no-validate): reject valid-v0
+    # features the runner cannot run, as a clean usage error rather than a deep
+    # mis-run. A validated workflow can still use generics / $import, which the
+    # runner does not support.
+    unsupported = _capability_gate(args.workflow)
+    if unsupported is not None:
+        print(f"ofp-run: unsupported: {unsupported}", file=sys.stderr)
         return EXIT_USAGE
 
     # The run boundary (D28): the single run-facing I/O document (spot placement +

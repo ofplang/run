@@ -109,6 +109,60 @@ def test_run_invalid_v0_workflow_is_usage_error(tmp_path, capsys):
     assert "unknown_key" in capsys.readouterr().err
 
 
+_GENERIC_WORKFLOW = """\
+spec_version: "0.0"
+processes:
+  wash:
+    kind: atomic
+    type_params: {O: {domain: object}}
+    inputs: {item: {type: O, phase: data}}
+    outputs: {item: {type: O, phase: data}}
+    objects: {map: {outputs.item: inputs.item}}
+  main: {kind: atomic, inputs: {}, outputs: {}}
+entry: main
+"""
+
+
+def test_run_generic_workflow_is_unsupported(tmp_path, capsys):
+    # Generics are valid v0 (front door passes) but the runner does not
+    # instantiate them: the capability gate rejects them as a usage error.
+    wf = tmp_path / "generic.workflow.yaml"
+    wf.write_text(_GENERIC_WORKFLOW, encoding="utf-8")
+    code = main(["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml")])
+    assert code == EXIT_USAGE
+    assert "unsupported" in capsys.readouterr().err
+
+
+def test_run_no_validate_still_gates_generics(tmp_path, capsys):
+    # The capability gate runs even under --no-validate.
+    wf = tmp_path / "generic.workflow.yaml"
+    wf.write_text(_GENERIC_WORKFLOW, encoding="utf-8")
+    code = main(
+        ["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml"), "--no-validate"]
+    )
+    assert code == EXIT_USAGE
+    assert "unsupported" in capsys.readouterr().err
+
+
+def test_run_import_is_unsupported(tmp_path, capsys):
+    # An unexpanded `$import` is rejected by the capability gate (the runner does
+    # not resolve imports). Use --no-validate so the gate, not the front door's
+    # import resolution, is what rejects it.
+    wf = tmp_path / "import.workflow.yaml"
+    wf.write_text(
+        "processes:\n"
+        "  $import: shared.yaml\n"
+        "  main: {kind: atomic, inputs: {}, outputs: {}}\n"
+        "entry: main\n",
+        encoding="utf-8",
+    )
+    code = main(
+        ["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml"), "--no-validate"]
+    )
+    assert code == EXIT_USAGE
+    assert "unsupported" in capsys.readouterr().err
+
+
 def test_run_no_validate_runs_invalid_v0(tmp_path):
     # --no-validate lets an invalid-v0-but-runnable workflow through: the runner
     # ignores the unknown key and drives it to completion.
