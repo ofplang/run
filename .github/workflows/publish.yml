@@ -1,0 +1,81 @@
+name: Publish
+
+# Tag-driven release via PyPI Trusted Publishing (OIDC) — no API tokens.
+#
+# Version comes from the pushed git tag via setuptools-scm (`v0.1.0` -> 0.1.0).
+# Routing:
+#   - a pre-release tag containing `rc` (e.g. v0.1.0rc1) -> TestPyPI (rehearsal)
+#   - any other `v*` tag (e.g. v0.1.0)                    -> PyPI (production)
+#   - manual workflow_dispatch -> choose the target explicitly (run it from a
+#     tagged commit, else setuptools-scm yields a dev+local version PyPI rejects)
+#
+# PyPI-side setup (done once, by the project owner): register a Trusted Publisher
+# for owner=ofplang, repo=run, workflow=publish.yml, environment=pypi
+# (and environment=testpypi on TestPyPI). First release: register as "pending".
+#
+# Publish order across the org: validate -> schedule -> run. Do not publish this
+# before ofplang-validate and ofplang-schedule are available on the same index.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives the version from tags + history.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    needs: build
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+      || (github.event_name == 'push' && contains(github.ref_name, 'rc'))
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: build
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'
+      || (github.event_name == 'push' && !contains(github.ref_name, 'rc'))
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

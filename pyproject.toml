@@ -1,20 +1,38 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ofplang-run"
-version = "0.0.0"
 description = "Object-flow programming language v0 runner"
 requires-python = ">=3.10"
-# `ofplang-schedule` and `ofplang-validate` are local sibling repos (not
-# published); install them editable alongside this one:
-#   pip install -e ../ofplang-schedule -e ../ofplang-validate
-# The rolling-horizon runner (`ofp-run run`) calls schedule in-process; `ofp-run
-# replay` does not need it. ofplang-validate is imported only by the CLI front
-# door (cli.py) to validate a workflow once before running; the runner library
-# never calls it, so library users take no validation overhead.
+dynamic = ["version"]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kazunari Kaizu", email = "kwaizu@gmail.com" }]
+keywords = ["ofplang", "dataflow", "workflow", "runner", "rolling-horizon"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+# `ofplang-schedule` (called in-process by the rolling-horizon runner) and
+# `ofplang-validate` (CLI front door only) are sibling repos. Until they are on
+# PyPI, CI installs them from git; version floors are added when CI switches to
+# PyPI.
 dependencies = ["PyYAML>=6.0", "ofplang-schedule", "ofplang-validate"]
+
+[project.urls]
+Homepage = "https://github.com/ofplang/run"
+Repository = "https://github.com/ofplang/run"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
@@ -25,12 +43,20 @@ dev = ["pytest>=7.0", "ruff>=0.16", "mypy>=1.11", "types-PyYAML"]
 # `ofp run`.
 ofp-run = "ofplang.run.cli:main"
 
+# Version is derived from git tags (e.g. `v0.1.0`) by setuptools-scm; there is no
+# static version in this file.
+[tool.setuptools_scm]
+
 # `ofplang` is a PEP 420 namespace shared across the org's repos (validate,
 # schedule, run, …); this distribution provides only the `ofplang.run` package
 # under it.
 [tool.setuptools.packages.find]
 include = ["ofplang*"]
 namespaces = true
+
+# Ship the PEP 561 marker so downstreams see this package as typed.
+[tool.setuptools.package-data]
+"ofplang.run" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
