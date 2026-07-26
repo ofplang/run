@@ -12,6 +12,7 @@ pinned directly.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -28,9 +29,13 @@ class FakeClock:
     (plus explicit `jump`s, standing in for real time consumed elsewhere -- e.g. a
     slow solve between advances). No real seconds are spent."""
 
-    def __init__(self) -> None:
+    def __init__(self, overshoot: float = 0.0) -> None:
         self.t = 0.0
         self.sleeps: list[float] = []
+        # Real `time.sleep(d)` returns after *at least* d; `overshoot` models that
+        # granularity by advancing the clock by `d + overshoot` on every sleep while
+        # still recording the requested `d`.
+        self.overshoot = overshoot
 
     def monotonic(self) -> float:
         return self.t
@@ -38,7 +43,7 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         assert seconds > 0  # advance only sleeps a positive remaining
         self.sleeps.append(seconds)
-        self.t += seconds
+        self.t += seconds + self.overshoot
 
     def jump(self, seconds: float) -> None:
         self.t += seconds
@@ -73,6 +78,26 @@ def test_advance_overshoots_when_real_time_already_passed():
     assert sim.advance(3) == 7  # target 3 already overshot; adopt tick 7
     assert sim.now == 7
     assert clock.sleeps == [2.0]  # no sleep on the overshooting step
+
+
+def test_advance_adopts_sleep_granularity_overshoot():
+    # A real sleep returns *late*: it overshoots the requested remaining. The reached
+    # tick must follow the wall clock past `until` (never lag it), and the clock must
+    # never run backward -- the same overshoot rule as a slow solve, but arising from
+    # sleep granularity itself.
+    clock = FakeClock(overshoot=1.5)  # every sleep lands 1.5 ticks late
+    sim = RealTimeSimulator(
+        SIMPLE_ENV, seconds_per_tick=1.0, monotonic=clock.monotonic, sleep=clock.sleep
+    )
+    # advance(2): sleep 2s but land at t == 3.5 -> adopt reached tick 3 (> until).
+    reached = sim.advance(2)
+    assert reached == 3
+    assert reached >= 2  # never lags the target
+    assert sim.now == 3
+    # A follow-on step is already past its target from the prior overshoot, so it does
+    # not sleep and simply re-adopts the current tick (monotonic, never backward).
+    assert sim.advance(3) == 3
+    assert clock.sleeps == [2.0]  # only the first step slept
 
 
 def test_speed_scales_wall_time():
@@ -128,3 +153,23 @@ def test_realtime_simulator_is_a_simulator():
     # it and its non-timing behaviour is inherited unchanged.
     sim = RealTimeSimulator(SIMPLE_ENV)
     assert isinstance(sim, Simulator)
+
+
+def test_default_wiring_really_sleeps():
+    """Smoke test the *real* clock path: with no injected clock, `advance` drives the
+    default `time.monotonic` / `time.sleep`. This is the one test that spends real
+    time -- kept tiny (a few ms) with a very small tick. It asserts only a *lower*
+    bound on elapsed (real time really passed) and never an upper bound, which would
+    be flaky under CI/timer-granularity jitter."""
+    spt = 0.005  # 5 ms per tick
+    sim = RealTimeSimulator(SIMPLE_ENV, seconds_per_tick=spt)
+    start = time.monotonic()
+    reached = sim.advance(3)  # ~15 ms of real sleeping
+    elapsed = time.monotonic() - start
+
+    assert reached >= 3  # reached the target (or beyond, on overshoot)
+    assert sim.now == reached
+    # It genuinely waited: a generous lower bound (half the nominal 3 ticks) so a slow,
+    # coarse-timer machine that oversleeps still passes -- only under-sleeping fails,
+    # which `time.sleep` does not do.
+    assert elapsed >= 3 * spt * 0.5
