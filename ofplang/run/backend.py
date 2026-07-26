@@ -28,6 +28,11 @@ Only the methods the runner actually calls live here. Simulator-specific surface
 of the contract. The replay `Runner` (deterministic plan replay) targets the
 simulator directly and is not backend-injectable, so its use of `now` is not
 required here.
+
+The built-in `Simulator` declares `Backend` as an explicit base, so mypy checks it
+(and its `VirtualTimeSimulator` / `RealTimeSimulator` subclasses) against this
+contract statically; a third-party backend need only match structurally -- no
+inheritance -- to be injectable.
 """
 
 from __future__ import annotations

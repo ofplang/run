@@ -19,7 +19,7 @@ import pytest
 
 from ofplang.run.simulator import (
     DeviceComputationError,
-    Simulator,
+    VirtualTimeSimulator,
     default_device_model,
     run_python_script,
     script_device_model,
@@ -126,7 +126,7 @@ _SIM_ENV = {
 def test_simulator_reveals_computed_script_outputs_on_completion():
     # The built-in default (script_device_model) runs the script at completion; the
     # outputs are revealed only once the op is `completed` (D31).
-    sim = Simulator(_SIM_ENV)
+    sim = VirtualTimeSimulator(_SIM_ENV)
     uuid = sim.dispatch_processing(
         "add", "v0", output_schema={"z": INT}, inputs={"x": 4, "y": 5}, definition=ADD_DEF
     )
@@ -138,7 +138,7 @@ def test_simulator_fails_operation_on_script_computation_error():
     # A script that fails runtime verification ends the op `failed` (no outputs), the
     # same graceful path as an injected capability failure (D25).
     bad = {**ADD_DEF, "script": {"language": "python", "code": 'return {"z": 1 // 0}'}}
-    sim = Simulator(_SIM_ENV)
+    sim = VirtualTimeSimulator(_SIM_ENV)
     uuid = sim.dispatch_processing(
         "add", "v0", output_schema={"z": INT}, inputs={"x": 4, "y": 5}, definition=bad
     )

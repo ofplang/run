@@ -24,7 +24,7 @@ injected device model or the built-in `script_device_model` (D31), which runs a
 
 from __future__ import annotations
 
-from .core import Event, Simulator, default_device_model
+from .core import Event, Simulator, VirtualTimeSimulator, default_device_model
 from .environment import (
     Environment,
     Mode,
@@ -43,10 +43,14 @@ from .errors import (
     SpotConflict,
     UnknownReference,
 )
+from .realtime import RealTimeSimulator, realtime_backend_factory
 from .script import DeviceComputationError, run_python_script, script_device_model
 
 __all__ = [
     "Simulator",
+    "VirtualTimeSimulator",
+    "RealTimeSimulator",
+    "realtime_backend_factory",
     "Event",
     "default_device_model",
     "script_device_model",

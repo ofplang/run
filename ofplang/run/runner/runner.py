@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..simulator import Simulator
+from ..simulator import VirtualTimeSimulator
 
 
 class RunnerError(Exception):
@@ -66,9 +66,11 @@ class Runner:
 
     def __init__(self, plan: dict, environment):
         # `plan` is a parsed §6 document; `environment` is anything the simulator
-        # accepts (an Environment, a §5 mapping, or a path to a §5 YAML file).
+        # accepts (an Environment, a §5 mapping, or a path to a §5 YAML file). Replay
+        # is deterministic and sim-only (it reads `sim.now`), so it drives the
+        # virtual-time simulator, never a wall-clock backend.
         self.plan = plan
-        self.sim = Simulator(environment)
+        self.sim = VirtualTimeSimulator(environment)
         self._records: list[_Record] = []
 
     def run(self) -> dict:

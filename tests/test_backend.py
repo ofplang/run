@@ -20,7 +20,7 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import RollingRunner, RunnerError  # noqa: E402
-from ofplang.run.simulator import Simulator  # noqa: E402
+from ofplang.run.simulator import Simulator, VirtualTimeSimulator  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
@@ -49,7 +49,7 @@ class RecordingBackend:
 
     def __init__(self, environment: dict):
         self.environment = environment
-        self._sim = Simulator(environment)
+        self._sim = VirtualTimeSimulator(environment)
         self.calls: list[str] = []
         self.advance_returns: list[int] = []
 

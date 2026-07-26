@@ -55,8 +55,10 @@ level (D27).
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from dataclasses import dataclass
 
+from ..backend import Backend
 from .environment import Environment, device_of, environment_from_dict, load_environment
 from .errors import (
     ClockError,
@@ -213,8 +215,17 @@ class _Op:
     should_fail: bool = False
 
 
-class Simulator:
-    """A physical-only, discrete-event execution backend (see module docstring)."""
+class Simulator(Backend):
+    """A physical-only, discrete-event execution backend (see module docstring).
+
+    Abstract: it carries all of the shared simulation machinery (the physical/value
+    oracle, the completion engine `_settle`) but leaves `advance`'s *time policy*
+    unspecified -- the one axis on which a simulated backend must choose. Instantiate
+    a concrete subclass: `VirtualTimeSimulator` (instant, deterministic) or
+    `RealTimeSimulator` (paced to a wall clock). Declaring `Backend` as a base makes
+    the runner's required contract an explicit, statically checked supertype (this
+    class adds simulator-only surface -- `now`, `observe`, `remove`, `dispatch_relay`,
+    fault/failure injection -- on top of it)."""
 
     def __init__(self, environment, device_model=None):
         # Accept a ready `Environment`, a §5 mapping, or a path to a §5 YAML file
@@ -640,19 +651,29 @@ class Simulator:
 
     # -- time advance (D11/D15) -------------------------------------------
 
+    @abstractmethod
     def advance(self, until: int) -> int:
-        """Advance the virtual clock to `until`, applying every completion on the
-        way (the sole clock entry point for production / the runner). Always
-        reaches `until` -- it never returns early on an event, mirroring a real
-        backend where only polling reveals completion (D11). The completion events
-        are accumulated into the history (see `_history`) rather than returned, so
-        the main loop only ever sees `advance` while tests can still inspect what
-        happened.
+        """Block until the clock has reached `until` and return the time actually
+        reached (>= `until`), applying every completion along the way (the sole
+        clock entry point for the runner). Always reaches `until` -- it never
+        returns early on an event, mirroring a real backend where only polling
+        reveals completion (D11).
 
-        Returns the time actually reached (always `until` here), per the `Backend`
-        contract: a real backend returns its wall-derived time, which the runner
+        The time *policy* is the subclass's: `VirtualTimeSimulator` settles the
+        clock instantly to `until`; `RealTimeSimulator` sleeps out the real time
+        first, then settles to whatever tick the wall clock reached. Both apply
+        completions via `_settle` and return the reached time, which the runner
         adopts as `now`."""
-        self._history_events.extend(self._advance(until))
+        ...
+
+    def _settle(self, reached: int) -> int:
+        """Settle the virtual clock forward to `reached`, applying every completion
+        up to it, and return `reached`. This is the shared completion engine every
+        `advance` policy delegates to once it has decided how far time has moved;
+        the completion events are accumulated into the history (see `_history`)
+        rather than returned, so the main loop only ever sees `advance` while tests
+        can still inspect what happened."""
+        self._history_events.extend(self._advance(reached))
         return self._clock
 
     def _history(self) -> list[Event]:
@@ -775,3 +796,21 @@ class Simulator:
         if op.transporter is not None:
             self._busy_transporters.discard(op.transporter)
         op.status = "failed"
+
+
+class VirtualTimeSimulator(Simulator):
+    """A `Simulator` that advances time *instantly*: `advance(until)` settles the
+    virtual clock straight to `until`, as fast as the CPU allows, and returns it.
+
+    This is the deterministic, hardware-free simulator the runner and the tests
+    drive by default -- no real time passes, so a whole plan runs in an instant and
+    a scheduler-in-the-loop replan never waits. Its sibling `RealTimeSimulator`
+    keeps the same behaviour but paces `advance` to a wall clock; the split isolates
+    that single axis (how time moves) in `advance`, leaving everything else shared in
+    the `Simulator` base."""
+
+    def advance(self, until: int) -> int:
+        """Settle the virtual clock to `until` immediately and return it (always
+        `until`, since virtual time never overshoots), applying every completion on
+        the way (D11)."""
+        return self._settle(until)

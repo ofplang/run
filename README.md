@@ -17,12 +17,15 @@ without real hardware; the same dispatch contract targets real hardware later.
 > implemented.
 >
 > - **Simulator** (`ofplang.run.simulator`) — a physical backend: devices, spots,
->   transporters, and timed operations advanced on a virtual clock. It validates
->   every dispatch (an inconsistent plan is rejected), models timed device up/down
->   and injected operation failure, and at completion produces each operation's
->   output view values via a **device model** (the built-in `default_device_model`
->   fills type defaults and carries Object outputs through from their `objects.map`
->   inputs; a custom / real model computes them).
+>   transporters, and timed operations advanced on a clock. It validates every
+>   dispatch (an inconsistent plan is rejected), models timed device up/down and
+>   injected operation failure, and at completion produces each operation's output
+>   view values via a **device model** (the built-in `default_device_model` fills
+>   type defaults and carries Object outputs through from their `objects.map`
+>   inputs; a custom / real model computes them). `Simulator` is an abstract base
+>   over the runner's `Backend` contract; the concrete `VirtualTimeSimulator`
+>   advances time instantly (deterministic; the default) and `RealTimeSimulator`
+>   paces it to a wall clock (a hardware-free stand-in for a real backend).
 > - **Runner** (`ofplang.run.runner`) — two ways to drive a backend:
 >   - **`replay`** runs a given execution plan (spec §6) on the backend verbatim.
 >   - **`run`** is a rolling-horizon loop: it calls

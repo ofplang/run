@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import RollingRunner, RunnerError, load_document  # noqa: E402
-from ofplang.run.simulator import DeviceDown, Simulator  # noqa: E402
+from ofplang.run.simulator import DeviceDown, VirtualTimeSimulator  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
@@ -29,7 +29,7 @@ REROUTE_ENV = str(FIXTURES / "reroute.env.yaml")
 
 def test_processing_on_down_device_is_rejected():
     env = load_document(Path(SIMPLE_ENV))
-    sim = Simulator(env)
+    sim = VirtualTimeSimulator(env)
     sim.schedule_device_down(0, "station_1")
     sim.advance(0)  # apply the fault
     assert sim.down_devices() == ["station_1"]
@@ -42,7 +42,7 @@ def test_processing_on_down_device_is_rejected():
 def test_transport_from_down_device_is_allowed():
     # A down device still holds material and can be transported from (D21).
     env = load_document(Path(REROUTE_ENV))
-    sim = Simulator(env)
+    sim = VirtualTimeSimulator(env)
     sim.place("station_1.core")
     sim.schedule_device_down(0, "station_1")
     sim.advance(0)
@@ -55,7 +55,7 @@ def test_transport_from_down_device_is_allowed():
 def test_running_op_unaffected_by_down():
     # Taking a device down does not fail an operation already running on it (D21).
     env = load_document(Path(SIMPLE_ENV))
-    sim = Simulator(env)
+    sim = VirtualTimeSimulator(env)
     sim.place("station_1.core")  # feed target's input
     uid = sim.dispatch_processing("target", "0")  # runs on station_1 [0, 2]
     sim.schedule_device_down(1, "station_1")  # down while it runs
@@ -67,7 +67,7 @@ def test_running_op_unaffected_by_down():
 def test_device_up_clears_down_and_allows_processing():
     # A device that comes back up leaves the down-set and can run processes again.
     env = load_document(Path(SIMPLE_ENV))
-    sim = Simulator(env)
+    sim = VirtualTimeSimulator(env)
     sim.schedule_device_down(2, "station_1")
     sim.schedule_device_up(5, "station_1")
     sim.place("station_1.core")

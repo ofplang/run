@@ -22,6 +22,7 @@ from ofplang.run.simulator import (
     Simulator,
     SpotConflict,
     UnknownReference,
+    VirtualTimeSimulator,
     environment_from_dict,
     load_environment,
 )
@@ -84,7 +85,7 @@ SIMPLE_ENV = {
 
 
 def make_sim(device_model=None) -> Simulator:
-    return Simulator(SIMPLE_ENV, device_model=device_model)
+    return VirtualTimeSimulator(SIMPLE_ENV, device_model=device_model)
 
 
 # -- environment loading ---------------------------------------------------
@@ -450,7 +451,7 @@ def test_transporter_busy_across_independent_devices():
         ],
         "processes": {},
     }
-    sim = Simulator(env)
+    sim = VirtualTimeSimulator(env)
     sim.place("a.s")
     sim.place("c.s")
     sim.dispatch_transport("arm", "a.s", "b.s")  # holds the arm

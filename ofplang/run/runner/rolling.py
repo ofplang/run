@@ -38,7 +38,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..backend import Backend
-from ..simulator import Simulator
+from ..simulator import VirtualTimeSimulator
 from .boundary import parse_boundary
 from .contract_eval import evaluate, referenced_ports
 from .contract_eval import parse as parse_contract
@@ -145,8 +145,8 @@ class RollingRunner:
         # Mode ids are pinned up front so they stay stable when modes are dropped.
         self._environment = _normalize_mode_ids(load_document(environment_path))
         # The backend reads the environment itself. By default it is the built-in
-        # `Simulator`, with an optional device model (D27 F4b) that computes outputs
-        # from inputs; without one the built-in `default_device_model` (type defaults
+        # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
+        # outputs from inputs; without one the built-in `default_device_model` (type defaults
         # + `objects.map` object carry) is used. A scenario concern injected from
         # Python, like `duration_model`.
         #
@@ -156,17 +156,17 @@ class RollingRunner:
         # mode ids the scheduler does across reduction/replan (why a factory, not a
         # pre-built instance -- the caller does not have the normalized env). The
         # runner drives any backend only through the `Backend` protocol. `device_model`
-        # is the default Simulator's concern, so pairing it with a custom factory is a
+        # is the default virtual-time Simulator's concern, so pairing it with a custom factory is a
         # usage error rather than a silent no-op.
         if backend_factory is not None:
             if device_model is not None:
                 raise RunnerError(
-                    "device_model applies only to the default Simulator backend; "
-                    "a backend_factory must configure its own value model"
+                    "device_model applies only to the default virtual-time Simulator "
+                    "backend; a backend_factory must configure its own value model"
                 )
             self.sim: Backend = backend_factory(self._environment)
         else:
-            self.sim = Simulator(self._environment, device_model=device_model)
+            self.sim = VirtualTimeSimulator(self._environment, device_model=device_model)
 
         # Value layer (D26). The runner owns view-value routing: `dataflow` is the
         # workflow's port-level routing view (reused from the scheduler's flattener,
@@ -367,9 +367,9 @@ class RollingRunner:
             # Advance the clock, then poll. The advance policy is the only thing that
             # differs between the two modes (D22). A poll may observe a failure and
             # flip `_stopping`. `advance` returns the time actually reached and the
-            # runner adopts it as `now` (the `Backend` contract): for the Simulator
-            # that is exactly the requested time, but a real backend may overshoot
-            # while sleeping out the interval, and `now` must track the real clock.
+            # runner adopts it as `now` (the `Backend` contract): for the virtual-time
+            # Simulator that is exactly the requested time, but a real backend may
+            # overshoot while sleeping out the interval, and `now` must track the real clock.
             self.now = self.sim.advance(self._next_time(pending))
             self._poll()
             # A poll may have recorded the last value a nested composite's contract was
