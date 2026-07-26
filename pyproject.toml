@@ -25,10 +25,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
-# `ofplang-validate` (CLI front door only) are sibling repos. Until they are on
-# PyPI, CI installs them from git; version floors are added when CI switches to
+# `ofplang-validate` (CLI front door only) are sibling packages, resolved from
 # PyPI.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule", "ofplang-validate"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.0", "ofplang-validate>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
