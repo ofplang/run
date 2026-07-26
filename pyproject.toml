@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ofplang-run"
-description = "Object-flow programming language v0 runner"
+description = "Runner for Object-flow Programming Language workflows."
 requires-python = ">=3.10"
 dynamic = ["version"]
 readme = "README.md"
