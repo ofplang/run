@@ -640,15 +640,20 @@ class Simulator:
 
     # -- time advance (D11/D15) -------------------------------------------
 
-    def advance(self, until: int) -> None:
+    def advance(self, until: int) -> int:
         """Advance the virtual clock to `until`, applying every completion on the
         way (the sole clock entry point for production / the runner). Always
         reaches `until` -- it never returns early on an event, mirroring a real
         backend where only polling reveals completion (D11). The completion events
         are accumulated into the history (see `_history`) rather than returned, so
         the main loop only ever sees `advance` while tests can still inspect what
-        happened."""
+        happened.
+
+        Returns the time actually reached (always `until` here), per the `Backend`
+        contract: a real backend returns its wall-derived time, which the runner
+        adopts as `now`."""
         self._history_events.extend(self._advance(until))
+        return self._clock
 
     def _history(self) -> list[Event]:
         """Debug / test channel: the completion events accumulated by every
