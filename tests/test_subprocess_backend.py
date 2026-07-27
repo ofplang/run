@@ -27,6 +27,7 @@ from ofplang.run.simulator.script import DeviceComputationError, run_python_scri
 FIXTURES = Path(__file__).parent / "fixtures"
 SCRIPT_ENV = str(FIXTURES / "script.env.yaml")
 SCRIPT_WF = str(FIXTURES / "script.workflow.yaml")
+SIMPLE_ENV = str(FIXTURES / "simple.env.yaml")  # two devices + one transport route
 
 INT = {"kind": "primitive", "name": "Int"}
 STR = {"kind": "primitive", "name": "String"}
@@ -226,6 +227,95 @@ def test_child_main_writes_error_on_script_failure(tmp_path, monkeypatch):
     assert child_main() == 0  # a defined outcome, not a harness crash
     payload = json.loads(result_path.read_text(encoding="utf-8"))
     assert payload["error"]["code"] == "script_error"
+
+
+# -- transport execution (out-of-process, kind="transport") --------------------
+#
+# The base backend leaves transports timed; a dialect (e.g. labcode) runs them by
+# overriding dispatch_transport to launch a transport child via `_start_child_op`. This
+# thin stand-in exercises the *upstream* transport machinery: the child `kind`, the
+# shared `_start_child_op`, and the settle rule that fails a transport on a child error.
+
+
+class _TransportBackend(SubprocessBackend):
+    def dispatch_transport(self, transporter, from_spot, to_spot, duration=None, view=None) -> str:
+        uuid = super().dispatch_transport(
+            transporter, from_spot, to_spot, duration=duration, view=view
+        )
+        self._start_child_op(
+            uuid, code="pass", kind="transport",
+            inputs={"from_spot": from_spot, "to_spot": to_spot,
+                    "transporter": transporter, "view": view},
+        )
+        return uuid
+
+
+def _fixed_result_spawn(result: dict):
+    """A fake spawn that writes a fixed outcome (``{"outputs"|"error": ...}``) to the
+    result file and reports done at once -- for driving a transport op deterministically."""
+
+    def spawn(job: dict) -> FakeHandle:
+        with open(job["result_path"], "w", encoding="utf-8") as fh:
+            json.dump(result, fh)
+        return FakeHandle()
+
+    return spawn
+
+
+def _transport_backend(result: dict) -> _TransportBackend:
+    clock = FakeClock()
+    return _TransportBackend(
+        SIMPLE_ENV, spawn=_fixed_result_spawn(result), seconds_per_tick=1.0,
+        monotonic=clock.monotonic, sleep=clock.sleep,
+    )
+
+
+def test_transport_child_completes_and_moves_material():
+    backend = _transport_backend({"outputs": {}})
+    backend.place("station_0.core")
+    uid = backend.dispatch_transport("transport", "station_0.core", "station_1.core")
+    assert backend.state(uid)["status"] == "running"  # child-driven, not timed
+    backend.advance(1)
+    assert backend.state(uid)["status"] == "completed"
+    assert backend.spot_state("station_1.core") is not None  # material moved on completion
+    assert backend.spot_state("station_0.core") is None
+
+
+def test_transport_child_failure_fails_op_with_reason():
+    backend = _transport_backend({"error": {"code": "move_error", "message": "gripper stuck"}})
+    backend.place("station_0.core")
+    uid = backend.dispatch_transport("transport", "station_0.core", "station_1.core")
+    backend.advance(1)
+    st = backend.state(uid)
+    assert st["status"] == "failed"
+    assert st["reason"][0] == "move_error"
+    # D25: a failed transport applies no material effect -- material stays at the source.
+    assert backend.spot_state("station_0.core") is not None
+    assert backend.spot_state("station_1.core") is None
+
+
+def test_child_transport_ignores_return_value(tmp_path, monkeypatch):
+    result_path = tmp_path / "r.json"
+    job = {
+        "code": "return {'unexpected': 1}", "kind": "transport",
+        "inputs": {"from_spot": "a", "to_spot": "b", "transporter": "arm", "view": None},
+        "result_path": str(result_path),
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(job)))
+    assert child_main() == 0
+    # side-effect only: the return is discarded, no output verification.
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {"outputs": {}}
+
+
+def test_child_transport_script_error(tmp_path, monkeypatch):
+    result_path = tmp_path / "r.json"
+    job = {
+        "code": "raise RuntimeError('boom')", "kind": "transport", "inputs": {},
+        "result_path": str(result_path),
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(job)))
+    assert child_main() == 0
+    assert json.loads(result_path.read_text(encoding="utf-8"))["error"]["code"] == "script_error"
 
 
 # -- integration: drive a full run through the runner --------------------------

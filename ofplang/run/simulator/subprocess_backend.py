@@ -172,19 +172,38 @@ class SubprocessBackend(Simulator):
         )
         code = self._resolver(process, str(mode), inputs, definition)
         if code is not None:
-            fd, result_path = tempfile.mkstemp(suffix=".json", prefix="ofp-run-")
-            os.close(fd)  # the child opens it by path
-            job = {
-                "code": code,
-                "inputs": inputs or {},
-                "output_schema": output_schema or {},
-                "process": process,
-                "language": "python",
-                "result_path": result_path,
-            }
-            self._result_paths[uuid] = result_path
-            self._procs[uuid] = self._spawn(job)
+            self._start_child_op(
+                uuid, code=code, kind="process", inputs=inputs or {},
+                output_schema=output_schema or {}, process=process,
+            )
         return uuid
+
+    def _start_child_op(
+        self, uuid, *, code, kind, inputs, output_schema=None, process=None
+    ) -> None:
+        """Start a child process running `code` for op `uuid`, and register its handle so
+        the settle loop discovers its completion. Shared by `dispatch_processing` and a
+        subclass's transport dispatch (``kind="transport"``), so a coded op -- whatever
+        its kind -- is launched and tracked the same way.
+
+        `output_schema` / `process` are carried in the job only for a value-producing op
+        (a process, so the child can verify its outputs); a transport passes neither and
+        ``kind="transport"`` tells the child there is nothing to verify (side-effect only)."""
+        fd, result_path = tempfile.mkstemp(suffix=".json", prefix="ofp-run-")
+        os.close(fd)  # the child opens it by path
+        job: dict = {
+            "code": code,
+            "kind": kind,
+            "inputs": inputs or {},
+            "language": "python",
+            "result_path": result_path,
+        }
+        if output_schema is not None:
+            job["output_schema"] = output_schema
+        if process is not None:
+            job["process"] = process
+        self._result_paths[uuid] = result_path
+        self._procs[uuid] = self._spawn(job)
 
     # -- time: pace the wall clock, then settle whatever finished --------------------
 
@@ -226,10 +245,22 @@ class SubprocessBackend(Simulator):
                 self._fail(op)
             else:
                 self._pending = self._collect(op) if op.uuid in self._procs else _TIMED
-                try:
-                    self._complete(op)
-                finally:
+                pending = self._pending
+                if op.output_schema is None and isinstance(pending, dict) and pending.get("error"):
+                    # A coded op with no value signature (a transport, output_schema None):
+                    # `_complete` applies its material move and skips the value model, so a
+                    # child failure would be silently completed. Fail it here with the
+                    # reason instead (D25: no material effect). A processing op keeps
+                    # failing via its value model (output_schema is not None), unchanged.
+                    err = pending["error"]
+                    op.reason = (err.get("code", "child_error"), err.get("message", ""))
+                    self._fail(op)
                     self._pending = _TIMED
+                else:
+                    try:
+                        self._complete(op)
+                    finally:
+                        self._pending = _TIMED
             self._history_events.append(
                 Event(time=reached, uuid=op.uuid, kind=op.kind, status=op.status)
             )

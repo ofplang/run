@@ -9,7 +9,11 @@ script behaves identically whether run in-process or here.
 Protocol (all JSON, so it is language-neutral at the boundary):
 
 * **in**: a job object on **stdin** --
-  ``{"code", "inputs", "output_schema", "process", "language", "result_path"}``.
+  ``{"code", "kind", "inputs", "output_schema", "process", "language", "result_path"}``.
+  ``kind`` is ``"process"`` (a value-producing op: its outputs are verified against
+  ``output_schema``) or ``"transport"`` (side-effect only: the return is ignored, nothing
+  to verify); ``inputs`` are the locals bound for the script (input-port views for a
+  process; ``from_spot`` / ``to_spot`` / ``transporter`` / ``view`` for a transport).
 * **out**: the *outcome* is written to ``result_path`` (NOT stdout, so the user
   script's own ``print`` cannot corrupt it) as one of
   ``{"outputs": {...}}`` (success) or ``{"error": {"code", "message"}}`` (a script /
@@ -41,8 +45,13 @@ def main() -> int:
 
     try:
         raw = run_python_script(job.get("code") or "", job.get("inputs") or {})
-        outputs = verify_outputs(raw, job.get("output_schema") or {}, job.get("process"))
-        payload: dict = {"outputs": outputs}
+        if job.get("kind") == "transport":
+            # A transport script is side-effect only (P5): its return value is ignored and
+            # there are no output ports to verify. Success is simply "it ran without error".
+            payload: dict = {"outputs": {}}
+        else:
+            outputs = verify_outputs(raw, job.get("output_schema") or {}, job.get("process"))
+            payload = {"outputs": outputs}
     except DeviceComputationError as exc:
         # A graceful script / verification failure (v0 §22.2): a defined outcome.
         payload = {"error": {"code": exc.code, "message": str(exc)}}
