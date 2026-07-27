@@ -16,6 +16,29 @@ The `ofp-run` CLI (`ofplang.run.cli`) exposes both: `run` (rolling-horizon) and
 
 from __future__ import annotations
 
+from typing import Any
+
 __version__ = "0.0.0"
 
-__all__: list[str] = []
+# The library front door (`ofplang.run.app`) pulls in the runner -> ofplang.schedule
+# (ortools) -> ofplang.validate, which is heavy. Expose its names lazily (PEP 562) so
+# `import ofplang.run` stays light (e.g. a bare `--version` never imports ortools),
+# while `from ofplang.run import run_workflow` still works.
+_LAZY = {
+    "run_workflow",
+    "RunResult",
+    "front_door_check",
+    "FrontDoorResult",
+    "FrontDoorError",
+    "capability_gate",
+}
+
+__all__ = sorted(_LAZY)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY:
+        from . import app
+
+        return getattr(app, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

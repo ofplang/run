@@ -39,12 +39,10 @@ import sys
 from pathlib import Path
 
 import yaml
-from ofplang.validate import EXTENSION_TOLERANT
-from ofplang.validate import validate as validate_workflow
 
+from ofplang.run.app import FrontDoorResult, front_door_check, run_workflow
 from ofplang.run.runner import (
     ContractSyntaxError,
-    RollingRunner,
     Runner,
     RunnerError,
     load_document,
@@ -147,19 +145,11 @@ def _emit(status: dict, output) -> None:
         sys.stdout.write(text)
 
 
-def _front_door_validate(workflow_path: str) -> bool:
-    """Validate a workflow as portable v0 before running (spec §2/§3, etc.).
-
-    The runner trusts its input; this CLI front door runs the full
-    ofplang-validate pass once so a malformed workflow fails with clear
-    diagnostics instead of being silently mis-run. Returns True if the workflow
-    is valid; otherwise prints each error and returns False. Uses
-    extension-tolerant mode so `x-` extension keys are not rejected at the door.
-    """
-    result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT)
-    if result.ok:
-        return True
-    for diag in result.diagnostics:
+def _print_front_door(fd: FrontDoorResult) -> None:
+    """Print a failed front-door check to stderr: each validate diagnostic (in the
+    `file:line:col: error code path message` form) and, if present, the
+    capability-gate reason."""
+    for diag in fd.diagnostics:
         if diag.file and diag.line:
             locator = f"{diag.file}:{diag.line}:{diag.col}"
         else:
@@ -167,41 +157,8 @@ def _front_door_validate(workflow_path: str) -> bool:
         detail = f"  {diag.path}" if diag.file and diag.path else ""
         message = f"  {diag.message}" if diag.message else ""
         print(f"{locator}: error {diag.code}{detail}{message}", file=sys.stderr)
-    return False
-
-
-def _import_key_present(obj) -> bool:
-    """True if a `$import` key appears anywhere in the document (spec 3)."""
-    if isinstance(obj, dict):
-        return "$import" in obj or any(_import_key_present(v) for v in obj.values())
-    if isinstance(obj, list):
-        return any(_import_key_present(v) for v in obj)
-    return False
-
-
-def _capability_gate(workflow_path: str) -> str | None:
-    """Return a reason if the workflow uses a valid-v0 feature the runner does
-    not support, so it is rejected cleanly instead of mis-run; else None.
-
-    The runner handles a subset of valid v0. Generic processes (`generic_processes`)
-    are not instantiated here, and `$import` is not resolved (the runner assumes an
-    expanded document); either would otherwise surface as a confusing deep error.
-    Always checked, independent of the `--no-validate` front door."""
-    try:
-        data = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None  # a parse problem is handled by the front door / runner
-    if not isinstance(data, dict):
-        return None
-    if _import_key_present(data):
-        return "workflow contains a $import; it must be expanded before running"
-    for name, proc in (data.get("processes") or {}).items():
-        if isinstance(proc, dict) and proc.get("type_params") is not None:
-            return (
-                f"process {name!r} uses generic type parameters "
-                "(generic_processes), which the runner does not support"
-            )
-    return None
+    if fd.unsupported is not None:
+        print(f"ofp-run: unsupported: {fd.unsupported}", file=sys.stderr)
 
 
 def _cmd_run(args) -> int:
@@ -211,20 +168,13 @@ def _cmd_run(args) -> int:
             print(f"ofp-run: {label} not found: {path!r}", file=sys.stderr)
             return EXIT_USAGE
 
-    # Front door: validate the workflow as portable v0 once, unless suppressed.
-    # A malformed workflow never ran, so this is a usage/input error (EXIT_USAGE),
-    # kept distinct from an execution failure (EXIT_FAILED). The runner library —
-    # including the per-tick replans that call ofplang.schedule — is not invoked.
-    if not args.no_validate and not _front_door_validate(args.workflow):
-        return EXIT_USAGE
-
-    # Capability gate (always on, even under --no-validate): reject valid-v0
-    # features the runner cannot run, as a clean usage error rather than a deep
-    # mis-run. A validated workflow can still use generics / $import, which the
-    # runner does not support.
-    unsupported = _capability_gate(args.workflow)
-    if unsupported is not None:
-        print(f"ofp-run: unsupported: {unsupported}", file=sys.stderr)
+    # Front door (shared with any CLI, `ofplang.run.app`): the full ofplang-validate
+    # pass (skipped under --no-validate) plus the always-on capability gate. A
+    # malformed / unsupported workflow never ran, so it is a usage error (EXIT_USAGE),
+    # distinct from an execution failure; the runner library is not invoked.
+    fd = front_door_check(args.workflow, validate=not args.no_validate)
+    if not fd.ok:
+        _print_front_door(fd)
         return EXIT_USAGE
 
     # The run boundary (D28): the single run-facing I/O document (spot placement +
@@ -243,15 +193,16 @@ def _cmd_run(args) -> int:
             return EXIT_USAGE
 
     try:
-        runner = RollingRunner(
+        # Validation already happened at the front door above, so run trusting.
+        result = run_workflow(
             args.workflow,
             args.env,
             boundary,
             running_task_margin=args.margin,
             random_seed=args.seed,
             poll_interval=args.poll_interval,
+            validate=False,
         )
-        status = runner.run()
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract
         # expression is an input error, not an execution failure -- the runner is
@@ -267,17 +218,17 @@ def _cmd_run(args) -> int:
     # so the §6/§7 status document stays value-free.
     if args.boundary_out:
         Path(args.boundary_out).write_text(
-            serialize_document(runner.result_boundary), encoding="utf-8"
+            serialize_document(result.result_boundary), encoding="utf-8"
         )
 
     # An activity failure stops the run without raising: the status is still emitted
     # (it carries the failed / cancelled activities), but the run counts as failed.
-    _emit(status, args.output)
-    if runner.failed:
+    _emit(result.status, args.output)
+    if result.failed:
         # Report the failure reason (D36): its code and human-readable detail, from
-        # the structured `runner.failure` (a contract violation, a script error, or a
+        # the structured `failure` (a contract violation, a script error, or a
         # generic activity failure). Falls back to a generic line if unset.
-        failure = runner.failure
+        failure = result.failure
         if failure is not None:
             print(f"ofp-run: execution failed: {failure.kind}: {failure.detail}", file=sys.stderr)
         else:

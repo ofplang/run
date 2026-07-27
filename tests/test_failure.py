@@ -142,20 +142,17 @@ def test_cli_maps_failed_run_to_exit_failed(tmp_path, monkeypatch, capsys):
     # EXIT_FAILED. Failure is not CLI-injectable (Python-only), so a fake runner
     # stands in for one whose run failed.
     import ofplang.run.cli as cli
+    from ofplang.run.app import RunResult
 
-    class _FakeRunner:
-        failed = True
-        failure = None  # a real runner sets a Failure; the CLI falls back to a generic line
+    status = {"now": 2, "activities": [{"kind": "processing", "status": "failed",
+                                        "start": 0, "end": 2, "process": "source",
+                                        "mode": "m0", "node": ["S"]}]}
 
-        def __init__(self, *a, **k):
-            pass
+    def _fake_run_workflow(*a, **k):
+        # A real runner sets a Failure; None makes the CLI fall back to a generic line.
+        return RunResult(status=status, result_boundary={}, failed=True, failure=None)
 
-        def run(self):
-            return {"now": 2, "activities": [{"kind": "processing", "status": "failed",
-                                              "start": 0, "end": 2, "process": "source",
-                                              "mode": "m0", "node": ["S"]}]}
-
-    monkeypatch.setattr(cli, "RollingRunner", _FakeRunner)
+    monkeypatch.setattr(cli, "run_workflow", _fake_run_workflow)
     out = tmp_path / "status.yaml"
     code = main(["run", SIMPLE_WF, "--env", SIMPLE_ENV, "-o", str(out)])
     assert code == EXIT_FAILED
