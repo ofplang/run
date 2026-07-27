@@ -130,6 +130,40 @@ def _conforms_to_descriptor(value: Any, descriptor: dict) -> bool:
     return all(_conforms_to_descriptor(value[name], fdesc) for name, fdesc in fields.items())
 
 
+def verify_outputs(result, output_schema, process):
+    """Verify a script's raw result against its declared output signature (v0 §22.2).
+
+    The result must be a mapping whose keys are *exactly* the declared output ports
+    (`output_schema`, a ``{port: value-shape descriptor}`` mapping), each value
+    conforming to its declared type. Any violation -- a non-mapping result, a
+    missing / extra output name, or a non-conformant value -- raises
+    `DeviceComputationError` (a runtime verification failure). Returns `result`
+    unchanged when it conforms.
+
+    Shared by the in-process `script_device_model` and the out-of-process child
+    harness (`_child`), so both apply the identical §22.2 verification to a script's
+    output regardless of where the script ran.
+    """
+    if not isinstance(result, dict):
+        raise DeviceComputationError(
+            f"script process {process!r} returned {type(result).__name__}, not a mapping",
+            code="script_output_names",
+        )
+    if set(result) != set(output_schema):
+        raise DeviceComputationError(
+            f"script process {process!r} returned output names {sorted(result)}, "
+            f"expected exactly {sorted(output_schema)}",
+            code="script_output_names",
+        )
+    for port, descriptor in output_schema.items():
+        if not _conforms_to_descriptor(result[port], descriptor):
+            raise DeviceComputationError(
+                f"script process {process!r} output {port!r} does not conform to its declared type",
+                code="script_output_type",
+            )
+    return result
+
+
 def script_device_model(process, mode, inputs, output_schema, definition):
     """Built-in device model that runs `python_script_processes` (v0 §22).
 
@@ -165,21 +199,4 @@ def script_device_model(process, mode, inputs, output_schema, definition):
 
     # Run the script and verify its result against the declared outputs (v0 §22.2).
     result = run_python_script(script.get("code") or "", inputs or {})
-    if not isinstance(result, dict):
-        raise DeviceComputationError(
-            f"script process {process!r} returned {type(result).__name__}, not a mapping",
-            code="script_output_names",
-        )
-    if set(result) != set(output_schema):
-        raise DeviceComputationError(
-            f"script process {process!r} returned output names {sorted(result)}, "
-            f"expected exactly {sorted(output_schema)}",
-            code="script_output_names",
-        )
-    for port, descriptor in output_schema.items():
-        if not _conforms_to_descriptor(result[port], descriptor):
-            raise DeviceComputationError(
-                f"script process {process!r} output {port!r} does not conform to its declared type",
-                code="script_output_type",
-            )
-    return result
+    return verify_outputs(result, output_schema, process)

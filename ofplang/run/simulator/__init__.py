@@ -44,17 +44,26 @@ from .errors import (
     UnknownReference,
 )
 from .realtime import RealTimeSimulator, realtime_backend_factory
-from .script import DeviceComputationError, run_python_script, script_device_model
+from .script import DeviceComputationError, run_python_script, script_device_model, verify_outputs
+from .subprocess_backend import (
+    SubprocessBackend,
+    default_code_resolver,
+    subprocess_backend_factory,
+)
 
 __all__ = [
     "Simulator",
     "VirtualTimeSimulator",
     "RealTimeSimulator",
     "realtime_backend_factory",
+    "SubprocessBackend",
+    "subprocess_backend_factory",
+    "default_code_resolver",
     "Event",
     "default_device_model",
     "script_device_model",
     "run_python_script",
+    "verify_outputs",
     "DeviceComputationError",
     "Environment",
     "Mode",
