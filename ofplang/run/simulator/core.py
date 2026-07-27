@@ -57,6 +57,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from ..backend import Backend
 from .environment import Environment, device_of, environment_from_dict, load_environment
@@ -213,6 +214,11 @@ class _Op:
     # the clock reaches its end it goes to `failed` (resources freed, no material
     # effect) rather than `completed`.
     should_fail: bool = False
+    # For a transport: the view value of the Object being moved (the producing arc's
+    # output, passed by the runner, D26). The physical simulator does not use it (a
+    # move needs no view); it is recorded so a transport-running backend / a test can
+    # read what a leg carried. Best-effort: None when the runner could not resolve it.
+    view: Any = None
 
 
 class Simulator(Backend):
@@ -419,12 +425,16 @@ class Simulator(Backend):
         from_spot: str,
         to_spot: str,
         duration: int | None = None,
+        view=None,
     ) -> str:
         """Dispatch a transport operation moving material `from_spot` -> `to_spot`
         (D14). `duration` defaults to the environment's transport table; a same-spot
         move is a duration-0 no-op whose `transporter` may be `None` (§5.4 / §6.4).
         Occupies the source device, the destination device, and the transporter
         over the move (§4.5). Returns the operation id.
+
+        `view` is the moved Object's view value (D26), recorded on the operation for a
+        transport-running backend / tests; the physical simulator does not act on it.
         """
         if from_spot not in self._env.spots:
             raise UnknownReference(f"unknown spot: {from_spot}")
@@ -485,6 +495,7 @@ class Simulator(Backend):
             from_spot=from_spot,
             to_spot=to_spot,
             should_fail=(transporter, from_spot, to_spot) in self._failing_transports,
+            view=view,
         )
 
     def dispatch_relay(self, *args, **kwargs):
@@ -515,6 +526,7 @@ class Simulator(Backend):
         process=None,
         mode=None,
         definition=None,
+        view=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -536,6 +548,7 @@ class Simulator(Backend):
             process=process,
             mode=mode,
             definition=definition,
+            view=view,
         )
         self._ops[op.uuid] = op
         return op.uuid

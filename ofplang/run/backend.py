@@ -96,10 +96,17 @@ class Backend(Protocol):
         from_spot: str,
         to_spot: str,
         duration: int | None = None,
+        view=None,
     ) -> str:
         """Start a transport moving material `from_spot` -> `to_spot` and return its
         handle immediately. `transporter` may be `None` for a same-spot no-op move;
-        `duration` is advisory (see `dispatch_processing`)."""
+        `duration` is advisory (see `dispatch_processing`).
+
+        `view` is the view value of the Object being moved (the producing arc's
+        output, resolved by the runner), passed so a backend that *runs* a transport
+        (e.g. a real-hardware one) can act on what it is carrying. It is advisory and
+        best-effort: `None` when the runner cannot resolve it, and the built-in
+        simulator ignores it entirely (a physical move needs no view)."""
         ...
 
     def state(self, uuid: str) -> dict:

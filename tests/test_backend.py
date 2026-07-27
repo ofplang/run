@@ -52,6 +52,7 @@ class RecordingBackend:
         self._sim = VirtualTimeSimulator(environment)
         self.calls: list[str] = []
         self.advance_returns: list[int] = []
+        self.transport_views: list = []
 
     def advance(self, until: int) -> int:
         self.calls.append("advance")
@@ -75,9 +76,12 @@ class RecordingBackend:
             inputs=inputs, definition=definition,
         )
 
-    def dispatch_transport(self, transporter, from_spot, to_spot, duration=None) -> str:
+    def dispatch_transport(self, transporter, from_spot, to_spot, duration=None, view=None) -> str:
         self.calls.append("dispatch_transport")
-        return self._sim.dispatch_transport(transporter, from_spot, to_spot, duration=duration)
+        self.transport_views.append(view)
+        return self._sim.dispatch_transport(
+            transporter, from_spot, to_spot, duration=duration, view=view
+        )
 
     def state(self, uuid: str) -> dict:
         self.calls.append("state")
@@ -152,6 +156,43 @@ def test_advance_return_is_adopted_as_now():
     returns = backend["b"].advance_returns
     assert returns
     assert runner.now == returns[-1]
+
+
+def test_transport_view_is_resolved_and_passed():
+    # The runner resolves the moved Object's view (the producing arc endpoint's stored
+    # output, D26) and passes it to dispatch_transport. simple.workflow has one real
+    # transport (SampleSource.source_out -> SampleTarget), so the backend sees exactly
+    # that view.
+    captured: dict = {}
+
+    def factory(env: dict) -> RecordingBackend:
+        backend = RecordingBackend(env)
+        captured["backend"] = backend
+        return backend
+
+    runner = RollingRunner(SIMPLE_WF, SIMPLE_ENV, backend_factory=factory, random_seed=0)
+    runner.run()
+
+    backend = captured["backend"]
+    assert runner.values.has(("SampleSource",), "source_out")
+    expected = runner.values.get(("SampleSource",), "source_out")
+    non_none = [v for v in backend.transport_views if v is not None]
+    assert non_none, "the transport leg should have carried a resolved view"
+    assert all(v == expected for v in non_none)
+
+
+def test_simulator_dispatch_transport_records_view():
+    # The simulator accepts and records the view (for a transport-running backend / a
+    # test), and stays backward compatible when called without it.
+    sim = VirtualTimeSimulator(SIMPLE_ENV)
+    sim.place("station_0.core")
+    uid = sim.dispatch_transport("transport", "station_0.core", "station_1.core", view={"k": 1})
+    assert sim._ops[uid].view == {"k": 1}
+
+    sim2 = VirtualTimeSimulator(SIMPLE_ENV)
+    sim2.place("station_0.core")
+    uid2 = sim2.dispatch_transport("transport", "station_0.core", "station_1.core")
+    assert sim2._ops[uid2].view is None
 
 
 def test_backend_factory_with_device_model_raises():

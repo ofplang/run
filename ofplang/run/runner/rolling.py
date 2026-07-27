@@ -840,6 +840,19 @@ class RollingRunner:
                 self._commit_start(act)
         return pending
 
+    def _transported_view(self, activity: dict):
+        """The view value of the Object a transport leg carries: the producing arc
+        endpoint's stored output (D26), passed to the backend so a transport-running
+        backend can act on what it moves. Best-effort -- None when the arc endpoint or
+        its value is not resolvable; a transport does not change the view (physical
+        move preserves identity), so this is read-only context, never written back."""
+        arc = activity.get("arc") or {}
+        src = arc.get("from") or {}
+        node, port = src.get("node"), src.get("port")
+        if node is not None and port is not None and self.values.has(node, port):
+            return self.values.get(node, port)
+        return None
+
     def _next_time(self, pending: list[dict]) -> int:
         """The virtual time to advance to next. In fixed-interval mode, one poll
         interval on; in event-boundary mode, the earliest future pending start or
@@ -914,6 +927,7 @@ class RollingRunner:
                 activity["from_spot"],
                 activity["to_spot"],
                 duration=actual,
+                view=self._transported_view(activity),
             )
         else:  # pragma: no cover - schema guarantees processing/transport/relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
