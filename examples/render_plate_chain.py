@@ -77,8 +77,17 @@ def main() -> None:
     runner = RollingRunner(
         str(WORKFLOW), str(ENVIRONMENT), BOUNDARY, device_model=step_model,
         poll_interval=None, random_seed=0,
+        observation_out=str(OUT / "plate_chain.observation.yaml"),
     )
     status = runner.run()
+
+    # Each completed processing activity's produced outputs, from the observation
+    # record (D38), keyed by node -- the value source, in place of runner.values.
+    outs = {
+        tuple(e["node"]): e["outputs"]
+        for e in runner.observations
+        if e["kind"] == "processing"
+    }
 
     lines: list[str] = []
     lines.append("plate chain (Int carried alongside an Object)")
@@ -88,8 +97,8 @@ def main() -> None:
     lines.append("per-step values (device model: next = current + 1, plate carried through):")
     for node in (("S1",), ("S2",)):
         name = "/".join(node)
-        lines.append(f"  {name}.next  = {runner.values.get(node, 'next')}")
-        lines.append(f"  {name}.plate = {runner.values.get(node, 'plate')}")
+        lines.append(f"  {name}.next  = {outs[node]['next']['view']}")
+        lines.append(f"  {name}.plate = {outs[node]['plate']['view']}")
     lines.append("")
     lines.append(f"whole-workflow outputs      : {runner.outputs}")
 
@@ -103,6 +112,7 @@ def main() -> None:
     print(f"makespan = {status['now']}")
     print(f"wrote {OUT / 'plate_chain.trace.txt'}")
     print(f"wrote {OUT / 'plate_chain.boundary.yaml'}")
+    print(f"wrote {OUT / 'plate_chain.observation.yaml'}")
 
 
 if __name__ == "__main__":

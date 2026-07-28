@@ -1,0 +1,108 @@
+schema: ofplang-observation/v0
+time:
+  unit: second
+interface:
+  inputs:
+    sample: loader.stage
+---
+kind: transport
+from_spot: loader.stage
+to_spot: reader.stage
+transporter: arm
+arc:
+  from:
+    node: []
+    port: sample
+  to:
+    node:
+    - Measure
+    port: plate
+start: 0
+end: 2
+moved:
+  view: {}
+---
+kind: processing
+process: measure
+mode: m0
+node:
+- Measure
+devices:
+- reader
+input_spots:
+  plate: reader.stage
+output_spots:
+  plate_out: reader.stage
+start: 2
+end: 6
+inputs:
+  plate:
+    view: {}
+outputs:
+  plate_out:
+    view: {}
+  reading:
+    view:
+      mean: 0.0
+      n: 0
+---
+kind: processing
+process: analyze
+mode: mean_v1
+node:
+- Az
+- A
+start: 6
+end: 8
+inputs:
+  reading:
+    view:
+      mean: 0.0
+      n: 0
+outputs:
+  score:
+    view:
+      value: 0.0
+      ok: false
+---
+kind: transport
+from_spot: reader.stage
+to_spot: printer.stage
+transporter: arm
+arc:
+  from:
+    node:
+    - Measure
+    port: plate_out
+  to:
+    node:
+    - Finish
+    port: plate_in
+start: 6
+end: 8
+moved:
+  view: {}
+---
+kind: processing
+process: finish
+mode: m0
+node:
+- Finish
+devices:
+- printer
+input_spots:
+  plate_in: printer.stage
+start: 8
+end: 11
+inputs:
+  plate_in:
+    view: {}
+  go:
+    view:
+      value: 0.0
+      ok: false
+outputs: {}
+---
+final: true
+now: 11
+outcome: completed

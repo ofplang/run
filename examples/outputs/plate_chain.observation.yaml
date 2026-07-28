@@ -1,0 +1,100 @@
+schema: ofplang-observation/v0
+time:
+  unit: second
+interface:
+  inputs:
+    sample: loader.stage
+  outputs:
+    plate_final: unloader.slot
+---
+kind: transport
+from_spot: loader.stage
+to_spot: worker.stage
+transporter: arm
+arc:
+  from:
+    node: []
+    port: sample
+  to:
+    node:
+    - S1
+    port: plate
+start: 0
+end: 2
+moved:
+  view:
+    barcode: ABC
+---
+kind: processing
+process: step
+mode: m0
+node:
+- S1
+devices:
+- worker
+input_spots:
+  plate: worker.stage
+output_spots:
+  plate: worker.stage
+start: 2
+end: 5
+inputs:
+  current:
+    view: 42
+  plate:
+    view:
+      barcode: ABC
+outputs:
+  next:
+    view: 43
+  plate:
+    view:
+      barcode: ABC
+---
+kind: processing
+process: step
+mode: m0
+node:
+- S2
+devices:
+- worker
+input_spots:
+  plate: worker.stage
+output_spots:
+  plate: worker.stage
+start: 5
+end: 8
+inputs:
+  current:
+    view: 43
+  plate:
+    view:
+      barcode: ABC
+outputs:
+  next:
+    view: 44
+  plate:
+    view:
+      barcode: ABC
+---
+kind: transport
+from_spot: worker.stage
+to_spot: unloader.slot
+transporter: arm
+arc:
+  from:
+    node:
+    - S2
+    port: plate
+  to:
+    node: []
+    port: plate_final
+start: 8
+end: 10
+moved:
+  view:
+    barcode: ABC
+---
+final: true
+now: 10
+outcome: completed

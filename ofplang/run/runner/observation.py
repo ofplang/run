@@ -133,32 +133,29 @@ def write_stream(
 
 
 def format_text(entries: list[dict]) -> str:
-    """Render the value flow (per-activity assembled inputs -> produced outputs) as
-    human-readable text. The example render scripts use this for the value-flow
-    section of their `*.trace.txt`, in place of reaching into runner internals."""
+    """Render the value flow (per **processing** activity: assembled inputs ->
+    produced outputs) as human-readable text -- the value-flow section of an example
+    `*.trace.txt`, in place of reaching into runner internals. Transports and times
+    are omitted: the section is about value transformation (producer -> consumer),
+    and a transport carries its view unchanged. Two-space indent, matching the
+    render scripts' `activities` section."""
     lines: list[str] = []
     for entry in entries:
-        if entry.get("kind") == "transport":
-            route = f"{entry.get('from_spot')} -> {entry.get('to_spot')}"
-            lines.append(f"transport {route} ({entry.get('start')}-{entry.get('end')})")
-            lines.append(f"    moved: {_view_repr((entry.get('moved') or {}).get('view'))}")
-        else:
-            node = "/".join(entry.get("node") or ()) or "main"
-            span = f"{entry.get('start')}-{entry.get('end')}"
-            lines.append(f"{node} [{entry.get('process')}] ({span})")
-            lines.append(f"    in : {_ports_repr(entry.get('inputs'))}")
-            lines.append(f"    out: {_ports_repr(entry.get('outputs'))}")
+        if entry.get("kind") != "processing":
+            continue
+        node = "/".join(entry.get("node") or ()) or "main"
+        lines.append(f"  {node} [{entry.get('process')}]")
+        lines.append(f"      in : {_ports_repr(entry.get('inputs'))}")
+        lines.append(f"      out: {_ports_repr(entry.get('outputs'))}")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
 def _ports_repr(block: dict | None) -> str:
+    """`{port: {view: v}}` -> `{'port': v, ...}` (or `(none)` when empty), matching
+    the plain `{port: view}` shape the render scripts printed."""
     if not block:
         return "(none)"
-    return ", ".join(f"{port}={_view_repr(cell.get('view'))}" for port, cell in block.items())
-
-
-def _view_repr(view: Any) -> str:
-    return repr(view)
+    return repr({port: cell.get("view") for port, cell in block.items()})
 
 
 # -- incremental streaming + accumulation ---------------------------------------

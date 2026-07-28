@@ -29,8 +29,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ofplang.run.runner import RollingRunner
-from ofplang.run.runner.values import assemble_inputs
+from ofplang.run.runner import RollingRunner, observation
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -54,7 +53,10 @@ def main() -> None:
 
     # Drive the workflow to completion. Event-boundary advance keeps the times
     # exact for a clean trace; the value layer is identical under either poll mode.
-    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), BOUNDARY, poll_interval=None, random_seed=0)
+    runner = RollingRunner(
+        str(WORKFLOW), str(ENVIRONMENT), BOUNDARY, poll_interval=None, random_seed=0,
+        observation_out=str(OUT / "data_flow.observation.yaml"),
+    )
     status = runner.run()
 
     df = runner.dataflow
@@ -67,20 +69,12 @@ def main() -> None:
     for port in df.entry_ports:
         lines.append(f"  {port:<12} = {runner.values.get((), port)}")
 
-    # Per activity, in the order they were committed: the inputs it draws from
-    # upstream (routed by the dataflow view) and the outputs the backend produced.
+    # Per completed activity: the inputs it drew from upstream (routed by the dataflow
+    # view) and the outputs the backend produced. Rendered from the observation record
+    # (D38) rather than re-read from runner internals -- one value-extraction path.
     lines.append("")
     lines.append("activities (assembled inputs -> produced outputs):")
-    for record in runner.log.records():
-        node = record.activity.get("node")
-        if node is None:  # a transport / bookkeeping leg carries no value
-            continue
-        node = tuple(node)
-        inputs = assemble_inputs(df, runner.contracts, runner.values, node)
-        outputs = {port: runner.values.snapshot().get((node, port)) for port in df.out_ports.get(node, ())}
-        lines.append(f"  {_fmt_node(node)} [{record.activity.get('process')}]")
-        lines.append(f"      in : {inputs or '(none)'}")
-        lines.append(f"      out: {outputs or '(none)'}")
+    lines.extend(observation.format_text(runner.observations).splitlines())
 
     # The whole-workflow outputs, each traced back to the producer it came from.
     lines.append("")
@@ -94,6 +88,7 @@ def main() -> None:
     print(text, end="")
     print(f"makespan = {status['now']}")
     print(f"wrote {OUT / 'data_flow.trace.txt'}")
+    print(f"wrote {OUT / 'data_flow.observation.yaml'}")
 
 
 if __name__ == "__main__":

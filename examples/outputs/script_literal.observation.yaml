@@ -1,0 +1,41 @@
+schema: ofplang-observation/v0
+time:
+  unit: second
+---
+kind: processing
+process: score
+mode: v0
+node:
+- Score
+start: 0
+end: 2
+inputs:
+  raw:
+    view: 72
+  threshold:
+    view: 60
+outputs:
+  margin:
+    view: 12
+  passed:
+    view: true
+---
+kind: processing
+process: report
+mode: v0
+node:
+- Report
+start: 2
+end: 3
+inputs:
+  n:
+    view: 12
+  ok:
+    view: true
+outputs:
+  text:
+    view: PASS (margin=12)
+---
+final: true
+now: 3
+outcome: completed
