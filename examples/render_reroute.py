@@ -24,9 +24,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ofplang.run.runner import RollingRunner
 from ofplang.schedule.scheduler.api import schedule
 from ofplang.schedule.scheduler.visualize import render_svg
+
+from ofplang.run.runner import DownScope, RollingRunner
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -51,7 +52,14 @@ def main() -> None:
     #    the runner re-routes. The final execution status is the schedule as it
     #    actually happened (target on station_2). Event-boundary advance
     #    (poll_interval=None) keeps this about re-routing, with exact times.
-    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=None)
+    #    `DownScope.PROCESSING` keeps the down device's transports so the sample
+    #    already delivered to station_1 can still be moved off it to station_2 (the
+    #    classic re-route); the default `BOTH` would also drop those transports,
+    #    leaving the delivered Object stranded (arc_unreachable).
+    runner = RollingRunner(
+        str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=None,
+        down_scope=DownScope.PROCESSING,
+    )
     runner.sim.schedule_device_down(DOWN_AT, DOWN_DEVICE)
     final = runner.run()
     # The status carries no solver objective; label the chart with its makespan.
