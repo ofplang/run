@@ -123,7 +123,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-run run <workflow> --env <env>
-    [--boundary DOC] [--boundary-out FILE]
+    [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [-o OUT]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
@@ -139,6 +139,10 @@ scheduler stays value-independent) and the seeded input values. `--boundary-out`
 writes the result boundary — the same schema with each produced output's `view`
 filled in — a run-local artifact, separate from the value-free status document. On
 completion each pinned Object output is checked to have reached its declared spot.
+`--observation-out` streams the **observation document** (see `docs/OBSERVATION.md`):
+a YAML multi-document stream recording each *completed* activity's concrete input /
+output view values (a transport's moved view), appended as each activity finishes —
+the value-layer companion to the status document, also run-local.
 `--poll-interval` sets the fixed polling interval (default 1). `replay` runs a plan
 produced by `ofp-schedule` verbatim on the simulator (no value layer). Both write
 the final execution status as YAML (`-o`, else stdout). Exit codes: `0` success,

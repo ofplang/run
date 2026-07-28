@@ -49,6 +49,7 @@ from .contract_eval import parse as parse_contract
 from .contracts import ArrayType, Contracts, conforms, to_descriptor, with_static_views
 from .dataflow import from_workflow
 from .loader import load_document
+from .observation import ObservationRecorder
 from .provenance import CommitLog, Committed
 from .runner import RunnerError
 from .schedule_client import replan
@@ -192,6 +193,8 @@ class RollingRunner:
         contract_observer=None,
         max_ticks: int = 100_000,
         down_scope: DownScope = DownScope.BOTH,
+        observe: bool = False,
+        observation_out: str | None = None,
     ):
         self.workflow_path = str(workflow_path)
         self.environment_path = str(environment_path)
@@ -338,6 +341,26 @@ class RollingRunner:
         self.failure: Failure | None = None
         self._contract_observer = contract_observer
 
+        # Observation document (D38): an optional value-layer record of completed
+        # activities' I/O views, off by default (zero overhead). `observe` accumulates
+        # entries in memory (for `self.observations` and the render scripts);
+        # `observation_out` additionally streams them to a file. A path implies
+        # accumulation. `_pending_capture` holds the dispatch-time inputs / moved view
+        # of each in-flight op, keyed by backend uuid and popped when it is recorded
+        # (so the record is faithful to dispatch, not a post-hoc recompute).
+        self._pending_capture: dict[str, dict] = {}
+        if observe or observation_out is not None:
+            self._obs: ObservationRecorder | None = ObservationRecorder(
+                path=observation_out, interface=self.interface or None
+            )
+        else:
+            self._obs = None
+
+    @property
+    def observations(self) -> list[dict]:
+        """The accumulated observation entries (D38); empty when observation is off."""
+        return self._obs.entries if self._obs is not None else []
+
     @staticmethod
     def _fmt_node(node) -> str:
         """A node path rendered as a readable label for reasons / traces; the empty
@@ -361,6 +384,18 @@ class RollingRunner:
             self.failure = Failure(kind=kind, detail=detail, subject=subject, now=self.now)
 
     def run(self) -> dict:
+        """Drive to completion and return the final execution status (§6/§7).
+
+        Thin wrapper over `_run_impl` guaranteeing the observation stream (D38) is
+        closed even if the run raises -- leaving a trailer-less (= incomplete)
+        stream, the crash signal a consumer relies on."""
+        try:
+            return self._run_impl()
+        finally:
+            if self._obs is not None:
+                self._obs.close()
+
+    def _run_impl(self) -> dict:
         """Drive to completion and return the final execution status (§6/§7). Raises
         `RunnerError` if a replan produces no plan (infeasible) or the run cannot
         progress; `SimulatorError` propagates if the backend rejects a dispatch.
@@ -473,6 +508,16 @@ class RollingRunner:
         # A stopped run reports the work that never ran as cancelled (D25). The failure
         # reason (D36) is NOT put in the status -- it stays a valid §6 document -- but is
         # exposed via `self.failure` (and printed by the CLI).
+        # Finalise the observation stream (D38): the trailer records the final time
+        # and outcome. The aborted-run case (an exception) is handled by run()'s
+        # finally, which closes without a trailer.
+        if self._obs is not None:
+            self._obs.finish(
+                self.now,
+                "failed" if self.failed else "completed",
+                time_section=self._last_time,
+            )
+
         cancelled = self._cancelled_activities() if self._stopping else None
         return build_status(
             self.log.records(),
@@ -853,6 +898,23 @@ class RollingRunner:
             return self.values.get(node, port)
         return None
 
+    def _record_observation(self, rec: Committed, outputs: dict | None) -> None:
+        """Append a completed activity's I/O views to the observation record (D38).
+        Inputs (processing) / moved view (transport) come from the dispatch-time
+        stash, popped here; outputs are the values recorded at completion. Values are
+        deep-copied by the recorder, so this is faithful to the moment of completion."""
+        assert self._obs is not None
+        cap = self._pending_capture.pop(rec.uuid, {}) if rec.uuid is not None else {}
+        if rec.kind == "transport":
+            self._obs.record(rec, moved=cap.get("moved"), time_section=self._last_time)
+        else:
+            self._obs.record(
+                rec,
+                inputs=cap.get("inputs") or {},
+                outputs=outputs or {},
+                time_section=self._last_time,
+            )
+
     def _next_time(self, pending: list[dict]) -> int:
         """The virtual time to advance to next. In fixed-interval mode, one poll
         interval on; in event-boundary mode, the earliest future pending start or
@@ -921,14 +983,21 @@ class RollingRunner:
                 output_schema=output_schema, inputs=inputs,
                 definition=self._process_defs.get(activity["process"]),
             )
+            # Stash the assembled inputs for the observation record (D38): faithful to
+            # what this op actually consumed at dispatch, popped when it completes.
+            if self._obs is not None:
+                self._pending_capture[uuid] = {"inputs": inputs}
         elif kind == "transport":
+            view = self._transported_view(activity)
             uuid = self.sim.dispatch_transport(
                 activity.get("transporter"),
                 activity["from_spot"],
                 activity["to_spot"],
                 duration=actual,
-                view=self._transported_view(activity),
+                view=view,
             )
+            if self._obs is not None:
+                self._pending_capture[uuid] = {"moved": view}
         else:  # pragma: no cover - schema guarantees processing/transport/relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
         self.log.add(Committed(activity, kind, "running", start, end, uuid=uuid))
@@ -1016,6 +1085,11 @@ class RollingRunner:
                         node = tuple(rec.activity["node"])
                         for port in outputs or {}:
                             self.values.discard(node, port)
+                # Record the completed activity in the observation document (D38) --
+                # only if it survived its `ensures` (a violated postcondition flipped
+                # it to `failed` just above and discarded its outputs).
+                if self._obs is not None and rec.status == "completed":
+                    self._record_observation(rec, outputs)
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now

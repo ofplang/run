@@ -3,7 +3,7 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
-        [--boundary <doc>] [--boundary-out FILE]
+        [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
         [--seed N] [--margin M] [--poll-interval D] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
@@ -108,6 +108,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "artifact, not part of the §6/§7 status document",
     )
     r.add_argument(
+        "--observation-out",
+        metavar="FILE",
+        help="stream the observation document here (YAML multi-document): completed "
+        "activities' concrete input/output view values, keyed by provenance and "
+        "appended as each activity finishes; a run-local artifact, not part of the "
+        "§6/§7 status document",
+    )
+    r.add_argument(
         "--no-validate",
         action="store_true",
         help="skip the one-shot ofplang-validate front-door check of the workflow "
@@ -202,6 +210,7 @@ def _cmd_run(args) -> int:
             random_seed=args.seed,
             poll_interval=args.poll_interval,
             validate=False,
+            observation_out=args.observation_out,
         )
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract

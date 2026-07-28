@@ -129,6 +129,7 @@ def run_workflow(
     poll_interval: int | None = 1,
     backend_factory=None,
     validate: bool = True,
+    observation_out: str | None = None,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -138,6 +139,8 @@ def run_workflow(
     `validate=False` so validation happens once. `backend_factory` injects an
     alternative execution backend (e.g. `subprocess_backend_factory(...)` for real,
     out-of-process execution); None uses the default in-process simulator.
+    `observation_out`, if given, streams the observation document (D38: completed
+    activities' I/O views) to that path as the run proceeds.
 
     Malformed workflow/environment YAML or an unparsable contract (`yaml.YAMLError`,
     `ContractSyntaxError`) and execution failures (`SimulatorError`, `RunnerError`)
@@ -156,6 +159,7 @@ def run_workflow(
         random_seed=random_seed,
         poll_interval=poll_interval,
         backend_factory=backend_factory,
+        observation_out=observation_out,
     )
     try:
         status = runner.run()
