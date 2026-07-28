@@ -26,9 +26,11 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-validate>=0.1.2` floor ensures the front door recognizes
-# optional `description` metadata (spec 2.7).
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.0", "ofplang-validate>=0.1.2"]
+# PyPI. The `ofplang-schedule>=0.1.3` floor is required: the runner now always
+# hands the scheduler an in-memory workflow document, which schedule accepts only
+# from 0.1.3. The `ofplang-validate>=0.1.2` floor ensures the front door
+# recognizes optional `description` metadata (spec 2.7).
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.3", "ofplang-validate>=0.1.2"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
