@@ -26,8 +26,9 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.0", "ofplang-validate>=0.1.0"]
+# PyPI. The `ofplang-validate>=0.1.2` floor ensures the front door recognizes
+# optional `description` metadata (spec 2.7).
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.0", "ofplang-validate>=0.1.2"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
