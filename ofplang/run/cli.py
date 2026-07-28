@@ -201,9 +201,10 @@ def _cmd_run(args) -> int:
             return EXIT_USAGE
 
     try:
-        # Validation already happened at the front door above, so run trusting.
+        # Validation + `$import` expansion already happened at the front door above,
+        # so run trusting on the expanded document (not a re-read of the raw file).
         result = run_workflow(
-            args.workflow,
+            fd.document,
             args.env,
             boundary,
             running_task_margin=args.margin,

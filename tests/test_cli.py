@@ -62,15 +62,16 @@ def test_run_malformed_workflow_is_caught_by_front_door(tmp_path, capsys):
 
 
 def test_run_no_validate_bypasses_front_door_on_malformed(tmp_path, capsys):
-    # With --no-validate the front door is skipped, so a malformed workflow falls
-    # through to the runner's own input guard: still a usage error (exit 2).
+    # --no-validate skips the validation pass, but `$import` expansion is a
+    # structural step that still runs, so a malformed workflow fails there: still
+    # a usage error (exit 2), reported as the structural load failure.
     bad = tmp_path / "broken.workflow.yaml"
     bad.write_text(_BROKEN_YAML, encoding="utf-8")
     code = main(
         ["run", str(bad), "--env", str(EXAMPLES / "count_chain.env.yaml"), "--no-validate"]
     )
     assert code == EXIT_USAGE
-    assert "invalid input" in capsys.readouterr().err
+    assert "wrong_value_kind" in capsys.readouterr().err
 
 
 def test_run_malformed_contract_is_caught_by_front_door(tmp_path, capsys):
@@ -144,23 +145,24 @@ def test_run_no_validate_still_gates_generics(tmp_path, capsys):
     assert "unsupported" in capsys.readouterr().err
 
 
-def test_run_import_is_unsupported(tmp_path, capsys):
-    # An unexpanded `$import` is rejected by the capability gate (the runner does
-    # not resolve imports). Use --no-validate so the gate, not the front door's
-    # import resolution, is what rejects it.
-    wf = tmp_path / "import.workflow.yaml"
+def test_run_expands_import_end_to_end(tmp_path):
+    # A `$import` workflow now runs: the front door resolves the imported `Count`
+    # type and drives the expanded workflow to completion (no gate rejection).
+    src = (EXAMPLES / "count_chain.workflow.yaml").read_text(encoding="utf-8")
+    body = src[src.index("processes:") :]
+    (tmp_path / "count_types.yaml").write_text(
+        "Count:\n  domain: data\n  view:\n    value: { type: Int }\n", encoding="utf-8"
+    )
+    wf = tmp_path / "main.workflow.yaml"
     wf.write_text(
-        "processes:\n"
-        "  $import: shared.yaml\n"
-        "  main: {kind: atomic, inputs: {}, outputs: {}}\n"
-        "entry: main\n",
+        'spec_version: "0.0"\ntypes:\n  $import: ./count_types.yaml\n' + body,
         encoding="utf-8",
     )
+    out = tmp_path / "status.yaml"
     code = main(
-        ["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml"), "--no-validate"]
+        ["run", str(wf), "--env", str(EXAMPLES / "count_chain.env.yaml"), "-o", str(out)]
     )
-    assert code == EXIT_USAGE
-    assert "unsupported" in capsys.readouterr().err
+    assert code == EXIT_OK
 
 
 def test_run_no_validate_runs_invalid_v0(tmp_path):

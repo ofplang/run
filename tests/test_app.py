@@ -65,6 +65,7 @@ def test_front_door_accepts_valid_workflow():
     assert fd.ok
     assert fd.diagnostics == []
     assert fd.unsupported is None
+    assert isinstance(fd.document, dict)  # the expanded document is returned
 
 
 def test_front_door_rejects_generics(tmp_path):
@@ -76,12 +77,32 @@ def test_front_door_rejects_generics(tmp_path):
     assert "generic" in fd.unsupported
 
 
-def test_front_door_rejects_import(tmp_path):
+def test_front_door_expands_import(tmp_path):
+    # A $import is no longer rejected: the front door resolves it and returns the
+    # expanded document (no $import remains), which the gate then passes.
+    (tmp_path / "shared.yaml").write_text(
+        "gen:\n  kind: atomic\n  inputs: {}\n  outputs: {}\n", encoding="utf-8"
+    )
     wf = tmp_path / "import.workflow.yaml"
     wf.write_text(IMPORT_WF, encoding="utf-8")
     fd = front_door_check(str(wf), validate=False)
+    assert fd.ok
+    assert fd.unsupported is None
+    assert fd.document is not None
+    assert "$import" not in fd.document["processes"]
+    assert "gen" in fd.document["processes"]
+
+
+def test_front_door_expansion_failure_is_a_diagnostic(tmp_path):
+    # A structural $import failure (missing target) surfaces as a diagnostic with
+    # no document -- not as an "unsupported" gate reason.
+    wf = tmp_path / "import.workflow.yaml"
+    wf.write_text(IMPORT_WF, encoding="utf-8")  # shared.yaml intentionally absent
+    fd = front_door_check(str(wf), validate=False)
     assert not fd.ok
-    assert "import" in fd.unsupported
+    assert fd.document is None
+    assert fd.unsupported is None
+    assert fd.diagnostics  # the unreadable-import failure is reported
 
 
 def test_front_door_gate_runs_even_when_validate_skipped(tmp_path):
