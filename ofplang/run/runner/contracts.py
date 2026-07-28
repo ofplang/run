@@ -249,10 +249,14 @@ class Contracts:
         self.entry = entry
 
     @classmethod
-    def from_workflow(cls, workflow_path) -> Contracts:
-        """Resolve the contracts of the workflow at `workflow_path` (single file;
-        `$import` is out of F1 scope). Assumes valid v0 input."""
-        data = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8"))
+    def from_workflow(cls, workflow) -> Contracts:
+        """Resolve the contracts of a workflow (single file; `$import` is out of F1
+        scope). Assumes valid v0 input. `workflow` is either a path to a workflow YAML
+        file or an already-loaded document (a mapping)."""
+        if isinstance(workflow, dict):
+            data = workflow
+        else:
+            data = yaml.safe_load(Path(workflow).read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise RunnerError("workflow must be a mapping")
         registry = _build_registry(data.get("types") or {})

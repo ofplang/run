@@ -120,7 +120,7 @@ class RunResult:
 
 
 def run_workflow(
-    workflow: str,
+    workflow,
     env: str,
     boundary: dict | None = None,
     *,
@@ -134,6 +134,12 @@ def run_workflow(
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
 
+    `workflow` is either a path to a workflow YAML file or an already-loaded document
+    (a mapping) -- the latter lets a caller run a workflow it rewrote in memory without
+    a temp file. An in-memory document requires `validate=False`: the front door
+    (`front_door_check`) validates a file, so a caller passing a document must have
+    validated it beforehand (e.g. front-doored the original path).
+
     With `validate=True` (default) the front door runs first and a rejection raises
     `FrontDoorError`; a CLI that already called `front_door_check` passes
     `validate=False` so validation happens once. `backend_factory` injects an
@@ -146,6 +152,11 @@ def run_workflow(
     `ContractSyntaxError`) and execution failures (`SimulatorError`, `RunnerError`)
     propagate to the caller, which maps them to exit codes -- keeping this a thin
     front door, not an error-swallowing wrapper."""
+    if validate and isinstance(workflow, dict):
+        raise ValueError(
+            "run_workflow with an in-memory workflow document requires validate=False "
+            "(the front door validates a file path); validate the document beforehand"
+        )
     if validate:
         fd = front_door_check(workflow, validate=True)
         if not fd.ok:

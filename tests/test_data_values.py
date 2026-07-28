@@ -181,6 +181,19 @@ def test_device_model_that_opts_in_receives_the_node_provenance():
     assert seen[("S1",)] == "inc" and seen[("S2",)] == "inc"
 
 
+def test_runner_accepts_an_in_memory_workflow_document():
+    # RollingRunner accepts the workflow as an already-loaded document (a mapping), not
+    # only a path -- so a caller that rewrote it in memory runs it without a temp file.
+    # The result matches running the same workflow from its file.
+    doc = load_document(COUNT_WF)
+    runner = RollingRunner(
+        doc, COUNT_ENV, _count_boundary(42), device_model=_echo_inc, random_seed=0,
+    )
+    status = runner.run()
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert runner.outputs == {"result": {"value": 42}}
+
+
 LITERAL_WF = str(FIXTURES / "literal_chain.workflow.yaml")
 LITERAL_ENV = str(FIXTURES / "literal_chain.env.yaml")
 

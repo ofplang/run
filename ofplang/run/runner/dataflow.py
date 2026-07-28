@@ -88,11 +88,12 @@ class Dataflow:
     composites: dict
 
 
-def from_workflow(workflow_path) -> Dataflow:
+def from_workflow(workflow) -> Dataflow:
     """Build the routing view by reusing the scheduler's flattener (D26-0).
 
-    Raises `RunnerError` if the workflow cannot be flattened (e.g. it contains a
-    structured node, which is out of v0 scope, or has no entry) -- the same
+    `workflow` is either a path to a workflow YAML file or an already-loaded document
+    (a mapping). Raises `RunnerError` if the workflow cannot be flattened (e.g. it
+    contains a structured node, which is out of v0 scope, or has no entry) -- the same
     diagnostics the scheduler would raise.
     """
     # Import lazily: like `schedule_client`, so importing the runner package does
@@ -100,7 +101,7 @@ def from_workflow(workflow_path) -> Dataflow:
     from ofplang.schedule.core.diagnostics import ERROR
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
-    workflow, diags = parse_workflow(str(workflow_path))
+    workflow, diags = parse_workflow(workflow if isinstance(workflow, dict) else str(workflow))
     errors = [d for d in diags.items if d.severity == ERROR]
     if workflow is None or errors:
         codes = ", ".join(sorted({str(getattr(d, "code", d)) for d in errors}))

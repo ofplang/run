@@ -195,7 +195,7 @@ class RollingRunner:
 
     def __init__(
         self,
-        workflow_path,
+        workflow,
         environment_path,
         boundary: dict | None = None,
         *,
@@ -211,7 +211,15 @@ class RollingRunner:
         observe: bool = False,
         observation_out: str | None = None,
     ):
-        self.workflow_path = str(workflow_path)
+        # The workflow as an in-memory document. `workflow` is either a path to a
+        # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
+        # caller that rewrote it in memory, so it need not round-trip through a temp
+        # file). Every collaborator below -- dataflow, contracts, process defs, and the
+        # scheduler on each replan -- accepts the document directly, so it is read at
+        # most once and never re-serialized.
+        self._workflow = workflow if isinstance(workflow, dict) else load_document(workflow)
+        if not isinstance(self._workflow, dict):
+            raise RunnerError("workflow must be a mapping")
         self.environment_path = str(environment_path)
         # How a down device is reduced out of the scheduling environment (D21): by
         # default fully unreachable (modes + its spots' transports), the safe choice
@@ -260,11 +268,11 @@ class RollingRunner:
         # whole-workflow outputs, assembled from `returns` at the end of a run. In
         # v0-lite the seam is output-only: dispatch carries the output-port signature
         # so the backend generates values; inputs are not passed (D26).
-        self.dataflow = from_workflow(self.workflow_path)
+        self.dataflow = from_workflow(self._workflow)
         # Resolved port types (D27 F1): used to build each processing's output value
         # signature so the backend can generate typed values (F2). Precompute the
         # per-process output descriptors ({port: value-shape descriptor}).
-        self.contracts = Contracts.from_workflow(self.workflow_path)
+        self.contracts = Contracts.from_workflow(self._workflow)
         self._output_schemas = {
             name: {port: to_descriptor(rt) for port, rt in pc.outputs.items()}
             for name, pc in self.contracts.processes.items()
@@ -272,7 +280,7 @@ class RollingRunner:
         # The raw process definitions (workflow `processes.<name>`), passed to the
         # device model at dispatch so it can act on a process's declared structure
         # (e.g. carry an object output from its `objects.map`). D27 F4b / principle A.
-        self._process_defs = (load_document(self.workflow_path) or {}).get("processes") or {}
+        self._process_defs = (self._workflow or {}).get("processes") or {}
         # Parsed contract expressions (v0 §9 / D32), per process:
         # {process: {"requires": [(expr, ast)], "ensures": [(expr, ast)]}}. Checked for
         # each atomic process and for the top-level entry composite (Phase 1); nested
@@ -864,7 +872,7 @@ class RollingRunner:
         )
         status_doc = build_status(self.log.records(), self.now, self.interface)
         report = replan(
-            self.workflow_path,
+            self._workflow,
             environment,
             status_doc,
             running_task_margin=self.margin,

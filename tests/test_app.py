@@ -114,6 +114,27 @@ def test_run_workflow_validate_true_raises_front_door_error(tmp_path):
     assert exc.value.result.unsupported is not None
 
 
+def test_run_workflow_accepts_in_memory_document_with_validate_false():
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+    import yaml
+
+    doc = yaml.safe_load(Path(SIMPLE_WF).read_text(encoding="utf-8"))
+    result = run_workflow(doc, SIMPLE_ENV, random_seed=0, validate=False)
+    assert isinstance(result, RunResult)
+    assert not result.failed
+    assert all(a["status"] == "completed" for a in result.status["activities"])
+
+
+def test_run_workflow_rejects_in_memory_document_with_validate_true():
+    # The front door validates a file; an in-memory document must be validated by the
+    # caller beforehand, so `validate=True` with a mapping is a usage error.
+    import yaml
+
+    doc = yaml.safe_load(Path(SIMPLE_WF).read_text(encoding="utf-8"))
+    with pytest.raises(ValueError, match="validate=False"):
+        run_workflow(doc, SIMPLE_ENV, validate=True)
+
+
 def test_run_workflow_injects_backend_factory():
     pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
     from ofplang.run.simulator import SubprocessBackend, subprocess_backend_factory
