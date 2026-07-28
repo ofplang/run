@@ -162,13 +162,14 @@ class SubprocessBackend(Simulator):
     # -- dispatch: start a child for a coded op; leave a script-less op timed --------
 
     def dispatch_processing(
-        self, process, mode, duration=None, output_schema=None, inputs=None, definition=None
+        self, process, mode, duration=None, output_schema=None, inputs=None,
+        definition=None, node=None,
     ) -> str:
         # The inherited dispatch runs all preconditions, occupies the devices, and
         # registers the running op (its virtual `end` is advisory for a coded op).
         uuid = super().dispatch_processing(
             process, mode, duration=duration, output_schema=output_schema,
-            inputs=inputs, definition=definition,
+            inputs=inputs, definition=definition, node=node,
         )
         code = self._resolver(process, str(mode), inputs, definition)
         if code is not None:

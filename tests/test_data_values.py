@@ -160,6 +160,27 @@ def test_device_model_receives_the_process_definition():
     assert set(definition["inputs"]) == {"x"} and set(definition["outputs"]) == {"y"}
 
 
+def test_device_model_that_opts_in_receives_the_node_provenance():
+    # A device model that declares a `node` parameter receives the workflow provenance
+    # (the node path) of each dispatch, so it can distinguish two nodes of the *same*
+    # process -- here S1 and S2, both `inc` -- which the process name alone cannot. A
+    # plain 5-argument model is called unchanged (the other device-model tests, which
+    # never declare `node`, still pass), so the opt-in is backward compatible.
+    seen = {}
+
+    def capture(process, mode, inputs, output_schema, definition, node=None):
+        seen[node] = process
+        return dict.fromkeys(output_schema, inputs["x"])  # echo the Count
+
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, _count_boundary(1), device_model=capture, random_seed=0
+    )
+    runner.run()
+    # Both same-process nodes are seen, each under its own (tuple) node path.
+    assert ("S1",) in seen and ("S2",) in seen
+    assert seen[("S1",)] == "inc" and seen[("S2",)] == "inc"
+
+
 LITERAL_WF = str(FIXTURES / "literal_chain.workflow.yaml")
 LITERAL_ENV = str(FIXTURES / "literal_chain.env.yaml")
 

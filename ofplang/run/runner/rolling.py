@@ -37,6 +37,7 @@ What this layer covers, added incrementally:
 from __future__ import annotations
 
 import copy
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -55,6 +56,20 @@ from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
 from .values import ValueStore, assemble_inputs, collect_outputs, record_outputs, seed_entry
+
+
+def _accepts_node(func) -> bool:
+    """Whether `func` (a backend's ``dispatch_processing``) accepts a ``node`` keyword
+    -- a parameter named ``node`` or ``**kwargs``. Passing the workflow provenance is an
+    optional extension of the `Backend` protocol; a backend that predates it is called
+    unchanged. An un-introspectable callable is treated as not accepting it (safe)."""
+    try:
+        params = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.name == "node" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+    )
 
 
 @dataclass
@@ -231,6 +246,12 @@ class RollingRunner:
             self.sim: Backend = backend_factory(self._environment)
         else:
             self.sim = VirtualTimeSimulator(self._environment, device_model=device_model)
+
+        # Whether this backend's `dispatch_processing` accepts the workflow provenance
+        # (`node`). It is an optional extension of the `Backend` protocol, so a backend
+        # that predates it (or a minimal one) is driven exactly as before -- the runner
+        # passes `node` only when the backend opts in (a `node` parameter or `**kwargs`).
+        self._sim_accepts_node = _accepts_node(self.sim.dispatch_processing)
 
         # Value layer (D26). The runner owns view-value routing: `dataflow` is the
         # workflow's port-level routing view (reused from the scheduler's flattener,
@@ -978,10 +999,14 @@ class RollingRunner:
                 self.failed = True
                 self._stopping = True
                 return
+            # Pass the workflow provenance (`node`) only to a backend that opts in, so a
+            # backend predating this extension is driven unchanged (backward compatible).
+            provenance = {"node": activity["node"]} if self._sim_accepts_node else {}
             uuid = self.sim.dispatch_processing(
                 activity["process"], activity["mode"], duration=actual,
                 output_schema=output_schema, inputs=inputs,
                 definition=self._process_defs.get(activity["process"]),
+                **provenance,
             )
             # Stash the assembled inputs for the observation record (D38): faithful to
             # what this op actually consumed at dispatch, popped when it completes.

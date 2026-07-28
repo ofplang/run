@@ -55,6 +55,8 @@ level (D27).
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -75,6 +77,40 @@ from .script import DeviceComputationError, script_device_model
 # Typed default value per built-in primitive (D27 F2), used to generate a
 # schema-conformant value from a value-shape descriptor.
 _PRIMITIVE_DEFAULTS = {"Bool": False, "Int": 0, "Float": 0.0, "String": ""}
+
+# Cache of "does this device model accept a `node` argument?" keyed by the model
+# callable. Answered once (signature introspection) then reused: the model is called
+# on every completion, but a run has only a handful of distinct models.
+_MODEL_ACCEPTS_NODE: dict = {}
+
+
+def _model_accepts_node(model) -> bool:
+    """Whether `model` opts in to the workflow provenance argument -- i.e. its
+    signature has a parameter named ``node`` or accepts ``**kwargs``.
+
+    The historical device-model protocol is 5-positional (`process, mode, inputs,
+    output_schema, definition`); such a model is called unchanged (no `node`). A model
+    that wants provenance simply adds a ``node`` parameter (typically ``node=None``).
+    Uncached-introspectable callables (a rare C builtin) are treated as not accepting
+    it, which is the safe, backward-compatible default."""
+    try:
+        cached = _MODEL_ACCEPTS_NODE.get(model)
+    except TypeError:  # unhashable callable -- introspect each time
+        cached = None
+    else:
+        if cached is not None:
+            return cached
+    try:
+        params = inspect.signature(model).parameters.values()
+    except (TypeError, ValueError):
+        accepts = False
+    else:
+        accepts = any(
+            p.name == "node" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+        )
+    with contextlib.suppress(TypeError):  # unhashable callable -- skip caching
+        _MODEL_ACCEPTS_NODE[model] = accepts
+    return accepts
 
 
 def _generate_value(descriptor: dict):
@@ -203,6 +239,13 @@ class _Op:
     # principle A: the backend receives the process definition part per dispatch);
     # the simulator itself does not interpret it.
     definition: dict | None = None
+    # The workflow provenance of this operation -- the node path the runner dispatched
+    # it for (e.g. ``("S1",)``), or None (a provenance-agnostic dispatch, e.g. the
+    # plan-replay runner). The physical simulator does not use it (D14: the environment
+    # mode alone gives devices / spots / duration); it is passed through to a device
+    # model that opts in (a ``node`` parameter), so a model can key on the node instance
+    # -- e.g. mint a stable per-object id. Best-effort: None when not supplied.
+    node: tuple | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # A machine-readable (code, message) reason for a *model-driven* failure (D36),
     # set when a device model raises `DeviceComputationError` at completion (e.g. a
@@ -350,6 +393,7 @@ class Simulator(Backend):
         output_schema=None,
         inputs=None,
         definition=None,
+        node=None,
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -364,10 +408,14 @@ class Simulator(Backend):
         are the input values the device model (injected, or `default_device_model`)
         computes the outputs from (F4b). `definition` (the raw process definition) is
         passed through to the device model unchanged; the simulator does not
-        interpret it (only the device model does).
+        interpret it (only the device model does). `node` (the workflow provenance of
+        this dispatch) is likewise not used by the physical simulator; it is recorded
+        and passed through to a device model that opts in (a ``node`` parameter), so a
+        model can key on the node instance.
         """
-        # Resolve the capability. Workflow provenance (the node) is not needed here
-        # (D14) -- the environment mode alone gives devices, spots, and duration.
+        # Resolve the capability. Workflow provenance (the node) is not needed by the
+        # physical core (D14) -- the environment mode alone gives devices, spots, and
+        # duration. It is recorded on the op only to pass through to an opted-in model.
         proc = self._env.processes.get(process)
         if proc is None:
             raise UnknownReference(f"unknown process: {process}")
@@ -417,6 +465,7 @@ class Simulator(Backend):
             process=process,
             mode=str(mode),
             definition=definition,
+            node=None if node is None else tuple(node),
         )
 
     def dispatch_transport(
@@ -527,6 +576,7 @@ class Simulator(Backend):
         mode=None,
         definition=None,
         view=None,
+        node=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -549,6 +599,7 @@ class Simulator(Backend):
             mode=mode,
             definition=definition,
             view=view,
+            node=node,
         )
         self._ops[op.uuid] = op
         return op.uuid
@@ -776,8 +827,13 @@ class Simulator(Backend):
         if op.output_schema is not None:
             model = self._device_model if self._device_model is not None else script_device_model
             try:
+                # Pass the workflow provenance (`node`) only to a model that opts in --
+                # one declaring a `node` parameter (or `**kwargs`). A plain 5-argument
+                # model (the historical protocol, e.g. `default_device_model` or a user
+                # model) is called unchanged, so this is fully backward compatible.
+                extra = {"node": op.node} if _model_accepts_node(model) else {}
                 op.outputs = model(
-                    op.process, op.mode, op.inputs or {}, op.output_schema, op.definition
+                    op.process, op.mode, op.inputs or {}, op.output_schema, op.definition, **extra
                 )
             except DeviceComputationError as exc:
                 # The device model could not compute the outputs -- e.g. a script
