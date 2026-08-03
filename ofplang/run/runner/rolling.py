@@ -13,11 +13,12 @@ replan, so pending work is always re-read from the fresh plan.
 What this layer covers, added incrementally:
 
 * rolling-horizon core (D9/D20): the replan loop above.
-* re-routing (D21): when a device goes down, the environment scheduled against is
-  reduced so the scheduler re-routes pending work. What is dropped is the down
-  device's `down_scope` (see `DownScope`): by default both its process modes and
-  its spots' transports (fully unreachable, safe for real hardware), or modes only
-  (`PROCESSING`, so material can still be moved off it -- the classic re-route).
+* re-routing (D21/D39): when a machine goes down, the environment scheduled against
+  is reduced so the scheduler re-routes pending work. For a device, what is dropped
+  is its `down_scope` (see `DownScope`): by default both its process modes and its
+  spots' transports (fully unreachable, safe for real hardware), or modes only
+  (`PROCESSING`, so material can still be moved off it -- the classic re-route). A
+  down transporter has no scope -- its transports are dropped either way.
 * poll modes (D22): fixed-interval polling is the standard -- an integer
   `poll_interval` (default 1) polls every that many units and estimates each
   completion time as the observing poll. `poll_interval=None` advances to plan
@@ -119,6 +120,10 @@ def _normalize_mode_ids(environment: dict) -> dict:
 class DownScope(str, Enum):
     """How a down device is reduced out of the environment handed to the scheduler.
 
+    The scope selects axes for a down **device**. A down **transporter** has no scope:
+    carrying material is its only capability, so when it is down its transports are
+    dropped whatever the scope says (see `_reduce_environment`).
+
     A down device can be made unschedulable along two independent axes: its process
     modes (processing) and the transports touching its spots (moving material on/off
     it). Which axes apply is the deactivation's *scope*:
@@ -146,18 +151,35 @@ class DownScope(str, Enum):
 def _reduce_environment(
     environment: dict, down: set[str], scope: DownScope = DownScope.BOTH
 ) -> dict:
-    """Return a copy of `environment` with a down device made unschedulable, along
-    the axes selected by `scope` (spec §7, D21; see `DownScope`).
+    """Return a copy of `environment` with a down machine made unschedulable, along
+    the axes selected by `scope` (spec §7, D21/D39; see `DownScope`).
 
-    With `scope` covering processing, every process mode using a down device is
-    removed; with `scope` covering transport, every transport touching one of its
-    spots is removed. Device/spot definitions are always kept (an isolated spot the
-    scheduler simply never routes to). Only new scheduling is affected -- transports
-    already committed in the history are untouched. Recovery is automatic: the
-    reduction is recomputed from the full environment each replan, so a device no
-    longer in `down` returns with its modes and transports.
+    `down` holds ids of machines that cannot be used -- devices and transporters
+    alike (`Backend.down_devices`). For a **device**: with `scope` covering
+    processing, every process mode using it is removed; with `scope` covering
+    transport, every transport touching one of its spots is removed. For a
+    **transporter**: every transport it carries is removed *in every scope*, since
+    carrying is the only thing a transporter does and there is no axis to select
+    (D39). Device / spot / transporter definitions are always kept (an isolated spot
+    the scheduler simply never routes to).
+
+    Only new scheduling is affected -- transports already committed in the history are
+    untouched. Recovery is automatic: the reduction is recomputed from the full
+    environment each replan, so a machine no longer in `down` returns with its modes
+    and transports.
+
+    A caveat inherited from the id space: a device and a transporter may share an id
+    (the scheduler only warns), and `down` cannot tell them apart -- downing one downs
+    the other.
     """
     reduced = copy.deepcopy(environment)
+    # A down transporter cannot carry anything, whatever the scope (D39).
+    if reduced.get("transports"):
+        reduced["transports"] = [
+            transport
+            for transport in reduced["transports"]
+            if transport.get("transporter") not in down
+        ]
     if scope in (DownScope.BOTH, DownScope.PROCESSING):
         for process in (reduced.get("processes") or {}).values():
             process["modes"] = [

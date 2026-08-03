@@ -18,8 +18,9 @@ without real hardware; the same dispatch contract targets real hardware later.
 >
 > - **Simulator** (`ofplang.run.simulator`) — a physical backend: devices, spots,
 >   transporters, and timed operations advanced on a clock. It validates every
->   dispatch (an inconsistent plan is rejected), models timed device up/down and
->   injected operation failure, and at completion produces each operation's output
+>   dispatch (an inconsistent plan is rejected), models timed up/down for a device
+>   or a transporter and injected operation failure, and at completion produces each
+>   operation's output
 >   view values via a **device model** (the built-in `default_device_model` fills
 >   type defaults and carries Object outputs through from their `objects.map`
 >   inputs; a custom / real model computes them). `Simulator` is an abstract base
@@ -32,11 +33,13 @@ without real hardware; the same dispatch contract targets real hardware later.
 >     [`ofplang.schedule`](https://github.com/ofplang/schedule) each tick,
 >     dispatches the work that can start now, advances the clock, and polls —
 >     replanning from the committed history as it goes. It re-routes around a
->     downed device, polls at a fixed interval with completion-time estimation,
->     absorbs duration variance (an operation running longer or shorter than
->     planned), and stops the whole run if any activity fails (marking the abandoned
->     work cancelled). Device up/down, operation failure, and duration variance are
->     scenario concerns injected from Python (not CLI flags).
+>     downed machine — a device (its process modes and, by default, its spots'
+>     transports) or a transporter (the transports it carries) — polls at a fixed
+>     interval with completion-time estimation, absorbs duration variance (an
+>     operation running longer or shorter than planned), and stops the whole run if
+>     any activity fails (marking the abandoned work cancelled). Machine up/down,
+>     operation failure, and duration variance are scenario concerns injected from
+>     Python (not CLI flags).
 > - **Value layer** — the runner resolves each port's type and view schema (§7),
 >   routes typed view values along the workflow's arcs (producer output → consumer
 >   input, across nested composites), contract-checks them, and assembles the

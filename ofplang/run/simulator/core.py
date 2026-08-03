@@ -32,8 +32,10 @@ Contract (D14/D15/D21), summarised:
   Each `advance` accumulates its completion events into `_history`.
 * `schedule_device_down` / `schedule_device_up` register timed faults; a down
   device rejects new processing but still serves transports, and operations
-  already running on it are unaffected (D21). `down_devices` reports the current
-  set (the runner polls it to trigger re-routing).
+  already running on it are unaffected (D21). A transporter may be downed the same
+  way (D39), which changes nothing here -- it is the runner that stops planning its
+  transports. `down_devices` reports the current set of down machines (the runner
+  polls it to trigger re-routing).
 
 The simulator is a *validating oracle* (D16): every dispatch checks its physical
 preconditions (inputs present, outputs / destinations free, resources idle, the
@@ -647,20 +649,28 @@ class Simulator(Backend):
     # -- device faults (D21) ----------------------------------------------
 
     def schedule_device_down(self, time: int, device: str) -> None:
-        """Register that `device` goes down at virtual time `time` -- it can no
-        longer run processes from then on (transports and running ops are
-        unaffected, D21). Registered via this method rather than the constructor so
-        the environment (what exists) and the fault scenario (what happens) stay
-        separate concerns."""
+        """Register that `device` goes down at virtual time `time` -- it can no longer
+        run processes from then on (transports and running ops are unaffected, D21).
+        Registered via this method rather than the constructor so the environment (what
+        exists) and the fault scenario (what happens) stay separate concerns.
+
+        `device` may also name a **transporter** (D39): the fault is recorded the same
+        way and reported by `down_devices`, from which the runner drops the transports
+        that transporter carries. The oracle's dispatch rules are deliberately
+        unchanged by that -- a down transporter still serves a dispatched transport
+        here, exactly as a down device still serves one (D21). What a down machine
+        changes is what gets *planned*."""
         self._register_fault(time, device, "down")
 
     def schedule_device_up(self, time: int, device: str) -> None:
-        """Register that `device` comes back up at virtual time `time`."""
+        """Register that `device` (or transporter) comes back up at virtual time
+        `time`."""
         self._register_fault(time, device, "up")
 
     def _register_fault(self, time: int, device: str, action: str) -> None:
-        if device not in self._env.devices:
-            raise UnknownReference(f"unknown device: {device}")
+        # One id space for both kinds of machine, matching what `down_devices` reports.
+        if device not in self._env.devices and device not in self._env.transporters:
+            raise UnknownReference(f"unknown device or transporter: {device}")
         self._faults.append(
             {"time": int(time), "device": device, "action": action, "applied": False}
         )
@@ -696,8 +706,9 @@ class Simulator(Backend):
         self._failing_transports.add((transporter, from_spot, to_spot))
 
     def down_devices(self) -> list[str]:
-        """The devices currently down (a sorted copy). The runner polls this each
-        tick and reduces the environment it schedules against accordingly."""
+        """The machines currently down (a sorted copy) -- devices and transporters
+        alike (D39). The runner polls this each tick and reduces the environment it
+        schedules against accordingly."""
         self._apply_faults()
         return sorted(self._down)
 

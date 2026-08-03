@@ -60,8 +60,15 @@ class Backend(Protocol):
         ...
 
     def down_devices(self) -> list[str]:
-        """The ids of devices currently unavailable, so the runner can schedule
-        against a reduced environment (a re-route). Empty when all are up."""
+        """The ids of machines currently unavailable, so the runner can schedule
+        against a reduced environment (a re-route). Empty when all are up.
+
+        A machine is a **device or a transporter**: an id here drops the device's
+        modes / its spots' transports (per the runner's `DownScope`), or every
+        transport the transporter carries. The name is historical -- devices came
+        first -- and the two share one id space, so a device and a transporter with
+        the same id cannot be told apart here (the scheduler warns about such an
+        environment)."""
         ...
 
     def place(self, spot: str, obj_id: str | None = None) -> str:

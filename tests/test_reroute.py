@@ -19,7 +19,11 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import DownScope, RollingRunner, RunnerError, load_document  # noqa: E402
-from ofplang.run.simulator import DeviceDown, VirtualTimeSimulator  # noqa: E402
+from ofplang.run.simulator import (  # noqa: E402
+    DeviceDown,
+    UnknownReference,
+    VirtualTimeSimulator,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
@@ -215,3 +219,104 @@ def test_device_coming_back_up_restores_routing():
     assert status["now"] == 5  # the cheap station_1 route, as if nothing happened
     target = next(a for a in status["activities"] if a.get("process") == "target")
     assert target["input_spots"]["target_in"] == "station_1.core"
+
+
+# -- a down transporter (D39) ----------------------------------------------
+#
+# A transporter is the other kind of machine a run depends on, and it goes down the
+# same way. What differs is that carrying material is all a transporter does: there
+# is no axis to select, so its transports are dropped whatever the `down_scope`, and
+# the simulator's dispatch rules are deliberately left alone (it is the *planning*
+# that changes). `reroute_transporter.env.yaml` serves one route with two
+# transporters, arm_a in 1 and arm_b in 4, so the makespan says which one carried it.
+
+TRANSPORTER_ENV = str(FIXTURES / "reroute_transporter.env.yaml")
+
+
+def test_reduce_environment_drops_a_down_transporters_transports():
+    # In every scope: the axes are about a down *device*, and a transporter has none.
+    from ofplang.run.runner.rolling import _normalize_mode_ids, _reduce_environment
+
+    env = _normalize_mode_ids(load_document(Path(TRANSPORTER_ENV)))
+
+    def carriers(reduced):
+        return {t["transporter"] for t in reduced["transports"]}
+
+    for scope in (DownScope.BOTH, DownScope.PROCESSING, DownScope.TRANSPORT):
+        reduced = _reduce_environment(env, {"arm_a"}, scope)
+        assert carriers(reduced) == {"arm_b"}, scope
+        # The transporter definition itself stays, as a device's does.
+        assert any(t["id"] == "arm_a" for t in reduced["transporters"]), scope
+        # A transporter has no modes, so nothing about processing changes.
+        assert len(reduced["processes"]["target"]["modes"]) == 1, scope
+
+    # Nothing down -> nothing dropped (recovery is by reconstruction).
+    assert carriers(_reduce_environment(env, set(), DownScope.BOTH)) == {"arm_a", "arm_b"}
+
+
+def test_a_down_transporter_still_serves_a_dispatched_transport():
+    # The oracle is deliberately unchanged (D39): what a down machine changes is what
+    # gets planned, not what the backend permits. Keeping it that way means a plan that
+    # somehow still routes through a down transporter fails as that operation (the
+    # device command raises), not as an exception escaping the run.
+    env = load_document(Path(TRANSPORTER_ENV))
+    sim = VirtualTimeSimulator(env)
+    sim.place("station_0.core")
+    sim.schedule_device_down(0, "arm_a")
+    sim.advance(0)
+    assert sim.down_devices() == ["arm_a"]
+    uid = sim.dispatch_transport("arm_a", "station_0.core", "station_1.core")
+    sim.advance(1)
+    assert sim.state(uid) == {"status": "completed"}
+
+
+def test_fault_registration_accepts_a_transporter_but_not_an_unknown_id():
+    env = load_document(Path(TRANSPORTER_ENV))
+    sim = VirtualTimeSimulator(env)
+    sim.schedule_device_down(0, "arm_b")  # a transporter id is accepted (D39)
+    sim.schedule_device_down(0, "station_1")  # so is a device id, as before
+    sim.advance(0)
+    assert sim.down_devices() == ["arm_b", "station_1"]
+    with pytest.raises(UnknownReference):
+        sim.schedule_device_down(0, "no_such_machine")
+
+
+def test_reroute_onto_another_transporter():
+    # arm_a is down from the start, so its entry for the route is dropped and the
+    # scheduler carries the same move with arm_b: source(0-2) + move(2-6) + target(6-8).
+    runner = RollingRunner(SIMPLE_WF, TRANSPORTER_ENV, random_seed=0)
+    runner.sim.schedule_device_down(0, "arm_a")
+    status = runner.run()
+
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert status["now"] == 8  # 5 would mean arm_a was still used
+    move = next(a for a in status["activities"] if a["kind"] == "transport")
+    assert (move["from_spot"], move["to_spot"]) == ("station_0.core", "station_1.core")
+
+
+def test_down_transporter_with_no_alternative_fails():
+    # Both transporters down leaves the route uncarried -- and `transports` empty --
+    # so the replan is infeasible and the run stops (as for a device, D21).
+    runner = RollingRunner(SIMPLE_WF, TRANSPORTER_ENV, random_seed=0)
+    runner.sim.schedule_device_down(0, "arm_a")
+    runner.sim.schedule_device_down(0, "arm_b")
+    with pytest.raises(RunnerError):
+        runner.run()
+
+
+def test_transporter_coming_back_up_restores_the_cheap_route():
+    # arm_a is down at the start (the initial plan reaches for arm_b) but returns at
+    # t=1, before anything commits to the slow carry: the next replan uses arm_a again.
+    runner = RollingRunner(SIMPLE_WF, TRANSPORTER_ENV, random_seed=0)
+    runner.sim.schedule_device_down(0, "arm_a")
+    runner.sim.schedule_device_up(1, "arm_a")
+    status = runner.run()
+
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert status["now"] == 5  # the cheap carry, as if nothing happened
+
+
+def test_nothing_down_uses_the_cheap_transporter():
+    runner = RollingRunner(SIMPLE_WF, TRANSPORTER_ENV, random_seed=0)
+    status = runner.run()
+    assert status["now"] == 5
