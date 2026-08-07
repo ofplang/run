@@ -168,9 +168,11 @@ def _reduce_environment(
     environment each replan, so a machine no longer in `down` returns with its modes
     and transports.
 
-    A caveat inherited from the id space: a device and a transporter may share an id
-    (the scheduler only warns), and `down` cannot tell them apart -- downing one downs
-    the other.
+    An id names one machine here because the environment definition makes sure of
+    it: a device and a transporter sharing an id is rejected by the environment
+    validator (`device_transporter_id_conflict`, ofplang-schedule >= 0.1.5). Under
+    an older schedule the collision is only a warning, and `down` cannot tell the
+    two apart -- downing one downs the other.
     """
     reduced = copy.deepcopy(environment)
     # A down transporter cannot carry anything, whatever the scope (D39).
