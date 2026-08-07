@@ -28,6 +28,7 @@ from ofplang.schedule.scheduler.api import schedule
 from ofplang.schedule.scheduler.visualize import render_svg
 
 from ofplang.run.runner import DownScope, RollingRunner
+from ofplang.run.simulator import Simulator
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -46,6 +47,10 @@ def main() -> None:
     # 1. The initial plan: what the scheduler proposes up front, on the full
     #    environment, before anything goes wrong (target on station_1).
     initial = schedule(str(WORKFLOW), str(ENVIRONMENT), random_seed=0)
+    # A report carries no plan when scheduling failed, so there would be nothing to
+    # draw -- say so rather than letting the failure surface inside the visualizer.
+    if initial.plan is None:
+        raise SystemExit(f"the initial schedule failed ({initial.outcome}): {initial.diagnostics}")
     _write("reroute.initial.svg", initial.plan)
 
     # 2. The actual run: drive the workflow while station_1 goes down mid-run, so
@@ -60,7 +65,12 @@ def main() -> None:
         str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=None,
         down_scope=DownScope.PROCESSING,
     )
-    runner.sim.schedule_device_down(DOWN_AT, DOWN_DEVICE)
+    # Timed faults are the built-in simulator's own knob: the `Backend` contract the
+    # runner drives covers `down_devices()` (which machines *are* down) and leaves
+    # fault injection out, so this narrows to the simulator before asking for one.
+    sim = runner.sim
+    assert isinstance(sim, Simulator)
+    sim.schedule_device_down(DOWN_AT, DOWN_DEVICE)
     final = runner.run()
     # The status carries no solver objective; label the chart with its makespan.
     final.setdefault("objective", {"kind": "makespan", "value": final.get("now")})

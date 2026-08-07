@@ -75,7 +75,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4", "W"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["ofplang"]
+# `examples/` is checked too: the scripts are the documented way to drive the
+# runner, so a type error there is a claim about the API that no longer holds.
+files = ["ofplang", "examples"]
 # `ofplang` is a PEP 420 namespace package (no __init__.py), so tell mypy how to
 # root it rather than letting it guess module names.
 namespace_packages = true
