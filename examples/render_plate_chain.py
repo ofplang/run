@@ -105,7 +105,8 @@ def main() -> None:
     text = "\n".join(lines) + "\n"
     (OUT / "plate_chain.trace.txt").write_text(text, encoding="utf-8")
     (OUT / "plate_chain.boundary.yaml").write_text(
-        yaml.safe_dump(runner.result_boundary, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        yaml.safe_dump(runner.result_boundary, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
     )
 
     print(text, end="")

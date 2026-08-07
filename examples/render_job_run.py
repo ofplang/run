@@ -90,7 +90,8 @@ def main() -> None:
     # The result boundary artifact, as `ofp-run run --boundary-out FILE` would write
     # it: the same schema as the supplied boundary, with each output's view filled in.
     (OUT / "job_run.boundary.yaml").write_text(
-        yaml.safe_dump(runner.result_boundary, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        yaml.safe_dump(runner.result_boundary, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
     )
 
     print(text, end="")

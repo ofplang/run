@@ -26,8 +26,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ofplang.run.runner import RollingRunner
 from ofplang.schedule.scheduler.visualize import render_svg
+
+from ofplang.run.runner import RollingRunner
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -45,13 +46,18 @@ def main() -> None:
     _write("poll_drift.exact.svg", exact)
     _write("poll_drift.polled.svg", polled)
 
-    print(f"exact makespan = {exact['now']}; polled (interval {INTERVAL}) makespan = {polled['now']}")
+    print(
+        f"exact makespan = {exact['now']}; "
+        f"polled (interval {INTERVAL}) makespan = {polled['now']}"
+    )
     print(f"wrote {OUT / 'poll_drift.exact.svg'}")
     print(f"wrote {OUT / 'poll_drift.polled.svg'}")
 
 
 def _drive(poll_interval: int | None) -> dict:
-    runner = RollingRunner(str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=poll_interval)
+    runner = RollingRunner(
+        str(WORKFLOW), str(ENVIRONMENT), random_seed=0, poll_interval=poll_interval
+    )
     status = runner.run()
     # The status carries no solver objective; label the chart with its makespan.
     status.setdefault("objective", {"kind": "makespan", "value": status.get("now")})

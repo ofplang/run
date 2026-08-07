@@ -35,7 +35,9 @@ jobs:
       # ruff is a static analyzer: it needs neither the project installed nor the
       # (PyPI-absent) ofplang-schedule dependency resolved, so install ruff alone.
       - run: pip install "ruff>=0.16"
-      - run: ruff check ofplang tests
+      # The whole tree, so `examples/` is linted too (ruff's own defaults skip
+      # build/venv dirs and honour .gitignore).
+      - run: ruff check .
 
   typecheck:
     runs-on: ubuntu-latest
