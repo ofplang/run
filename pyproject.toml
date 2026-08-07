@@ -28,8 +28,9 @@ classifiers = [
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
 # PyPI. The `ofplang-schedule>=0.1.3` floor is required: the runner now always
 # hands the scheduler an in-memory workflow document, which schedule accepts only
-# from 0.1.3. The `ofplang-validate>=0.1.2` floor ensures the front door
-# recognizes optional `description` metadata (spec 2.7).
+# from 0.1.3. The `ofplang-validate>=0.1.3` floor is required by the shared front
+# door (`app.py`), which uses validate's `$import` expansion API (`expand` /
+# `validate(..., expand=True)`) so the runner runs exactly what was validated.
 dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.3", "ofplang-validate>=0.1.3"]
 
 [project.urls]
