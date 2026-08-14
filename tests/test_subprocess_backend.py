@@ -318,6 +318,152 @@ def test_child_transport_script_error(tmp_path, monkeypatch):
     assert json.loads(result_path.read_text(encoding="utf-8"))["error"]["code"] == "script_error"
 
 
+# -- op timeout: a hung child becomes a failed op ------------------------------
+#
+# The point of the deadline is that a silent instrument ends the run the way any other
+# failure does. Everything here runs on the fake clock, so "an hour" costs nothing.
+
+
+class HangingHandle(FakeHandle):
+    """A child that never exits on its own. Records `terminate` / `kill`; `obeys` says
+    whether `terminate` actually ends it (well-behaved) or is ignored (wedged)."""
+
+    def __init__(self, obeys: bool = True) -> None:
+        super().__init__(running_polls=10**6)
+        self.obeys = obeys
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+        if self.obeys:
+            self._left = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self._left = 0
+
+
+def _hung_backend(handle, **kw) -> SubprocessBackend:
+    """A backend whose every op spawns `handle` -- a child that will not finish."""
+    return _backend(lambda job: handle, **kw)
+
+
+def _dispatch_add(backend) -> str:
+    return backend.dispatch_processing(
+        "add", "v0", output_schema={"z": INT}, inputs={"x": 1, "y": 1}, definition=ADD_DEF
+    )
+
+
+def test_op_timeout_fails_a_hung_op_and_stops_its_child():
+    handle = HangingHandle()
+    backend = _hung_backend(handle, op_timeout=5.0)
+    uid = _dispatch_add(backend)
+    backend.advance(5)  # seconds_per_tick 1.0 -> five real seconds have passed
+    st = backend.state(uid)
+    assert st["status"] == "failed"
+    assert st["reason"][0] == "op_timeout"
+    assert "did not finish within 5s" in st["reason"][1]
+    assert "process 'add'" in st["reason"][1]  # says what was doing the hanging
+    assert handle.terminated is True
+
+
+def test_op_timeout_does_not_fire_before_the_deadline():
+    backend = _hung_backend(HangingHandle(), op_timeout=5.0)
+    uid = _dispatch_add(backend)
+    backend.advance(4)
+    assert backend.state(uid)["status"] == "running"
+
+
+def test_no_op_timeout_by_default_waits_indefinitely():
+    # The upstream default is no deadline: behaviour is exactly what it was before.
+    backend = _hung_backend(HangingHandle())
+    uid = _dispatch_add(backend)
+    backend.advance(10_000)
+    assert backend.state(uid)["status"] == "running"
+
+
+def test_a_child_that_finished_on_the_deadline_still_completes():
+    # Reaching the deadline and finishing on the same pass: the real outcome wins, the
+    # op completes with its outputs rather than being failed by a second to spare.
+    backend = _backend(_computing_spawn(running_polls=1), op_timeout=2.0)
+    uid = _dispatch_add(backend)
+    backend.advance(1)  # child reports running once
+    backend.advance(2)  # clock is exactly at the deadline, and the child is done
+    st = backend.state(uid)
+    assert st["status"] == "completed"
+    assert st["outputs"] == {"z": 2}
+
+
+def test_a_wedged_child_is_killed_after_the_grace_period():
+    handle = HangingHandle(obeys=False)  # ignores terminate
+    backend = _hung_backend(handle, op_timeout=5.0, kill_grace=1.0)
+    _dispatch_add(backend)
+    backend.advance(5)
+    assert handle.terminated is True
+    assert handle.killed is True
+
+
+def test_a_child_that_goes_quietly_is_not_killed():
+    handle = HangingHandle(obeys=True)
+    backend = _hung_backend(handle, op_timeout=5.0, kill_grace=1.0)
+    _dispatch_add(backend)
+    backend.advance(5)
+    assert handle.killed is False
+
+
+def test_a_handle_without_kill_is_tolerated():
+    # `kill` is not part of `_ProcessLike`: a fake or a custom spawn without one must
+    # still work, wedged child or not.
+    class DeafHandle(FakeHandle):
+        def __init__(self) -> None:
+            super().__init__(running_polls=10**6)
+
+        def terminate(self) -> None:
+            pass
+
+    backend = _hung_backend(DeafHandle(), op_timeout=5.0, kill_grace=0.5)
+    uid = _dispatch_add(backend)
+    backend.advance(5)
+    assert backend.state(uid)["reason"][0] == "op_timeout"
+
+
+def test_timed_op_is_not_subject_to_the_deadline():
+    # No script -> no child -> nothing to hang: a timed op completes on the clock even
+    # when its virtual end is past a deadline that would have caught a coded op.
+    backend = _backend(_computing_spawn(), op_timeout=1.0)
+    uid = backend.dispatch_processing(
+        "add", "v0", output_schema={"z": INT}, inputs={}, definition={}
+    )
+    backend.advance(2)  # duration 2: reaches its virtual end
+    assert backend.state(uid)["status"] == "completed"
+
+
+def test_transport_child_that_hangs_times_out():
+    handle = HangingHandle()
+    clock = FakeClock()
+    backend = _TransportBackend(
+        SIMPLE_ENV, spawn=lambda job: handle, seconds_per_tick=1.0,
+        monotonic=clock.monotonic, sleep=clock.sleep, op_timeout=3.0,
+    )
+    backend.place("station_0.core")
+    uid = backend.dispatch_transport("transport", "station_0.core", "station_1.core")
+    backend.advance(3)
+    st = backend.state(uid)
+    assert st["status"] == "failed"
+    assert st["reason"][0] == "op_timeout"
+    assert "transport station_0.core -> station_1.core" in st["reason"][1]
+    # D25: a failed transport moves nothing -- the material is still at the source.
+    assert backend.spot_state("station_0.core") is not None
+    assert backend.spot_state("station_1.core") is None
+
+
+@pytest.mark.parametrize("kwargs", [{"op_timeout": 0}, {"op_timeout": -1.0}, {"kill_grace": -1.0}])
+def test_rejects_a_nonsensical_deadline(kwargs):
+    with pytest.raises(ValueError):
+        _backend(_computing_spawn(), **kwargs)
+
+
 # -- integration: drive a full run through the runner --------------------------
 
 

@@ -30,6 +30,17 @@ Design (reuses the `Simulator` physical oracle, so only time + completion differ
   inherited `_complete` via the device-model seam; a child `{"error": ...}` (or a
   crashed child) is raised as `DeviceComputationError`, so it lands on the exact
   same graceful-failure path as an in-process script error (v0 §22.2 / D25).
+* **A hang is bounded, not silent** (D40): an optional `op_timeout` gives every coded
+  op a deadline, in **real seconds**, measured from the moment its child starts. A
+  child still running when the deadline passes is stopped and its op is `failed` with
+  reason ``op_timeout`` -- so an instrument that stops answering ends the run the way
+  any other failure does (status document, reason, exit 1) instead of blocking it
+  forever. Nothing else in the stack bounds an operation: `duration` is an estimate
+  for scheduling, not a deadline, and the runner's `max_ticks` counts iterations, not
+  time. The default is `None` (no deadline, the behaviour before this existed); a
+  dialect that knows its lab -- labcode -- sets one. Stopping the child is **not** a
+  cancel: whatever it started outside this process (an instrument command) keeps
+  running, and the state that leaves behind is the operator's to restore.
 
 Scope (0.1.4): the default `resolver` runs only the workflow's own
 `python_script_processes` (v0 §22); transports are always timed. A dialect (e.g.
@@ -55,10 +66,27 @@ from .script import DeviceComputationError
 # outputs with the built-in default model" (a transport, or a script-less process).
 _TIMED = object()
 
+# How often `_stop_child` looks to see whether a terminated child has gone, in real
+# seconds: short enough that a child which exits at once is barely waited on, long
+# enough that the grace period is not a spin.
+_KILL_POLL = 0.2
+
+
+def _op_label(op) -> str:
+    """Name an operation in a failure message: what it was doing, not its uuid (which
+    means nothing to the operator reading the line)."""
+    if op.kind == "transport":
+        return f"transport {op.from_spot} -> {op.to_spot}"
+    return f"process {op.process!r} (mode {op.mode!r})"
+
 
 class _ProcessLike(Protocol):
     """The minimal handle surface the backend polls; `subprocess.Popen` matches it
-    structurally, and a test injects a tiny fake with the same shape."""
+    structurally, and a test injects a tiny fake with the same shape.
+
+    ``kill()`` is deliberately *not* required: it is used when stopping a child that
+    ignored `terminate` (see `_stop_child`), and is called only if the handle has one,
+    so a fake or a custom `spawn` written against this protocol keeps working."""
 
     returncode: int | None
     stdin: Any
@@ -120,6 +148,8 @@ class SubprocessBackend(Simulator):
         speed: float = 1.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        op_timeout: float | None = None,
+        kill_grace: float = 5.0,
     ):
         # The device-model seam is how `_complete` gets an op's outputs; we route it
         # to `_resolve_model`, which returns the child's result for a coded op or the
@@ -129,15 +159,30 @@ class SubprocessBackend(Simulator):
             raise ValueError(
                 f"seconds_per_tick and speed must both be > 0, got {seconds_per_tick} and {speed}"
             )
+        if op_timeout is not None and not op_timeout > 0:
+            raise ValueError(f"op_timeout must be > 0 or None (no deadline), got {op_timeout}")
+        if kill_grace < 0:
+            raise ValueError(f"kill_grace must be >= 0, got {kill_grace}")
         self._resolver = resolver
         self._spawn = spawn
         self._seconds_per_tick = seconds_per_tick / speed
         self._monotonic = monotonic
         self._sleep = sleep
         self._epoch: float | None = None
+        # How long a coded op may run before its child is stopped and the op failed,
+        # in **real seconds** -- unrelated to `seconds_per_tick` (which maps environment
+        # time to the wall clock) and never rescaled by it: a deadline is about how long
+        # a real instrument may stay silent, not about how the plan's time is paced.
+        # None disables it entirely (no deadlines are recorded, nothing is checked).
+        self._op_timeout = op_timeout
+        # How long a stopped child gets to exit after `terminate` before it is killed.
+        self._kill_grace = kill_grace
         # Live child handles and their result-file paths, keyed by op id.
         self._procs: dict[str, _ProcessLike] = {}
         self._result_paths: dict[str, str] = {}
+        # When each running child's op must be finished by (`_monotonic` reading), for
+        # the ops that have a deadline at all.
+        self._deadlines: dict[str, float] = {}
         # The result for the op currently being settled by `_complete` (set just
         # before the call): `_TIMED`, or the child's ``{"outputs"|"error": ...}``.
         self._pending: Any = _TIMED
@@ -205,6 +250,12 @@ class SubprocessBackend(Simulator):
             job["process"] = process
         self._result_paths[uuid] = result_path
         self._procs[uuid] = self._spawn(job)
+        # The deadline runs from the moment the child starts, and covers everything the
+        # op does (connecting, every command it issues, its own waiting) -- so it must
+        # be looser than any per-command wait inside the script, which knows far more
+        # about what it is waiting for.
+        if self._op_timeout is not None:
+            self._deadlines[uuid] = self._monotonic() + self._op_timeout
 
     # -- time: pace the wall clock, then settle whatever finished --------------------
 
@@ -231,14 +282,23 @@ class SubprocessBackend(Simulator):
         child has exited (polled), a timed op when its virtual end has passed. Ties
         are broken by dispatch order (`seq`), matching the base simulator. Each
         completion is applied via the inherited `_complete` / `_fail`, and recorded in
-        the history channel (times live there, D18)."""
+        the history channel (times live there, D18).
+
+        A coded op whose child is *still running* past its `op_timeout` deadline is
+        failed here instead (D40). This is the only place that check needs to live: the
+        runner polls on a fixed interval, so it comes back through `advance` -- and
+        keeps doing so while it drains after a failure -- for as long as anything runs."""
         running = [op for op in self._ops.values() if op.status == "running"]
         due = []
+        overdue = []
+        now = self._monotonic() if self._deadlines else 0.0
         for op in running:
             handle = self._procs.get(op.uuid)
             if handle is not None:
                 if handle.poll() is not None:  # child exited -> op has finished
                     due.append(op)
+                elif now >= self._deadlines.get(op.uuid, float("inf")):
+                    overdue.append(op)
             elif op.end <= reached:  # timed op: completes when the clock passes its end
                 due.append(op)
         for op in sorted(due, key=lambda o: o.seq):
@@ -266,6 +326,65 @@ class SubprocessBackend(Simulator):
                 Event(time=reached, uuid=op.uuid, kind=op.kind, status=op.status)
             )
             self._cleanup(op.uuid)
+        # Overdue ops are failed *after* the finished ones: a child that exited on the
+        # same pass genuinely did its work, and its real outcome is worth more than the
+        # deadline that was about to catch it.
+        for op in sorted(overdue, key=lambda o: o.seq):
+            self._fail_overdue(op, reached)
+
+    def _fail_overdue(self, op, reached: int) -> None:
+        """Stop op `op`'s child and fail the op with the ``op_timeout`` reason (D40).
+
+        The failure is the ordinary graceful one (`_fail`: resources freed, no material
+        effect), so it reaches the runner through the path every other operation failure
+        takes -- the run stops, the status document is written, the reason is reported.
+
+        The message says the two things its reader needs and cannot get elsewhere: that
+        the deadline, not the instrument, ended the wait, and that the instrument was
+        never told to stop. A dialect CLI that sets `op_timeout` should say in its own
+        words how to raise or lift it (the code, ``op_timeout``, is what it keys on)."""
+        self._stop_child(op.uuid)
+        limit = self._op_timeout or 0.0
+        op.reason = (
+            "op_timeout",
+            f"{_op_label(op)} did not finish within {limit:.0f}s, so its child process "
+            f"was stopped. The work it started outside this process was not cancelled -- "
+            f"nothing here can cancel it -- so the instrument may still be running, and "
+            f"whatever state that leaves is the operator's to restore. If this operation "
+            f"legitimately takes longer, raise op_timeout (or set it to None to wait "
+            f"forever).",
+        )
+        self._fail(op)
+        self._history_events.append(
+            Event(time=reached, uuid=op.uuid, kind=op.kind, status=op.status)
+        )
+        self._cleanup(op.uuid)
+
+    def _stop_child(self, uuid: str) -> None:
+        """Stop op `uuid`'s child process: ask it to exit, and kill it if it will not.
+
+        `terminate` is a request, and a child wedged in a call that ignores it would
+        outlive the run and keep talking to an instrument nobody is watching any more.
+        So it gets `kill_grace` real seconds -- polled, not slept through, so a child
+        that goes at once costs almost nothing -- and is then killed outright. `kill` is
+        used only if the handle has one (`_ProcessLike` does not require it).
+
+        Blocking here is deliberate: the caller is ending this op either way, and a run
+        that is on its way out should not leave a process behind to be tidy about it."""
+        handle = self._procs.get(uuid)
+        if handle is None:
+            return
+        with contextlib.suppress(OSError, ValueError):
+            if handle.poll() is not None:  # already gone
+                return
+            handle.terminate()
+            deadline = self._monotonic() + self._kill_grace
+            while handle.poll() is None and self._monotonic() < deadline:
+                self._sleep(_KILL_POLL)
+            if handle.poll() is None:
+                kill = getattr(handle, "kill", None)
+                if callable(kill):
+                    kill()
 
     def _collect(self, op) -> dict:
         """Read a finished child's outcome: its ``{"outputs"|"error": ...}`` from the
@@ -294,6 +413,7 @@ class SubprocessBackend(Simulator):
         if path:
             with contextlib.suppress(OSError):
                 os.unlink(path)
+        self._deadlines.pop(uuid, None)
         handle = self._procs.pop(uuid, None)
         if handle is not None:
             for pipe in (getattr(handle, "stdin", None), getattr(handle, "stderr", None)):
@@ -304,14 +424,15 @@ class SubprocessBackend(Simulator):
     # -- lifecycle -------------------------------------------------------------------
 
     def close(self) -> None:
-        """Terminate any still-running children and clean up their artifacts. The
-        runner drains running ops on a normal finish, so this only bites on an early
-        stop / exception; `run_workflow` calls it in a `finally`."""
+        """Stop any still-running children and clean up their artifacts. The runner
+        drains running ops on a normal finish, so this only bites on an early stop /
+        exception; `run_workflow` calls it in a `finally`.
+
+        It uses the same `_stop_child` as a timed-out op, so a child that ignores
+        `terminate` is killed rather than left behind -- which can cost up to
+        `kill_grace` per stubborn child, on a run that is already over."""
         for uuid in list(self._procs):
-            handle = self._procs.get(uuid)
-            with contextlib.suppress(OSError, ValueError):
-                if handle is not None and handle.poll() is None:
-                    handle.terminate()
+            self._stop_child(uuid)
             self._cleanup(uuid)
 
     def __enter__(self) -> SubprocessBackend:
@@ -329,6 +450,8 @@ def subprocess_backend_factory(
     speed: float = 1.0,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    op_timeout: float | None = None,
+    kill_grace: float = 5.0,
 ) -> Callable[[dict], SubprocessBackend]:
     """Build a `backend_factory(environment) -> SubprocessBackend` for the runner.
 
@@ -336,13 +459,15 @@ def subprocess_backend_factory(
     via `run_workflow(..., backend_factory=...)`) to run scripts out-of-process on a
     wall clock. See `SubprocessBackend` for the parameters; `resolver` selects each
     op's code (default: the workflow §22 script), `spawn` launches the child (default:
-    a real subprocess), and `monotonic` / `sleep` are injectable for tests."""
+    a real subprocess), `op_timeout` bounds how long an op may run (default: no bound),
+    and `monotonic` / `sleep` are injectable for tests."""
 
     def factory(environment: dict) -> SubprocessBackend:
         return SubprocessBackend(
             environment, resolver=resolver, spawn=spawn,
             seconds_per_tick=seconds_per_tick, speed=speed,
             monotonic=monotonic, sleep=sleep,
+            op_timeout=op_timeout, kill_grace=kill_grace,
         )
 
     return factory
