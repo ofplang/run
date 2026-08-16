@@ -257,9 +257,10 @@ class RollingRunner:
         self._environment = _normalize_mode_ids(load_document(environment_path))
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
-        # outputs from inputs; without one the built-in `default_device_model` (type defaults
-        # + `objects.map` object carry) is used. A scenario concern injected from
-        # Python, like `duration_model`.
+        # outputs from inputs; without one the built-in `script_device_model` is used
+        # (it runs a v0 §22 `script` process, and otherwise falls back to
+        # `default_device_model`: type defaults + `objects.map` object carry). A scenario
+        # concern injected from Python, like `duration_model`.
         #
         # An alternative backend (e.g. one driving real hardware) is injected as a
         # `backend_factory(environment) -> Backend`: the runner calls it with its own

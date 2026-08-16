@@ -5,9 +5,11 @@ without a lab. Its physical core knows only the physical world (D10): devices,
 spots, transporters, and opaque timed operations; it does not interpret workflows
 or plans -- the runner keeps that provenance. On top of that it carries the value
 seam (D26/D27): a dispatched operation may carry input values and an output
-signature, and at completion a *device model* produces the output values (see
-`default_device_model`). The device model receives the process definition and may
-read its structure, but the physical core still never interprets it.
+signature, and at completion a *device model* produces the output values (with no
+model injected, the built-in default is `script_device_model`, which runs a v0 §22
+`script` process and otherwise falls back to `default_device_model`). The device
+model receives the process definition and may read its structure, but the physical
+core still never interprets it.
 
 Contract (D14/D15/D21), summarised:
 
@@ -22,7 +24,7 @@ Contract (D14/D15/D21), summarised:
   event times are available only via `_history`, for tests and debugging. A
   completed operation dispatched with a value signature (`output_schema`) also
   reveals its generated `outputs`, from the injected device model or the built-in
-  `default_device_model` (the value seam, D26/D27); an operation with no signature
+  `script_device_model` (the value seam, D26/D27); an operation with no signature
   stays status-only, so existing callers are unaffected.
 * `schedule_process_failure` / `schedule_transport_failure` declare that a
   capability's operations fail instead of completing (D25); a failed operation

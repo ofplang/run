@@ -21,8 +21,10 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   dispatch (an inconsistent plan is rejected), models timed up/down for a device
 >   or a transporter and injected operation failure, and at completion produces each
 >   operation's output
->   view values via a **device model** (the built-in `default_device_model` fills
->   type defaults and carries Object outputs through from their `objects.map`
+>   view values via a **device model** (with none injected, the built-in
+>   `script_device_model` runs a `script` process — see below — and otherwise falls
+>   back to `default_device_model`, which fills type defaults and carries Object
+>   outputs through from their `objects.map`
 >   inputs; a custom / real model computes them). `Simulator` is an abstract base
 >   over the runner's `Backend` contract; the concrete `VirtualTimeSimulator`
 >   advances time instantly (deterministic; the default) and `RealTimeSimulator`
@@ -127,7 +129,7 @@ pip install -e ".[test]"
 ```sh
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
-    [--poll-interval D] [--margin M] [--seed N] [-o OUT]
+    [--poll-interval D] [--margin M] [--seed N] [--no-validate] [-o OUT]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
 
@@ -146,7 +148,11 @@ completion each pinned Object output is checked to have reached its declared spo
 a YAML multi-document stream recording each *completed* activity's concrete input /
 output view values (a transport's moved view), appended as each activity finishes —
 the value-layer companion to the status document, also run-local.
-`--poll-interval` sets the fixed polling interval (default 1). `replay` runs a plan
+`--poll-interval` sets the fixed polling interval (default 1). `--no-validate`
+skips the one-shot `ofplang-validate` front-door check of the workflow — use it
+when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
+`$import` is still resolved and the capability gate still runs, since both are
+structural rather than validation. `replay` runs a plan
 produced by `ofp-schedule` verbatim on the simulator (no value layer). Both write
 the final execution status as YAML (`-o`, else stdout). Exit codes: `0` success,
 `1` execution failed (an activity failed, or a replan is infeasible), `2`
