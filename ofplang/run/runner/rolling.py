@@ -56,7 +56,14 @@ from .provenance import CommitLog, Committed
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
-from .values import ValueStore, assemble_inputs, collect_outputs, record_outputs, seed_entry
+from .values import (
+    ValueStore,
+    assemble_inputs,
+    collect_outputs,
+    record_outputs,
+    seed_entry,
+    unproduced_inputs,
+)
 
 
 def _accepts_node(func) -> bool:
@@ -1007,6 +1014,38 @@ class RollingRunner:
         end = start + planned
 
         if kind == "processing":
+            # Every connected input must already carry a real value: the plan orders
+            # this activity after its producers, so a missing one means it was started
+            # while a predecessor was still running. `assemble_inputs` cannot see that
+            # -- it would hand the op a typed default and the run would compute on a
+            # value that is not the workflow's -- so it is caught here instead, and
+            # gracefully (D25): the activity is marked failed, its successors are
+            # cancelled and the reason is recorded, rather than the run continuing on
+            # made-up data.
+            #
+            # The reachable cause is a running-task margin of 0 against a backend whose
+            # operations can finish later than planned (a wall-clock / real backend, or
+            # a `duration_model`): the scheduler pins a running activity to end at
+            # `max(reported end, now + margin)`, so with margin 0 a successor may be
+            # planned at `now` while its predecessor is still running. A Pure Data
+            # successor holds no spot or device, so nothing else would stop it. Hence
+            # the hint: a margin of 0 is not a usable setting for such a backend.
+            unproduced = unproduced_inputs(self.dataflow, self.values, activity["node"])
+            if unproduced:
+                subject = self._fmt_node(tuple(activity["node"]))
+                self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
+                self._record_failure(
+                    "input_not_produced",
+                    f"{subject}: input(s) {unproduced} have no value because their "
+                    f"producer has not completed; the activity was dispatched while a "
+                    f"predecessor was still running. Set a running-task margin of at "
+                    f"least the poll interval (--margin) so an overrunning operation "
+                    f"defers its successors.",
+                    subject,
+                )
+                self.failed = True
+                self._stopping = True
+                return
             # Pass the output value signature (D26/D27) so the backend generates a
             # typed value for each output port at completion, and the assembled input
             # values (F4; routed from upstream / the seeded boundary). The backend
@@ -1087,6 +1126,28 @@ class RollingRunner:
                 outputs = observed_state.get("outputs")
                 if outputs is not None:
                     process = rec.activity["process"]
+                    # Every declared output port must carry a value. A workflow cannot
+                    # give an output port a default, so an unset one has no value at all
+                    # and nothing downstream can be computed from it -- a device model
+                    # that returns only some of them is a backend contract violation,
+                    # not something to paper over. Stop gracefully here, where the
+                    # under-producing model can be named, rather than leaving the
+                    # consumer to discover a value it can only describe as absent. The
+                    # built-in models fill every port, so only an injected
+                    # `device_model` / `backend_factory` can trip this.
+                    absent = sorted(set(self._output_schemas.get(process, {})) - set(outputs))
+                    if absent:
+                        subject = self._fmt_node(tuple(rec.activity["node"]))
+                        rec.status = "failed"
+                        self.failed = True
+                        self._stopping = True
+                        self._record_failure(
+                            "backend_output_missing",
+                            f"{subject}: the device model produced no value for declared "
+                            f"output(s) {absent}",
+                            subject,
+                        )
+                        continue
                     normalized: dict = {}
                     nonconformant = None
                     for port, value in outputs.items():

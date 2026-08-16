@@ -21,6 +21,7 @@ from ofplang.run.runner.values import (
     collect_outputs,
     record_outputs,
     seed_entry,
+    unproduced_inputs,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -216,13 +217,44 @@ def test_seed_entry_uses_job_values_and_checks_them(tmp_path):
         raise AssertionError(f"expected RunnerError for job {bad}")
 
 
-def test_unconnected_input_falls_back_to_typed_default(tmp_path):
+def test_assemble_defaults_an_input_whose_producer_has_not_run(tmp_path):
     df, contracts = _dataflow_and_contracts(tmp_path)
     store = ValueStore()
     # Before any producer has run, F's inputs have no stored source value yet, so
     # they fall back to a typed default of the port's type (Sample / Reading here
-    # declare no view, hence empty records).
+    # declare no view, hence empty records). Both of F's inputs are *connected*, so
+    # this default is a stand-in the runner must not compute on -- which is what
+    # `unproduced_inputs` (below) exists to detect.
     assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": {}, "go": {}}
+
+
+def test_unproduced_inputs_reports_only_connected_ports_without_a_value(tmp_path):
+    df, contracts = _dataflow_and_contracts(tmp_path)
+    store = ValueStore()
+
+    # Both of F's inputs are connected to producers that have not run.
+    assert unproduced_inputs(df, store, ("F",)) == ["plate_in", "go"]
+
+    # A boundary-fed input is *not* reported once seeded -- and seeding happens at
+    # run start, before anything is dispatched, so it never is in practice.
+    assert unproduced_inputs(df, store, ("M",)) == ["plate"]
+    seed_entry(df, contracts, store)
+    assert unproduced_inputs(df, store, ("M",)) == []
+
+    # As each producer records its output, its consumer's port stops being reported.
+    record_outputs(store, ("M",), {"plate_out": "P", "reading": "R"})
+    assert unproduced_inputs(df, store, ("F",)) == ["go"]
+    record_outputs(store, ("Az", "A"), {"score": "S"})
+    assert unproduced_inputs(df, store, ("F",)) == []
+
+
+def test_unproduced_inputs_ignores_a_literal_bound_port(tmp_path):
+    # A static literal is a value the runner is entitled to synthesise, so a port
+    # bound to one is never "unproduced" -- there is no producer to wait for.
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_LITERAL_WF, encoding="utf-8")
+    df = from_workflow(doc)
+    assert unproduced_inputs(df, ValueStore(), ("C",)) == []
 
 
 # -- static literals (`bind: {port: {value: ...}}`, §11 / D30) ---------------

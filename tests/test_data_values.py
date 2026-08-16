@@ -22,6 +22,7 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import DownScope, RollingRunner, RunnerError, load_document  # noqa: E402
+from ofplang.run.runner.values import seed_entry, unproduced_inputs  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 WF = str(FIXTURES / "nested_returns.workflow.yaml")
@@ -270,6 +271,58 @@ def test_device_model_output_is_contract_checked():
     assert any(
         a["status"] == "failed" for a in status["activities"] if a.get("kind") == "processing"
     )
+
+
+def test_device_model_that_omits_a_declared_output_fails_gracefully():
+    # A workflow cannot give an output port a default, so a port the device model
+    # leaves unset has no value at all and nothing downstream can be computed from
+    # it. That is a backend contract violation, caught at poll where the
+    # under-producing model can be named -- and stopped gracefully, like a
+    # non-conformant value, rather than silently defaulting at the consumer.
+    def partial_model(process, mode, inputs, output_schema, definition):
+        return {}  # `inc` declares `y`; produce nothing
+
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, device_model=partial_model, poll_interval=1, random_seed=0
+    )
+    status = runner.run()  # must not raise
+    assert runner.failed
+    assert runner.failure is not None and runner.failure.kind == "backend_output_missing"
+    assert "'y'" in runner.failure.detail
+    assert any(
+        a["status"] == "failed" for a in status["activities"] if a.get("kind") == "processing"
+    )
+
+
+def test_dispatch_with_an_unproduced_input_fails_gracefully():
+    # An activity started while a predecessor is still running would be handed a
+    # typed default for the value that predecessor owes it, and would compute on it.
+    # The dispatch guard refuses instead, gracefully (the activity is marked failed
+    # and the reason recorded), and names the setting that causes it.
+    #
+    # White-box: the reachable cause is a running-task margin of 0 against a backend
+    # whose operations finish later than planned, which the in-process virtual-time
+    # simulator cannot exhibit (it always observes a completion at the poll it was
+    # advanced to), so the guard is driven directly. `unproduced_inputs` itself is
+    # unit-tested in tests/test_dataflow.py.
+    runner = RollingRunner(COUNT_WF, COUNT_ENV, _count_boundary(1), random_seed=0)
+    seed_entry(runner.dataflow, runner.contracts, runner.values, runner.job)
+
+    # count_chain is S1 -> S2. S1's only input comes from the (now seeded) boundary;
+    # S2's comes from S1, which has not run.
+    assert unproduced_inputs(runner.dataflow, runner.values, ("S1",)) == []
+    assert unproduced_inputs(runner.dataflow, runner.values, ("S2",)) == ["x"]
+
+    runner._commit_start(
+        {"kind": "processing", "process": "inc", "mode": "v0", "node": ["S2"],
+         "start": 0, "end": 1}
+    )
+    assert runner.failed and runner._stopping
+    assert runner.failure is not None and runner.failure.kind == "input_not_produced"
+    assert "--margin" in runner.failure.detail
+    # Recorded as a failed activity, and never dispatched to the backend.
+    assert [r.status for r in runner.log.records()] == ["failed"]
+    assert runner.log.running() == []
 
 
 def test_cli_writes_result_boundary(tmp_path):

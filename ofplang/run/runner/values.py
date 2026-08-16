@@ -98,8 +98,17 @@ def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
          producer -> consumer routing);
       2. a static literal (`value:`, D30) bound to the port -> use it, contract-checked
          against the port type (a non-conformant literal is a `RunnerError`);
-      3. otherwise unconnected (unbound, or a producer that has not run yet) -> a typed
-         default of the port's type.
+      3. otherwise -> a typed default of the port's type.
+
+    Case 3 covers two situations this function cannot tell apart: a genuinely
+    unconnected input (no `from:`, legitimately synthesised) and a *connected* one
+    whose producer has not recorded its value yet. Substituting a default for the
+    second would compute on a value that is not the workflow's, so a caller that
+    needs real values asks `unproduced_inputs` first and refuses to proceed --
+    which the runner does before every dispatch. The leniency is kept here for the
+    one caller that wants it: the run-start preflight (D37), which assembles every
+    port but reads only the ones its phase-hoisted `requires` reference.
+
     Every assembled value conforms. This is the routing primitive the dataflow unit
     tests exercise and the rolling loop passes to the backend (F4)."""
     node = tuple(node)
@@ -124,6 +133,28 @@ def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
             # `default_value` already carries static view values (D35).
             result[port] = default_value(resolved) if resolved is not None else {}
     return result
+
+
+def unproduced_inputs(dataflow, store: ValueStore, node) -> list[str]:
+    """The input ports of `node` that are *connected* to a producer which has not
+    recorded a value yet -- the case `assemble_inputs` would silently fill with a
+    typed default (see its case 3).
+
+    Only a port with an `input_source` is considered, so an unconnected input and a
+    static literal are never reported: both are values the runner is entitled to
+    synthesise. A boundary source (node `()`) never appears either -- `seed_entry`
+    seeds every entry port at run start, before anything is dispatched.
+
+    A non-empty result at dispatch time means the activity was started while a
+    predecessor was still running, which the plan's precedence is supposed to
+    prevent; see the caller for how that arises and why it is an error."""
+    node = tuple(node)
+    return [
+        port
+        for port in dataflow.in_ports.get(node, ())
+        if (source := dataflow.input_source.get((node, port))) is not None
+        and not store.has(source[0], source[1])
+    ]
 
 
 def record_outputs(store: ValueStore, node, outputs: dict) -> None:

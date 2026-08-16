@@ -148,7 +148,15 @@ completion each pinned Object output is checked to have reached its declared spo
 a YAML multi-document stream recording each *completed* activity's concrete input /
 output view values (a transport's moved view), appended as each activity finishes —
 the value-layer companion to the status document, also run-local.
-`--poll-interval` sets the fixed polling interval (default 1). `--no-validate`
+`--poll-interval` sets the fixed polling interval (default 1). `--margin` sets the
+running-task margin: on each replan a still-running activity is pinned to end at
+`max(reported end, now + margin)`, so a positive margin is what keeps an
+overrunning operation's successor from being planned at `now` and dispatched onto
+a value that operation has not produced yet. The default is 0, which is only safe
+with a backend whose operations cannot finish later than planned (the in-process
+virtual-time simulator); against a wall-clock or real backend set it to at least
+the poll interval, or a successor is refused with `input_not_produced` rather than
+computing on a typed default. `--no-validate`
 skips the one-shot `ofplang-validate` front-door check of the workflow — use it
 when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
 `$import` is still resolved and the capability gate still runs, since both are
