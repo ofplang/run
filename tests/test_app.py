@@ -146,14 +146,27 @@ def test_run_workflow_accepts_in_memory_document_with_validate_false():
     assert all(a["status"] == "completed" for a in result.status["activities"])
 
 
-def test_run_workflow_rejects_in_memory_document_with_validate_true():
-    # The front door validates a file; an in-memory document must be validated by the
-    # caller beforehand, so `validate=True` with a mapping is a usage error.
+def test_run_workflow_front_doors_an_in_memory_document():
+    """`validate=True` with a mapping validates it, rather than refusing to."""
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
     import yaml
 
     doc = yaml.safe_load(Path(SIMPLE_WF).read_text(encoding="utf-8"))
-    with pytest.raises(ValueError, match="validate=False"):
+    result = run_workflow(doc, SIMPLE_ENV, random_seed=0, validate=True)
+    assert not result.failed
+
+
+def test_run_workflow_front_doors_a_malformed_in_memory_document():
+    """And a rejection is the same `FrontDoorError` a file gets -- not a deep failure
+    inside the runner, which is what happened while this route had no front door."""
+    import yaml
+
+    doc = yaml.safe_load(Path(SIMPLE_WF).read_text(encoding="utf-8"))
+    doc["processes"]["main"]["body"]["nodes"][0]["process"] = "no_such_process"
+    with pytest.raises(FrontDoorError) as exc:
         run_workflow(doc, SIMPLE_ENV, validate=True)
+    assert not exc.value.result.ok
+    assert exc.value.result.diagnostics
 
 
 def test_run_workflow_injects_backend_factory():

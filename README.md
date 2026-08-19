@@ -114,9 +114,11 @@ pip install ofplang-run
 Requires Python 3.10+. Runtime dependencies (pulled in automatically) are PyYAML,
 the sibling [`ofplang-schedule`](https://pypi.org/project/ofplang-schedule/) that
 `run` (rolling-horizon) calls each tick, and
-[`ofplang-validate`](https://pypi.org/project/ofplang-validate/) used by the CLI
-front door. The runner *library* never imports validate (and the replans
-never re-validate), so it stays a one-shot CLI front door.
+[`ofplang-validate`](https://pypi.org/project/ofplang-validate/) used by the shared
+front door (`ofplang.run.front_door_check`), which validates a workflow file *or* an
+already-loaded workflow document, so an embedding caller holding one in memory is
+checked the same way a CLI is. The runner *library* never imports validate (and the
+replans never re-validate), so it stays a one-shot front door.
 
 For development, install editable with the test extra from a clone:
 

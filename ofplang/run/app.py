@@ -16,7 +16,10 @@ Two pieces, kept separate so the trusting core stays honest:
   checked. A CLI calls it, prints its diagnostics, and maps a failure to a usage
   error; a library caller can too. Expansion and the gate always run (even when
   `validate=False`), because `$import` is structural and an unsupported feature
-  would otherwise surface as a confusing deep error.
+  would otherwise surface as a confusing deep error. The workflow is a path *or* an
+  already-loaded document, so the in-memory route -- the recommended one for an
+  embedding caller, since the runner and the scheduler both take documents -- has a
+  front door too, instead of being the one route nobody checks.
 * `run_workflow(...)` -- run a workflow to completion, optionally injecting a custom
   `backend_factory` (a real-hardware / subprocess backend). With `validate=True`
   (the default) it runs the front door first for convenience; a CLI that has already
@@ -28,6 +31,7 @@ Two pieces, kept separate so the trusting core stays honest:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ofplang.validate import EXTENSION_TOLERANT, Diagnostic, expand
@@ -46,6 +50,9 @@ def _import_key_present(obj: Any) -> bool:
     return False
 
 
+UNEXPANDED_IMPORT = "workflow contains a $import; it must be expanded before running"
+
+
 def capability_gate(document: dict | None) -> str | None:
     """Return a reason if the (import-expanded) workflow uses a valid-v0 feature the
     runner does not support (so it is rejected cleanly instead of mis-run); else None.
@@ -60,7 +67,7 @@ def capability_gate(document: dict | None) -> str | None:
     if not isinstance(document, dict):
         return None
     if _import_key_present(document):
-        return "workflow contains a $import; it must be expanded before running"
+        return UNEXPANDED_IMPORT
     for name, proc in (document.get("processes") or {}).items():
         if isinstance(proc, dict) and proc.get("type_params") is not None:
             return (
@@ -85,7 +92,9 @@ class FrontDoorResult:
     document: dict | None = None
 
 
-def front_door_check(workflow_path: str, *, validate: bool = True) -> FrontDoorResult:
+def front_door_check(
+    workflow_path: str | Path | dict, *, validate: bool = True
+) -> FrontDoorResult:
     """Run the shared run front door over `workflow_path`: the full ofplang-validate
     pass (extension-tolerant, skipped when `validate=False`), `$import` resolution,
     and the always-on capability gate over the expanded document. Returns a
@@ -93,16 +102,42 @@ def front_door_check(workflow_path: str, *, validate: bool = True) -> FrontDoorR
     report a failure (a CLI prints the diagnostics / reason and exits with a usage
     error).
 
+    `workflow_path` is either a path to a workflow YAML file or an already-loaded
+    workflow document (a mapping) -- a caller holding one in memory (a dialect front
+    door that rewrote it, a generator) gets the same check as one holding a file. Such
+    a document must already be import-expanded: there is no base directory to resolve
+    a relative `$import` against, so one is rejected as an unsupported feature (the
+    reason the capability gate already gives) rather than expanded here. Its
+    diagnostics carry no `file:line:col`, only their logical `path`, there being no
+    file to point into. A document holding a value YAML cannot spell (a `datetime`, a
+    `set`) is a caller error rather than a malformed workflow, so validate's
+    `ValueError` -- which names the position -- propagates instead of being reported
+    as a finding.
+
     `$import` expansion is structural (spec 2.2 step 1), so it runs even under
     `validate=False`; only the validation pass is skipped. A structural expansion
     failure (unreadable target, cycle, ...) surfaces as a single diagnostic with the
     document left None."""
     diagnostics: list = []
     document: dict | None = None
+    if isinstance(workflow_path, dict) and _import_key_present(workflow_path):
+        # Short-circuited because validate *raises* on an unexpanded in-memory
+        # document (it has no base directory to resolve against), while this
+        # function's contract is to return the rejection. Answering with the gate's
+        # own reason keeps `validate=True` and `validate=False` saying the same thing.
+        return FrontDoorResult(
+            ok=False, unsupported=UNEXPANDED_IMPORT, document=workflow_path
+        )
     if validate:
         result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT, expand=True)
         diagnostics = list(result.diagnostics)
         document = result.document
+    elif isinstance(workflow_path, dict):
+        # Nothing to expand: an in-memory document is already expanded (checked just
+        # above). Handed on as given rather than copied -- the runner treats the
+        # workflow as read-only (schedule's D30 convention). Note the asymmetry with
+        # the branch above, where validate returns a fresh plain copy of the tree.
+        document = workflow_path
     else:
         # Validation skipped, but still resolve $import structurally so an import
         # workflow runs the expanded form (not the raw file the gate would reject).
@@ -169,11 +204,10 @@ def run_workflow(
     `workflow` and `env` are each either a path to a YAML file or an already-loaded
     document (a mapping) -- the former lets a caller run a workflow it rewrote in memory
     without a temp file, the latter lets one that already read the environment (a dialect
-    front door inspecting `x-` keys) not have it read again. An in-memory *workflow*
-    requires `validate=False`: the front door (`front_door_check`) validates a file, so a
-    caller passing a document must have validated it beforehand (e.g. front-doored the
-    original path). The environment carries no such condition -- the front door does not
-    read it.
+    front door inspecting `x-` keys) not have it read again. Both routes are checked the
+    same way: `validate=True` front-doors an in-memory workflow exactly as it front-doors
+    a file (such a document must already be import-expanded -- see `front_door_check`).
+    The environment is validated on neither route; the front door does not read it.
 
     With `validate=True` (default) the front door runs first and a rejection raises
     `FrontDoorError`; a CLI that already called `front_door_check` passes
@@ -189,11 +223,6 @@ def run_workflow(
     `ContractSyntaxError`) and execution failures (`SimulatorError`, `RunnerError`)
     propagate to the caller, which maps them to exit codes -- keeping this a thin
     front door, not an error-swallowing wrapper."""
-    if validate and isinstance(workflow, dict):
-        raise ValueError(
-            "run_workflow with an in-memory workflow document requires validate=False "
-            "(the front door validates a file path); validate the document beforehand"
-        )
     if validate:
         fd = front_door_check(workflow, validate=True)
         if not fd.ok:

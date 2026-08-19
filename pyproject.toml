@@ -29,11 +29,12 @@ classifiers = [
 # PyPI. The `ofplang-schedule>=0.1.6` floor is required: every replan hands the
 # scheduler the workflow, the environment and the status as in-memory documents,
 # and 0.1.6 is where it takes the environment and the execution document that way
-# (0.1.3 was the workflow alone). The `ofplang-validate>=0.1.3` floor is required
-# by the shared front door (`app.py`), which uses validate's `$import` expansion
-# API (`expand` / `validate(..., expand=True)`) so the runner runs exactly what
-# was validated.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.6", "ofplang-validate>=0.1.3"]
+# (0.1.3 was the workflow alone). The `ofplang-validate>=0.1.5` floor is required
+# by the shared front door (`app.py`): it uses validate's `$import` expansion API
+# (`expand` / `validate(..., expand=True)`, 0.1.3) so the runner runs exactly what
+# was validated, and 0.1.5 is where `validate()` takes an already-loaded document,
+# which is what gives the in-memory route a front door at all.
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.6", "ofplang-validate>=0.1.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
