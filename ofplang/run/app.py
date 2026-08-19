@@ -34,7 +34,7 @@ from ofplang.validate import EXTENSION_TOLERANT, Diagnostic, expand
 from ofplang.validate import validate as validate_workflow
 from ofplang.validate.yamlnode import YamlError
 
-from .runner import RollingRunner
+from .runner import DEFAULT_MAX_TICKS, RollingRunner
 
 
 def _import_key_present(obj: Any) -> bool:
@@ -161,6 +161,7 @@ def run_workflow(
     backend_factory=None,
     validate: bool = True,
     observation_out: str | None = None,
+    max_ticks: int | None = DEFAULT_MAX_TICKS,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -177,7 +178,9 @@ def run_workflow(
     alternative execution backend (e.g. `subprocess_backend_factory(...)` for real,
     out-of-process execution); None uses the default in-process simulator.
     `observation_out`, if given, streams the observation document (D38: completed
-    activities' I/O views) to that path as the run proceeds.
+    activities' I/O views) to that path as the run proceeds. `max_ticks` bounds the loop
+    iterations before the run is called non-terminating -- one iteration per poll interval,
+    so it also bounds the makespan a fixed-interval run can reach; None lifts it.
 
     Malformed workflow/environment YAML or an unparsable contract (`yaml.YAMLError`,
     `ContractSyntaxError`) and execution failures (`SimulatorError`, `RunnerError`)
@@ -205,6 +208,7 @@ def run_workflow(
         poll_interval=poll_interval,
         backend_factory=backend_factory,
         observation_out=observation_out,
+        max_ticks=max_ticks,
     )
     try:
         status = runner.run()

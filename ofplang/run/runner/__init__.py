@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from .contract_eval import ContractSyntaxError
 from .loader import load_document, serialize_document
-from .rolling import DownScope, RollingRunner
+from .rolling import DEFAULT_MAX_TICKS, DownScope, RollingRunner
 from .runner import Runner, RunnerError
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "RollingRunner",
     "RunnerError",
     "DownScope",
+    "DEFAULT_MAX_TICKS",
     "ContractSyntaxError",
     "load_document",
     "serialize_document",

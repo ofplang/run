@@ -4,7 +4,7 @@ Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
         [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
-        [--seed N] [--margin M] [--poll-interval D] [-o OUT]
+        [--seed N] [--margin M] [--poll-interval D] [--max-ticks N] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run replay <plan> --env <env> [-o OUT]
         replay a given execution plan on the simulator
@@ -42,6 +42,7 @@ import yaml
 
 from ofplang.run.app import FrontDoorResult, front_door_check, run_workflow
 from ofplang.run.runner import (
+    DEFAULT_MAX_TICKS,
     ContractSyntaxError,
     Runner,
     RunnerError,
@@ -93,6 +94,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         metavar="D",
         help="poll every D time units (fixed-interval, with completion-time estimation; default 1)",
+    )
+    r.add_argument(
+        "--max-ticks",
+        type=int,
+        default=DEFAULT_MAX_TICKS,
+        metavar="N",
+        help=(
+            "give up after N ticks as non-terminating, or 0 for no limit "
+            f"(default {DEFAULT_MAX_TICKS}); one tick is one poll interval, so this also "
+            "caps the makespan a run can reach"
+        ),
     )
     r.add_argument(
         "-o",
@@ -185,6 +197,14 @@ def _cmd_run(args) -> int:
         _print_front_door(fd)
         return EXIT_USAGE
 
+    # `--max-ticks 0` is the way to say "no limit" (the library spells that None); a
+    # negative count is not a limit at all, so it is an input error rather than something
+    # to interpret.
+    if args.max_ticks < 0:
+        print(f"ofp-run: --max-ticks must not be negative: {args.max_ticks}", file=sys.stderr)
+        return EXIT_USAGE
+    max_ticks = args.max_ticks or None
+
     # The run boundary (D28): the single run-facing I/O document (spot placement +
     # input views). Passed to the runner verbatim; it parses / validates it against
     # the workflow's contracts.
@@ -212,6 +232,7 @@ def _cmd_run(args) -> int:
             poll_interval=args.poll_interval,
             validate=False,
             observation_out=args.observation_out,
+            max_ticks=max_ticks,
         )
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract

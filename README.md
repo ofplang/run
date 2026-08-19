@@ -152,7 +152,12 @@ completion each pinned Object output is checked to have reached its declared spo
 a YAML multi-document stream recording each *completed* activity's concrete input /
 output view values (a transport's moved view), appended as each activity finishes —
 the value-layer companion to the status document, also run-local.
-`--poll-interval` sets the fixed polling interval (default 1). `--margin` sets the
+`--poll-interval` sets the fixed polling interval (default 1). `--max-ticks` is the
+non-termination guard: a run that takes more than that many ticks is given up on. One tick
+is one poll interval, so the guard also caps the makespan a run can reach (the default
+100000 with the default interval means 100000 time units); pass `0` for no limit when a
+long virtual run needs it, which also gives up the protection against a backend whose clock
+does not advance. `--margin` sets the
 running-task margin: on each replan a still-running activity is pinned to end at
 `max(reported end, now + margin)`, so a positive margin is what keeps an
 overrunning operation's successor from being planned at `now` and dispatched onto

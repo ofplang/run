@@ -86,6 +86,13 @@ def _accepts_node(func) -> bool:
     )
 
 
+#: How many loop iterations a run may take before it is called non-terminating.
+#: One iteration is one advance + poll, so under fixed-interval polling this also bounds
+#: the makespan a run can reach: `max_ticks * poll_interval` time units. `None` lifts the
+#: limit entirely, for a long virtual run against a backend whose clock does advance.
+DEFAULT_MAX_TICKS = 100_000
+
+
 @dataclass
 class Failure:
     """Why a run stopped (D36): a machine-readable `kind` (reason code), a
@@ -243,7 +250,7 @@ class RollingRunner:
         poll_interval: int | None = 1,
         duration_model=None,
         contract_observer=None,
-        max_ticks: int = 100_000,
+        max_ticks: int | None = DEFAULT_MAX_TICKS,
         down_scope: DownScope = DownScope.BOTH,
         observe: bool = False,
         observation_out: str | None = None,
@@ -369,6 +376,9 @@ class RollingRunner:
         # Optional duration variance (D23): fn(activity, planned_duration) -> actual.
         # None means every operation runs for its planned duration.
         self.duration_model = duration_model
+        # The non-termination guard, in iterations (see `DEFAULT_MAX_TICKS`). None means
+        # no limit: the caller has taken on the risk that a backend whose clock does not
+        # advance would loop forever.
         self.max_ticks = max_ticks
 
         # Variance is only coherent under fixed-interval polling (an off-plan finish
@@ -518,8 +528,16 @@ class RollingRunner:
 
         while True:
             self.ticks += 1
-            if self.ticks > self.max_ticks:
-                raise RunnerError("exceeded max ticks (possible non-termination)")
+            if self.max_ticks is not None and self.ticks > self.max_ticks:
+                # One iteration per poll interval, so this is reached either because the run
+                # is genuinely longer than the limit or because time is not moving. Only the
+                # caller can say which, so name the knob and what it bounds.
+                raise RunnerError(
+                    f"exceeded max ticks ({self.max_ticks}): the run either needs a higher "
+                    "limit (--max-ticks N, or 0 for none -- one tick is one poll interval, "
+                    "so the limit caps the makespan at max_ticks * poll_interval) or is not "
+                    "progressing (a backend whose clock does not advance)"
+                )
 
             if not self._stopping:
                 # Which machines are down right now (D21/D39). Polled every tick, as
