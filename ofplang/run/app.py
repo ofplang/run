@@ -152,7 +152,7 @@ class RunResult:
 
 def run_workflow(
     workflow,
-    env: str,
+    env,
     boundary: dict | None = None,
     *,
     running_task_margin: int = 0,
@@ -166,11 +166,14 @@ def run_workflow(
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
 
-    `workflow` is either a path to a workflow YAML file or an already-loaded document
-    (a mapping) -- the latter lets a caller run a workflow it rewrote in memory without
-    a temp file. An in-memory document requires `validate=False`: the front door
-    (`front_door_check`) validates a file, so a caller passing a document must have
-    validated it beforehand (e.g. front-doored the original path).
+    `workflow` and `env` are each either a path to a YAML file or an already-loaded
+    document (a mapping) -- the former lets a caller run a workflow it rewrote in memory
+    without a temp file, the latter lets one that already read the environment (a dialect
+    front door inspecting `x-` keys) not have it read again. An in-memory *workflow*
+    requires `validate=False`: the front door (`front_door_check`) validates a file, so a
+    caller passing a document must have validated it beforehand (e.g. front-doored the
+    original path). The environment carries no such condition -- the front door does not
+    read it.
 
     With `validate=True` (default) the front door runs first and a rejection raises
     `FrontDoorError`; a CLI that already called `front_door_check` passes

@@ -136,7 +136,9 @@ ofp-run replay <plan> --env <env> [-o OUT]
 `run` drives a v0 workflow to completion by replanning as it goes: each tick it
 polls the backend and, when anything the scheduler reads has changed -- an operation
 finished, a machine went down, a pending activity came due -- renders the committed
-history as a status, calls the scheduler, and dispatches the newly-runnable work. A
+history as a status, calls the scheduler in-process -- handing it the workflow, the
+environment and that status as documents, so nothing goes through a temporary file --
+and dispatches the newly-runnable work. A
 tick that changed none of those keeps the plan it already has, so a long protocol
 costs one solve per activity event rather than one per unit of its makespan; what is
 observed, and so the status produced, is the same either way. `--boundary` supplies the whole-workflow I/O as one document —

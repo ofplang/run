@@ -264,7 +264,16 @@ class RollingRunner:
         self._workflow = workflow if isinstance(workflow, dict) else load_document(workflow)
         if not isinstance(self._workflow, dict):
             raise RunnerError("workflow must be a mapping")
-        self.environment_path = str(environment_path)
+        # `environment_path` is likewise a path or an already-loaded environment document
+        # (a caller that reads it for its own reasons -- a dialect front door inspecting
+        # `x-` keys -- need not have it read a second time here). The document is copied
+        # before it is touched (`_normalize_mode_ids`), so the caller's is left alone.
+        # Where the environment came from, for the plan's `meta` provenance: the path
+        # it was read from, or None when it was handed over as a document (there is no
+        # path to name, and the scheduler records `<in-memory>` for that).
+        self.environment_path = (
+            None if isinstance(environment_path, dict) else str(environment_path)
+        )
         # How a down device is reduced out of the scheduling environment (D21): by
         # default fully unreachable (modes + its spots' transports), the safe choice
         # for real hardware. `DownScope.PROCESSING` keeps the transports for the
@@ -274,7 +283,11 @@ class RollingRunner:
         # Keep the environment as a dict too: when devices go down we schedule
         # against a reduced copy of it (D21), while the backend keeps the full one.
         # Mode ids are pinned up front so they stay stable when modes are dropped.
-        self._environment = _normalize_mode_ids(load_document(environment_path))
+        self._environment = _normalize_mode_ids(
+            environment_path
+            if isinstance(environment_path, dict)
+            else load_document(environment_path)
+        )
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
         # outputs from inputs; without one the built-in `script_device_model` is used
@@ -1016,6 +1029,7 @@ class RollingRunner:
             status_doc,
             running_task_margin=self.margin,
             random_seed=self.seed,
+            environment_source=self.environment_path,
         )
         if not report.ok:
             raise RunnerError(self._failure_message(report))
