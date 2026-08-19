@@ -23,6 +23,12 @@ What this layer covers, added incrementally:
   `poll_interval` (default 1) polls every that many units and estimates each
   completion time as the observing poll. `poll_interval=None` advances to plan
   event boundaries instead (exact, deterministic), retained for tests.
+* replanning only when the answer can differ (D41): every tick polls, but a tick
+  that changed nothing the scheduler reads -- no operation finished, no machine
+  went down, nothing came due -- keeps the plan from the last replan instead of
+  computing the same one again. The poll cadence, and so every observed time, is
+  untouched; only the number of CP-SAT solves drops (from one per time unit to
+  roughly one per activity event). See `_needs_replan`.
 * duration variance (D23): an optional `duration_model` perturbs the dispatched
   duration (the backend runs the actual, the runner reports the planned expected
   end until it observes completion). Variance requires fixed-interval polling and
@@ -383,8 +389,17 @@ class RollingRunner:
 
         self.log = CommitLog()
         self.now = 0
-        self.ticks = 0  # number of replan cycles (a test asserts >1: history round-trips)
+        self.ticks = 0  # loop iterations: one advance + poll each (a test asserts >1)
+        self.replans = 0  # how many of those ticks actually called the scheduler (D41)
         self._last_time = None  # `time` section echoed from the most recent plan
+
+        # Replan skipping (D41). `_observed_change` says an operation was seen to
+        # finish or fail since the last replan, so the committed history the scheduler
+        # fixes has changed; it starts True because the first tick has no plan yet.
+        # `_down_at_replan` is the down-machine set the cached plan was built against,
+        # so a machine going down (or coming back) shows up as a difference.
+        self._observed_change = True
+        self._down_at_replan: set[str] = set()
 
         # Failure handling (D25). When an operation is observed `failed`, the runner
         # stops: it dispatches no more work and only waits for what is still running
@@ -507,10 +522,24 @@ class RollingRunner:
                 raise RunnerError("exceeded max ticks (possible non-termination)")
 
             if not self._stopping:
-                # Normal tick: replan and dispatch what can start now.
-                pending = self._replan_and_dispatch()
+                # Which machines are down right now (D21/D39). Polled every tick, as
+                # before -- for a real backend this call is also where availability
+                # probing happens, on its own policy's cadence -- and it is one of the
+                # three things that can make the scheduler's answer differ.
+                down = set(self.sim.down_devices())
+                if self._needs_replan(down):
+                    # Replan and dispatch what can start now.
+                    pending = self._replan_and_dispatch(down)
+                else:
+                    # Nothing the scheduler reads has changed: the plan from the last
+                    # replan still stands, so carry it into this tick untouched. Nothing
+                    # is dispatched -- `_needs_replan` returns True for the tick a
+                    # pending activity comes due, so a dispatch always follows a fresh
+                    # plan (D9: pending identities are only stable within one plan).
+                    pending = self._undispatched()
                 # The run is done when there is neither unstarted work nor anything
-                # still running.
+                # still running. `_needs_replan` asks for a fresh plan before this is
+                # ever read as empty, so the completion test never rests on a stale one.
                 if not pending and not self.log.running():
                     break
             else:
@@ -886,17 +915,77 @@ class RollingRunner:
                 return False
         return True
 
-    def _replan_and_dispatch(self) -> list[dict]:
-        """One normal tick: build the status from committed history, replan, and
+    def _needs_replan(self, down: set[str]) -> bool:
+        """Whether this tick has to call the scheduler, or the last plan still stands.
+
+        What the scheduler answers is a function of the workflow, the environment it
+        is handed, the committed history and `now` (D9). Between two ticks only three
+        of those can move, so those are the questions asked here: did an operation
+        finish, did a machine go down, has a pending activity come due. A tick where
+        none of them happened would put the same question to CP-SAT and get the same
+        plan back, at the cost of a full solve -- with `poll_interval=1` that is one
+        solve per time unit, i.e. as many solves as the makespan is long.
+
+        This decides only whether to *replan*. The clock still advances and the backend
+        is still polled every tick, so completion times -- which in fixed-interval mode
+        are the poll at which completion was first seen (D22) -- are exactly what they
+        were.
+        """
+        # An operation finished or failed. The history the scheduler pins has changed,
+        # and a completion observed earlier than planned is precisely what lets the
+        # remaining work move up -- so this must replan, not wait for the next due time.
+        if self._observed_change:
+            return True
+
+        # A machine went down or came back: the environment being scheduled against
+        # differs, and pending work may have to be re-routed around it (D21).
+        if down != self._down_at_replan:
+            return True
+
+        # Work has come due. A body activity still gated on its composite's `requires`
+        # (D34) does not count: replanning cannot open that gate, and the poll that
+        # eventually does sets `_observed_change` anyway -- counting it would replan on
+        # every tick until it opened.
+        undispatched = self._undispatched()
+        for activity in undispatched:
+            if int(activity["start"]) > self.now:
+                continue
+            if activity.get("kind") == "processing" and not self._requires_gate_open(
+                activity["node"]
+            ):
+                continue
+            return True
+
+        # Nothing left to dispatch and nothing running: ask once more, so the loop's
+        # completion test reads a plan that is current.
+        return not undispatched and not self.log.running()
+
+    def _undispatched(self) -> list[dict]:
+        """The last plan's pending activities that have not been dispatched.
+
+        Matched by provenance rather than identity: pending identities are regenerated
+        on every replan, but a `node` path / arc endpoint pair is not (D9), so this is
+        what lines a plan entry up against the committed record that started it.
+        """
+        committed = {self._provenance_key(r.activity) for r in self.log.records()}
+        return [a for a in self._last_pending if self._provenance_key(a) not in committed]
+
+    def _replan_and_dispatch(self, down: set[str]) -> list[dict]:
+        """One replanning tick: build the status from committed history, replan, and
         dispatch every pending activity that can start now. Returns the plan's
         pending (non-relay) activities (also remembered for cancellation)."""
-        # Discover which devices are down and schedule against the normalized
-        # environment reflecting it: the full env when nothing is down, or a reduced
-        # copy (the down devices' `down_scope` dropped -- modes and/or their spots'
+        # Schedule against the normalized environment reflecting the machines that are
+        # down (discovered by the caller, which needs the same set to decide whether a
+        # replan is due at all): the full env when nothing is down, or a reduced copy
+        # (the down machines' `down_scope` dropped -- modes and/or their spots'
         # transports) that triggers a re-route (D21).
         # Always the normalized dict, so the scheduler and the backend agree on mode
         # ids. Committed history is fed back so it is fixed and the rest re-optimised.
-        down = set(self.sim.down_devices())
+        # Recorded as of this plan: the next tick compares against these to see whether
+        # anything the scheduler reads has moved (D41).
+        self.replans += 1
+        self._observed_change = False
+        self._down_at_replan = down
         environment = (
             _reduce_environment(self._environment, down, self._down_scope)
             if down
@@ -1115,6 +1204,12 @@ class RollingRunner:
                 continue
             observed_state = self.sim.state(rec.uuid)
             observed = observed_state["status"]
+            if observed != "running":
+                # This record leaves the running set, so the committed history the
+                # scheduler fixes differs from the one the cached plan was built on: the
+                # next tick has to replan (D41). Set before the branches below, so it
+                # covers a completion, a failure, and any future terminal state alike.
+                self._observed_change = True
             if observed == "completed":
                 rec.status = "completed"
                 rec.end = self.now
@@ -1226,9 +1321,8 @@ class RollingRunner:
 
     def _cancelled_activities(self) -> list[dict]:
         """The last plan's pending activities that never started because the run
-        stopped on a failure (D25) -- the pending set minus what got committed."""
-        committed = {self._provenance_key(r.activity) for r in self.log.records()}
-        return [a for a in self._last_pending if self._provenance_key(a) not in committed]
+        stopped on a failure (D25) -- exactly the work left undispatched."""
+        return self._undispatched()
 
     @staticmethod
     def _provenance_key(activity: dict):

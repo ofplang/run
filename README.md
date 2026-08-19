@@ -115,7 +115,7 @@ Requires Python 3.10+. Runtime dependencies (pulled in automatically) are PyYAML
 the sibling [`ofplang-schedule`](https://pypi.org/project/ofplang-schedule/) that
 `run` (rolling-horizon) calls each tick, and
 [`ofplang-validate`](https://pypi.org/project/ofplang-validate/) used by the CLI
-front door. The runner *library* never imports validate (and the per-tick replans
+front door. The runner *library* never imports validate (and the replans
 never re-validate), so it stays a one-shot CLI front door.
 
 For development, install editable with the test extra from a clone:
@@ -134,8 +134,12 @@ ofp-run replay <plan> --env <env> [-o OUT]
 ```
 
 `run` drives a v0 workflow to completion by replanning as it goes: each tick it
-renders the committed history as a status, calls the scheduler, and dispatches the
-newly-runnable work. `--boundary` supplies the whole-workflow I/O as one document —
+polls the backend and, when anything the scheduler reads has changed -- an operation
+finished, a machine went down, a pending activity came due -- renders the committed
+history as a status, calls the scheduler, and dispatches the newly-runnable work. A
+tick that changed none of those keeps the plan it already has, so a long protocol
+costs one solve per activity event rather than one per unit of its makespan; what is
+observed, and so the status produced, is the same either way. `--boundary` supplies the whole-workflow I/O as one document —
 a `boundary:` mapping with a `{spot, view}` descriptor per entry input / final
 output port. `spot` places a boundary Object on an environment spot (spec §6.8;
 Object ports only); `view` supplies an input's view value (unsupplied entry views
