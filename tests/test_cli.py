@@ -182,3 +182,44 @@ def test_run_no_validate_runs_invalid_v0(tmp_path):
         ]
     )
     assert code == EXIT_OK
+
+
+def test_run_unwritable_output_is_usage_error(tmp_path, capsys):
+    # The run completes, but `-o` points into a directory that does not exist. An
+    # output path that cannot be written is an input error like one that cannot be
+    # read (exit 2), not an execution failure, and it says which output it was.
+    out = tmp_path / "no_such_dir" / "status.yaml"
+    code = main(
+        [
+            "run",
+            str(EXAMPLES / "count_chain.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "count_chain.env.yaml"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_USAGE
+    assert "cannot write status" in capsys.readouterr().err
+
+
+def test_run_unwritable_boundary_out_still_emits_the_status(tmp_path, capsys):
+    # A secondary output that cannot be written must not cost the completed run its
+    # status document: the failure is reported and decides the exit code, but the
+    # remaining outputs are still written.
+    out = tmp_path / "status.yaml"
+    code = main(
+        [
+            "run",
+            str(EXAMPLES / "count_chain.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "count_chain.env.yaml"),
+            "--boundary-out",
+            str(tmp_path / "no_such_dir" / "boundary.yaml"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_USAGE
+    assert "cannot write result boundary" in capsys.readouterr().err
+    assert out.is_file()

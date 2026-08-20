@@ -157,12 +157,32 @@ def _read_document(path, what: str) -> tuple[dict | None, int | None]:
         return None, EXIT_USAGE
 
 
-def _emit(status: dict, output) -> None:
-    text = serialize_document(status)
-    if output:
-        Path(output).write_text(text, encoding="utf-8")
-    else:
+def _write(text: str, output, what: str) -> int | None:
+    """Write `text` to the `output` path (or stdout when unset), returning EXIT_USAGE
+    if the file could not be written.
+
+    An unwritable output path is an input error like an unreadable one
+    (`_read_document`), not an execution failure -- but it is discovered after the run
+    has already done its work, so the caller reports it, still attempts the other
+    outputs, and lets the run's own outcome win the exit code when the run failed.
+
+    `labcode`'s `lc run` carries a copy of this (the two CLIs are near-duplicates by
+    intent, so labcode does not depend on the `ofplang` umbrella): change one, change
+    the other.
+    """
+    if not output:
         sys.stdout.write(text)
+        return None
+    try:
+        Path(output).write_text(text, encoding="utf-8")
+    except OSError as exc:
+        print(f"ofp-run: cannot write {what} {str(output)!r}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    return None
+
+
+def _emit(status: dict, output) -> int | None:
+    return _write(serialize_document(status), output, "status")
 
 
 def _print_front_door(fd: FrontDoorResult) -> None:
@@ -247,14 +267,15 @@ def _cmd_run(args) -> int:
     # The result boundary is a run-local artifact (D28): the same schema as the
     # supplied boundary with the produced output views filled in, written separately
     # so the §6/§7 status document stays value-free.
+    write_err = None
     if args.boundary_out:
-        Path(args.boundary_out).write_text(
-            serialize_document(result.result_boundary), encoding="utf-8"
+        write_err = _write(
+            serialize_document(result.result_boundary), args.boundary_out, "result boundary"
         )
 
     # An activity failure stops the run without raising: the status is still emitted
     # (it carries the failed / cancelled activities), but the run counts as failed.
-    _emit(result.status, args.output)
+    write_err = _emit(result.status, args.output) or write_err
     if result.failed:
         # Report the failure reason (D36): its code and human-readable detail, from
         # the structured `failure` (a contract violation, a script error, or a
@@ -265,7 +286,7 @@ def _cmd_run(args) -> int:
         else:
             print("ofp-run: execution failed: an activity failed", file=sys.stderr)
         return EXIT_FAILED
-    return EXIT_OK
+    return write_err or EXIT_OK
 
 
 def _cmd_replay(args) -> int:
@@ -287,8 +308,7 @@ def _cmd_replay(args) -> int:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    _emit(status, args.output)
-    return EXIT_OK
+    return _emit(status, args.output) or EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
