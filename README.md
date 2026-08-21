@@ -187,6 +187,16 @@ with the same options and exit codes as above.
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.run`), shared
 across the organization's tools.
 
+## Examples
+
+[`examples/`](examples/README.md) holds runnable scenarios — supplied inputs and
+computed outputs, views routed across a composite boundary, a script process with
+contracts checked at runtime, re-routing around a device that goes down, and the
+drift fixed-interval polling costs. Each is a Python script rather than a CLI
+invocation, because what each one demonstrates is injected from code: a device
+model, a machine fault, a polling interval. Their output is committed under
+`examples/outputs/`, so an example can be read without being run.
+
 ## Tests
 
 ```sh
