@@ -187,6 +187,20 @@ with the same options and exit codes as above.
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.run`), shared
 across the organization's tools.
 
+## Feature support
+
+v0 defines seven optional features (spec §4.2), and a document requiring one an
+implementation does not have "is valid v0 but unsupported by that implementation"
+(§4.1). So `ofp-validate` accepting a workflow does not mean this runner can
+execute it:
+
+| v0 feature | `ofplang-run` |
+|---|---|
+| `python_script_processes` | **Supported** — the built-in device model runs the script and verifies its outputs (see above). |
+| `scheduling_policies` | Ignored, as in [`ofplang-schedule`](https://github.com/ofplang/schedule), which does the planning. |
+| `generic_processes` | **Not supported.** The front door's capability gate refuses it before anything runs, naming the process. |
+| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported** by the scheduler this runner replans through. There is no gate for them here yet, so such a workflow surfaces as a failed run (`cannot read workflow dataflow`) rather than as a clean up-front rejection. |
+
 ## Examples
 
 [`examples/`](examples/README.md) holds runnable scenarios — supplied inputs and
