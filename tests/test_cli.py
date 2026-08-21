@@ -13,6 +13,7 @@ import pytest
 from ofplang.run.cli import EXIT_OK, EXIT_USAGE, main
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+FIXTURES = Path(__file__).parent / "fixtures"
 _BROKEN_YAML = "a: [1, 2\nb: :::\n"
 
 
@@ -72,6 +73,27 @@ def test_run_no_validate_bypasses_front_door_on_malformed(tmp_path, capsys):
     )
     assert code == EXIT_USAGE
     assert "wrong_value_kind" in capsys.readouterr().err
+
+
+def test_run_structured_node_is_refused_before_running(capsys):
+    # A structured node is valid portable v0 (so validate has nothing to say) that this
+    # runner cannot execute -- spec 4.1's "valid v0 but unsupported". The capability
+    # gate refuses it up front, which makes it a usage error (exit 2) like any other
+    # workflow that never ran, rather than the failed *run* (exit 1) it used to report
+    # from inside the scheduler. The reason names the node and the v0 feature.
+    code = main(
+        [
+            "run",
+            str(FIXTURES / "structured_node.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "count_chain.env.yaml"),
+        ]
+    )
+    assert code == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unsupported" in err
+    assert "make_cups" in err
+    assert "node_map" in err
 
 
 def test_run_malformed_contract_is_caught_by_front_door(tmp_path, capsys):

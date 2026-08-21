@@ -16,6 +16,7 @@ import pytest
 from ofplang.run.app import (
     FrontDoorError,
     RunResult,
+    capability_gate,
     front_door_check,
     run_workflow,
 )
@@ -23,6 +24,8 @@ from ofplang.run.app import (
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
 SIMPLE_ENV = str(FIXTURES / "simple.env.yaml")
+# Valid v0 the runner cannot execute (spec 4.1); shared with test_cli.
+STRUCTURED_WF = str(FIXTURES / "structured_node.workflow.yaml")
 
 GENERIC_WF = """\
 spec_version: "0.0"
@@ -75,6 +78,36 @@ def test_front_door_rejects_generics(tmp_path):
     assert not fd.ok
     assert fd.unsupported is not None
     assert "generic" in fd.unsupported
+
+
+def test_front_door_rejects_structured_node():
+    # A structured node is valid v0 this runner cannot execute (spec 4.1). Without the
+    # gate it reached the scheduler and came back as a *failed run*, though nothing had
+    # run; the gate answers before the run starts, naming the node and the feature.
+    fd = front_door_check(STRUCTURED_WF, validate=False)  # isolate the capability gate
+    assert not fd.ok
+    assert fd.unsupported is not None
+    assert "make_cups" in fd.unsupported
+    assert "node_map" in fd.unsupported
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"processes": ["not a mapping"]},
+        {"processes": {"main": "not a mapping"}},
+        {"processes": {"main": {"body": "not a mapping"}}},
+        {"processes": {"main": {"body": {"nodes": "not a list"}}}},
+        {"processes": {"main": {"body": {"nodes": ["not a mapping"]}}}},
+        {"processes": {"main": {"body": {"nodes": [{"id": "n", "kind": {"a": 1}}]}}}},
+    ],
+)
+def test_capability_gate_tolerates_a_malformed_document(document):
+    # The gate is handed whatever the caller has -- including a document validate has
+    # already found errors in, since `front_door_check` gates before weighing the
+    # diagnostics -- so a shape it did not expect must not raise. Saying nothing leaves
+    # the complaining to validate, which reports it with a position.
+    assert capability_gate(document) is None
 
 
 def test_front_door_expands_import(tmp_path):

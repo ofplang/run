@@ -1,0 +1,31 @@
+# Valid portable v0 (spec §17) that this runner cannot execute -- the case spec §4.1
+# calls "valid v0 but unsupported by that implementation".
+#
+# `main` invokes `make` once per element of `labels`, so the node's `cup` output leaves
+# it as `Array<Cup>` rather than `Cup`. A structured node reshapes dataflow that way,
+# and neither the runner nor the scheduler it plans through has a representation for
+# it; the capability gate is what says so before a run starts.
+spec_version: "0.0"
+features:
+  - node_map
+types:
+  Cup: {domain: object}
+processes:
+  make:
+    kind: atomic
+    inputs: {label: {type: String, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}}
+    objects:
+      create: [outputs.cup]
+  main:
+    kind: composite
+    inputs: {labels: {type: Array<String>, phase: data}}
+    body:
+      nodes:
+        - id: make_cups
+          kind: map
+          process: make
+          each:
+            label: {from: inputs.labels}
+      returns: {}
+entry: main

@@ -199,7 +199,7 @@ execute it:
 | `python_script_processes` | **Supported** — the built-in device model runs the script and verifies its outputs (see above). |
 | `scheduling_policies` | Ignored, as in [`ofplang-schedule`](https://github.com/ofplang/schedule), which does the planning. |
 | `generic_processes` | **Not supported.** The front door's capability gate refuses it before anything runs, naming the process. |
-| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported** by the scheduler this runner replans through. There is no gate for them here yet, so such a workflow surfaces as a failed run (`cannot read workflow dataflow`) rather than as a clean up-front rejection. |
+| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported.** The front door's capability gate refuses a structured node before anything runs, naming the node and the feature — a structured node reshapes dataflow (lifting an output to an `Array`, threading a value across iterations, leaving an arm unrun) in ways neither this runner nor the scheduler it plans through represents. |
 
 ## Examples
 

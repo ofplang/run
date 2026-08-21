@@ -52,6 +52,19 @@ def _import_key_present(obj: Any) -> bool:
 
 UNEXPANDED_IMPORT = "workflow contains a $import; it must be expanded before running"
 
+# Structured node kind -> the v0 feature it requires (spec 4.3). The runner has no
+# representation for a structured node -- it reshapes dataflow, lifting an output to
+# an Array (`map`), threading a value across iterations (`fold` / `do_while`) or
+# leaving one arm unrun (`branch`) -- and the scheduler it plans through refuses them
+# for the same reason. Named here so the gate can answer with the feature, and so a
+# workflow meets that answer before anything runs rather than mid-flight.
+_STRUCTURED_KINDS = {
+    "map": "node_map",
+    "fold": "node_fold",
+    "do_while": "node_do_while",
+    "branch": "node_branch",
+}
+
 
 def capability_gate(document: dict | None) -> str | None:
     """Return a reason if the (import-expanded) workflow uses a valid-v0 feature the
@@ -60,20 +73,42 @@ def capability_gate(document: dict | None) -> str | None:
     `document` is the expanded workflow document the front door already resolved
     (see `front_door_check`), so `$import` is normally gone by the time we get here;
     the `$import` check remains as a defense for a caller that hands over an
-    unexpanded document. The runner also does not instantiate generic processes
-    (`generic_processes`), which would otherwise surface as a confusing deep error.
+    unexpanded document. Two features are gated: the runner neither instantiates
+    generic processes (`generic_processes`) nor executes a structured node
+    (`node_map` / `node_fold` / `node_do_while` / `node_branch`), and either would
+    otherwise surface as a confusing deep error -- the structured node as a *failed
+    run*, though nothing ever ran.
+
     `None` (a load/expand failure) gates nothing -- that failure is already a
-    diagnostic. Always checked, independent of the validate pass."""
+    diagnostic. Always checked, independent of the validate pass, which is also why
+    every step here is shape-guarded: the gate is handed whatever the caller has,
+    including a document validate has already found errors in, and answering `None`
+    for a malformed one leaves the complaining to validate instead of raising."""
     if not isinstance(document, dict):
         return None
     if _import_key_present(document):
         return UNEXPANDED_IMPORT
-    for name, proc in (document.get("processes") or {}).items():
-        if isinstance(proc, dict) and proc.get("type_params") is not None:
+    processes = document.get("processes")
+    if not isinstance(processes, dict):
+        return None
+    for name, proc in processes.items():
+        if not isinstance(proc, dict):
+            continue
+        if proc.get("type_params") is not None:
             return (
                 f"process {name!r} uses generic type parameters "
                 "(generic_processes), which the runner does not support"
             )
+        body = proc.get("body")
+        nodes = body.get("nodes") if isinstance(body, dict) else None
+        for node in nodes if isinstance(nodes, list) else []:
+            kind = node.get("kind") if isinstance(node, dict) else None
+            feature = _STRUCTURED_KINDS.get(kind) if isinstance(kind, str) else None
+            if feature is not None:
+                return (
+                    f"process {name!r} contains structured node {node.get('id')!r} "
+                    f"({feature}), which the runner does not support"
+                )
     return None
 
 
