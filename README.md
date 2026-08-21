@@ -179,8 +179,10 @@ the final execution status as YAML (`-o`, else stdout). Exit codes: `0` success,
 `1` execution failed (an activity failed, or a replan is infeasible), `2`
 usage/input error.
 
-This tool is also intended to be exposed as the `run` subcommand of the umbrella
-`ofp` CLI (a separate repository in the `ofplang` organization).
+This tool is also the `run` subcommand of the umbrella `ofp` CLI
+([`ofplang`](https://pypi.org/project/ofplang/)), which forwards to it in-process
+with this CLI's own subcommands intact: `ofp run run …`, `ofp run replay …`, each
+with the same options and exit codes as above.
 
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.run`), shared
 across the organization's tools.
