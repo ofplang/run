@@ -77,6 +77,8 @@ def _op_label(op) -> str:
     means nothing to the operator reading the line)."""
     if op.kind == "transport":
         return f"transport {op.from_spot} -> {op.to_spot}"
+    if op.kind == "replenishment":
+        return f"replenishment of {op.devices[0] if op.devices else '?'} by {op.replenisher}"
     return f"process {op.process!r} (mode {op.mode!r})"
 
 

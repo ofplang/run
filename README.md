@@ -64,9 +64,15 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   The starting levels are *not* echoed into the result boundary — that document is
 >   written to be fed back, and a second run replays no history, so echoing them
 >   would hand it stock the first run already spent; feed back the status instead.
->   An environment that also declares **replenishments** is refused before the run
->   starts: the scheduler would plan refills, and executing one needs a dispatch this
->   runner does not have yet.
+> - **Replenishment** (`ofplang-schedule` §4.7.1) — where the environment says a
+>   replenisher can reach a device, a stock that would run out is **topped up rather
+>   than ending the run**. The scheduler places the refill; the runner dispatches it
+>   like any other activity, and it holds *both* machines while it works — the device
+>   being filled and the replenisher filling it — so it can never overlap the work it
+>   feeds. It moves no material and reports no level: a level is derived from what the
+>   run started with plus its history, never observed. A refill that fails stops the
+>   run like any activity failure. `Backend` gained `dispatch_replenishment` for this,
+>   which is why 0.3.0 is a breaking release for a custom backend.
 > - **Python script processes** (spec §22, `python_script_processes`) — an atomic
 >   Pure-Data process may carry a `script: {language: python, code: …}` section.
 >   The built-in device model runs it: the input port values are bound as locals,

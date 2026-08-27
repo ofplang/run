@@ -128,7 +128,15 @@ class Runner:
             rec.uuid = self.sim.dispatch_transport(
                 act.get("transporter"), act["from_spot"], act["to_spot"], duration=duration
             )
-        else:  # pragma: no cover - schema guarantees processing/transport/relay
+        elif rec.kind == "replenishment":
+            # A plan the scheduler produced may carry refills, and replay's whole
+            # claim is that it reproduces such a plan. Only the timing and the
+            # occupancy matter here: replay drives the virtual-time simulator, so
+            # there is no script to run and nothing physical is put anywhere.
+            rec.uuid = self.sim.dispatch_replenishment(
+                act["replenisher"], act["device"], act.get("amounts") or {}, duration=duration
+            )
+        else:  # pragma: no cover - schema guarantees the kinds above, or relay
             raise RunnerError(f"unknown activity kind: {rec.kind!r}")
         rec.dispatched = True
         rec.status = "running"

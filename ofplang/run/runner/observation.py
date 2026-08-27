@@ -82,9 +82,16 @@ def entry_doc(
     entry["end"] = committed.end
     if committed.kind == "transport":
         entry["moved"] = {"view": deepcopy(moved)}
-    else:
+    elif committed.kind == "processing":
         entry["inputs"] = _view_block(inputs)
         entry["outputs"] = _view_block(outputs)
+    else:
+        # Named rather than left to an `else`, so a kind with nothing to observe
+        # cannot arrive here and be written up as a processing with empty ports. The
+        # runner decides what is recorded (a refill is skipped: it has no ports and
+        # no views, and what it did is a level, which is derived rather than
+        # observed); this refuses to invent an entry for anything else.
+        raise ValueError(f"an activity of kind {committed.kind!r} has nothing to observe")
     return entry
 
 

@@ -72,7 +72,7 @@ def test_provenance_keys_tell_the_two_known_kinds_apart():
     )
 
 
-@pytest.mark.parametrize("kind", ["replenishment", "relay", None, "typo"])
+@pytest.mark.parametrize("kind", ["relay", None, "typo"])
 def test_an_unidentifiable_kind_is_refused_not_guessed(kind):
     """A kind with no provenance rule must fail, not borrow the transport's.
 
@@ -86,9 +86,19 @@ def test_an_unidentifiable_kind_is_refused_not_guessed(kind):
         RollingRunner._provenance_key({"kind": kind, "id": "replenishment_0"})
 
 
+def test_a_refill_is_identified_by_its_id():
+    """A refill has no workflow provenance -- the solver put it there, the workflow
+    did not ask for it -- so its `id` is the identity. Two refills must not share a
+    key, which is exactly what borrowing the transport shape used to do."""
+    first = {"kind": "replenishment", "id": "replenishment_0"}
+    second = {"kind": "replenishment", "id": "replenishment_1"}
+    assert RollingRunner._provenance_key(first) == ("replenishment", "replenishment_0")
+    assert RollingRunner._provenance_key(first) != RollingRunner._provenance_key(second)
+
+
 def test_two_activities_without_provenance_would_have_collided():
-    """Why the refusal above is worth having: had the transport shape been borrowed,
-    these two distinct activities would have shared one key."""
+    """Why the refusal is worth having: had the transport shape been borrowed, these
+    two distinct activities would have shared one key."""
     def borrowed(activity):  # what the fall-through used to compute
         arc = activity.get("arc") or {}
 

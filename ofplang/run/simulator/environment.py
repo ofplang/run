@@ -1,8 +1,8 @@
 """The physical environment the simulator executes against (spec §5).
 
 The simulator is a *physical-only* backend (dev-notes design.md D10): it knows
-devices, spots, transporters, transport durations, and per-process capabilities,
-but nothing about workflows or plans. This module loads the execution
+devices, spots, transporters, replenishers, transport and refill durations, and
+per-process capabilities, but nothing about workflows or plans. This module loads the execution
 environment definition (§5) into an immutable model the simulator resolves
 dispatches against (D14: the simulator reads the environment itself).
 
@@ -13,7 +13,7 @@ validation, spec §9.1) and extracts just what the simulator needs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -59,6 +59,19 @@ class Environment:
     # and treated as duration 0 on lookup.
     transports: dict[tuple[str, str, str], int]
     processes: dict[str, Process]
+    # Replenishers (§5.6) and the (replenisher, device) -> duration table (§5.7).
+    # A third kind of machine, sharing the one id space with devices and
+    # transporters: a refill holds the device it fills *and* the replenisher that
+    # fills it, so the simulator has to know they exist to keep them exclusive.
+    # Defaulted so an environment that refills nothing builds unchanged.
+    replenishers: frozenset[str] = frozenset()
+    replenishments: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    def refill_duration(self, replenisher: str, device: str) -> int | None:
+        """How long `replenisher` takes to refill `device`, or None if it cannot
+        (no table entry, §5.7). A missing pair means "cannot refill it" rather than
+        "instantly", the same reading `transport_duration` gives a missing route."""
+        return self.replenishments.get((replenisher, device))
 
 
 def environment_from_dict(raw: dict) -> Environment:
@@ -88,6 +101,13 @@ def environment_from_dict(raw: dict) -> Environment:
     for t in raw.get("transports") or []:
         transports[(t["transporter"], t["from"], t["to"])] = int(t["duration"])
 
+    # Replenishers and the refill-duration table keyed by (replenisher, device),
+    # exactly as transporters and transports are (§5.6, §5.7).
+    replenishers = {r["id"] for r in raw.get("replenishers") or []}
+    replenishments: dict[tuple[str, str], int] = {}
+    for r in raw.get("replenishments") or []:
+        replenishments[(r["replenisher"], r["device"])] = int(r["duration"])
+
     # Processes -> modes. A mode with no explicit `id` is assigned the decimal
     # string of its position ("0", "1", ...), matching how a plan records the
     # selected mode (§5.5).
@@ -113,6 +133,8 @@ def environment_from_dict(raw: dict) -> Environment:
         transporters=frozenset(transporters),
         transports=transports,
         processes=processes,
+        replenishers=frozenset(replenishers),
+        replenishments=replenishments,
     )
 
 

@@ -25,7 +25,11 @@ real-hardware backend:
 
 Only the methods the runner actually calls live here. Simulator-specific surface
 -- fault/failure injection, `observe`, `remove`, `dispatch_relay` -- is not part
-of the contract. The replay `Runner` (deterministic plan replay) targets the
+of the contract. The contract does grow: `dispatch_replenishment` arrived in 0.3.0,
+and because conformance here is structural, a backend that predates it stops being
+a `Backend`. That was the deliberate choice over an optional-capability probe --
+a runner that can plan refills but not carry them out is a worse thing to ship than
+a version bump. The replay `Runner` (deterministic plan replay) targets the
 simulator directly and is not backend-injectable, so its use of `now` is not
 required here.
 
@@ -63,12 +67,12 @@ class Backend(Protocol):
         """The ids of machines currently unavailable, so the runner can schedule
         against a reduced environment (a re-route). Empty when all are up.
 
-        A machine is a **device or a transporter**: an id here drops the device's
-        modes / its spots' transports (per the runner's `DownScope`), or every
-        transport the transporter carries. The name is historical -- devices came
-        first -- and the two share one id space, so a device and a transporter with
-        the same id cannot be told apart here (the scheduler warns about such an
-        environment)."""
+        A machine is a **device, a transporter or a replenisher**: an id here drops
+        the device's modes / its spots' transports (per the runner's `DownScope`),
+        every transport the transporter carries, or every refill the replenisher
+        performs. The name is historical -- devices came first -- and the three share
+        one id space, so machines with the same id cannot be told apart here (the
+        scheduler refuses such an environment: `machine_id_conflict`)."""
         ...
 
     def place(self, spot: str, obj_id: str | None = None) -> str:
@@ -114,6 +118,29 @@ class Backend(Protocol):
         (e.g. a real-hardware one) can act on what it is carrying. It is advisory and
         best-effort: `None` when the runner cannot resolve it, and the built-in
         simulator ignores it entirely (a physical move needs no view)."""
+        ...
+
+    def dispatch_replenishment(
+        self,
+        replenisher: str,
+        device: str,
+        amounts: dict | None = None,
+        duration: int | None = None,
+    ) -> str:
+        """Start a refill of `device` by `replenisher` and return its handle
+        immediately. `duration` is advisory (see `dispatch_processing`).
+
+        A refill occupies **both** machines for its visit -- the device being filled
+        and the replenisher filling it -- which is the one thing about a refill the
+        scheduler relies on: it plans them exclusive, so a backend that let them
+        overlap would be running a schedule nobody proved.
+
+        `amounts` is what the visit puts in, ``{resource: amount}``, derived by the
+        scheduler as a fill to capacity. It is passed for a backend that really does
+        put something in; a simulator need not read it. Nothing here reports a level
+        back: a stock's level is never observed, only replayed from what the run
+        started with plus its history, so there is no place for a backend to disagree.
+        """
         ...
 
     def state(self, uuid: str) -> dict:

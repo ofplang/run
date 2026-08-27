@@ -243,32 +243,6 @@ def _reduce_environment(
     return reduced
 
 
-def _refusable_replenishment(environment: dict) -> bool:
-    """Whether this environment would have the scheduler plan a refill this runner
-    cannot carry out.
-
-    The scheduler only proposes refills when the consumable model is on (some invoked
-    mode declares `consumption`) *and* a `replenishments` entry says some replenisher
-    can reach some device. When both hold, a plan carries `kind: replenishment`
-    activities -- and there is no third dispatch on `Backend` to execute one, so the
-    runner would take the environment, schedule happily, and only then fail on the
-    first refill it was asked to start.
-
-    Refusing before anything runs is the honest version of that, and it says which
-    part of the environment to change. Note this reads the *declared* modes rather
-    than the invoked ones: the runner has no instance to ask, so an environment whose
-    consuming modes this particular workflow never invokes is refused too. That is
-    the conservative direction -- it never lets an unexecutable plan start.
-    """
-    if not (environment.get("replenishments") or []):
-        return False
-    return any(
-        mode.get("consumption")
-        for process in (environment.get("processes") or {}).values()
-        for mode in (process.get("modes") or [])
-    )
-
-
 class RollingRunner:
     """Drives workflow + environment (+ boundary) to completion by replanning.
 
@@ -335,15 +309,6 @@ class RollingRunner:
         # them, so a lab that declares stocks runs without the boundary stating what
         # it started with. Off is always a relaxation.
         self._ignore_resources = ignore_resources
-        # A refill is planned but not executable here (see `_refusable_replenishment`).
-        # Refuse before anything is dispatched rather than mid-run, and name both ways
-        # out.
-        if not ignore_resources and _refusable_replenishment(self._environment):
-            raise RunnerError(
-                "the environment declares replenishments and modes that consume, so "
-                "the scheduler would plan refills this runner cannot execute; remove "
-                "`replenishments` or run with resources ignored"
-            )
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
         # outputs from inputs; without one the built-in `script_device_model` is used
@@ -1160,10 +1125,15 @@ class RollingRunner:
         stash, popped here; outputs are the values recorded at completion. Values are
         deep-copied by the recorder, so this is faithful to the moment of completion.
 
-        The two kinds are named rather than split as "transport or else", so a kind
-        added later has to say what it observes instead of being filed as a processing
-        with no inputs and no outputs -- a record that looks like an answer and is
-        not."""
+        The kinds are named rather than split as "transport or else", so a kind added
+        later has to say what it observes instead of being filed as a processing with
+        no inputs and no outputs -- a record that looks like an answer and is not.
+
+        A refill records **nothing**. The observation document is the value layer's
+        companion: what each activity's ports held (D38). A refill has no ports and
+        no views; what it did is a level, and a level is derived from the status, not
+        observed (§4.7.2). An empty record would only say "a refill happened", which
+        the status already says with times."""
         assert self._obs is not None
         cap = self._pending_capture.pop(rec.uuid, {}) if rec.uuid is not None else {}
         if rec.kind == "transport":
@@ -1175,7 +1145,7 @@ class RollingRunner:
                 outputs=outputs or {},
                 time_section=self._last_time,
             )
-        else:
+        elif rec.kind != "replenishment":
             raise RunnerError(f"cannot observe an activity of kind {rec.kind!r}")
 
     def _next_time(self, pending: list[dict]) -> int:
@@ -1207,11 +1177,12 @@ class RollingRunner:
         # plan, D23). The committed record's `end` is the *planned* expected finish:
         # the runner does not know the actual until the op is observed complete, so
         # it reports the plan and lets `_poll` overwrite `end` with the poll time.
-        # A processing duration must stay positive (§5.5); a transport may be zero.
+        # A processing duration must stay positive (§5.5), and so must a refill's
+        # (§5.7); only a transport may be zero, a same-spot hop being a real no-op.
         if self.duration_model is None:
             actual = planned
         else:
-            floor = 1 if kind == "processing" else 0
+            floor = 0 if kind == "transport" else 1
             actual = max(floor, int(self.duration_model(activity, planned)))
         end = start + planned
 
@@ -1297,7 +1268,19 @@ class RollingRunner:
             )
             if self._obs is not None:
                 self._pending_capture[uuid] = {"moved": view}
-        else:  # pragma: no cover - schema guarantees processing/transport/relay
+        elif kind == "replenishment":
+            # A refill carries no workflow provenance and no values: the scheduler
+            # placed it because a stock would otherwise run out, and `amounts` is
+            # what it derived the visit puts in. Nothing is captured for the
+            # observation record -- there is no view to observe (see
+            # `_record_observation`).
+            uuid = self.sim.dispatch_replenishment(
+                activity["replenisher"],
+                activity["device"],
+                activity.get("amounts") or {},
+                duration=actual,
+            )
+        else:  # pragma: no cover - schema guarantees the kinds above, or relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
         self.log.add(Committed(activity, kind, "running", start, end, uuid=uuid))
 
@@ -1471,6 +1454,15 @@ class RollingRunner:
                 endpoint(arc.get("to")),
                 activity.get("seq"),
             )
+        if kind == "replenishment":
+            # A refill has no workflow provenance -- it exists because the solver put
+            # it there, not because the workflow asked for it -- so its `id` is the
+            # identity. That is stable exactly where it has to be: the scheduler
+            # numbers new candidates around the ids the status already uses, so a
+            # refill that has *started* keeps its id across replans, while a pending
+            # one may be renumbered and does not need to survive (each replan
+            # replaces the pending set wholesale).
+            return ("replenishment", activity.get("id"))
         raise RunnerError(f"cannot identify an activity of kind {kind!r} across replans")
 
     def _collect_warnings(self, report) -> None:

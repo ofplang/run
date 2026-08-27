@@ -11,8 +11,8 @@ What is pinned here:
 
   - the door: `boundary.inventories.levels` reaches the scheduler as the §6.10
     section of the status, on the first replan and on every one after it;
-  - the refusal: an environment whose refills the runner cannot execute is rejected
-    before any work is dispatched, rather than crashing on the first refill;
+  - the execution: a refill is dispatched like any other activity, holding the
+    device it fills and the replenisher that fills it, and moving no material;
   - the off switch (`ignore_resources`, §4.7.3) and the warning it raises;
   - that the result boundary does **not** echo the starting levels back.
 
@@ -30,6 +30,7 @@ pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import RollingRunner, RunnerError, load_document  # noqa: E402
 from ofplang.run.runner.rolling import DownScope, _reduce_environment  # noqa: E402
+from ofplang.run.simulator import SimulatorError  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 WF = str(FIXTURES / "simple.workflow.yaml")
@@ -99,37 +100,85 @@ def test_an_environment_that_does_not_consume_needs_no_inventories():
     assert "inventories" not in status
 
 
-# -- refills the runner cannot execute ---------------------------------------
+# -- refills, executed ------------------------------------------------------
 
 
-def test_a_refillable_environment_is_refused_before_anything_runs():
-    """The scheduler would answer this environment with `kind: replenishment`, which
-    has no dispatch here. Refusing at construction is the honest form of that; the
-    alternative is scheduling happily and dying on the first refill."""
-    with pytest.raises(RunnerError, match="replenishments"):
-        RollingRunner(WF, REFILL_ENV, boundary=_boundary(0), random_seed=0)
+def test_a_refillable_environment_runs_and_carries_out_the_refill():
+    """An empty stock is topped up rather than ending the run: the scheduler places a
+    refill, the runner dispatches it, and it appears in the history as a completed
+    activity like any other."""
+    runner = RollingRunner(WF, REFILL_ENV, boundary=_boundary(0), random_seed=0)
+    status = runner.run()
+    assert not runner.failed
+    refills = [a for a in status["activities"] if a.get("kind") == "replenishment"]
+    assert len(refills) == 1
+    assert refills[0]["status"] == "completed"
+    assert refills[0]["device"] == "station_1" and refills[0]["replenisher"] == "dispenser"
+    assert refills[0]["amounts"] == {"reagent": 4}  # a refill fills to capacity
 
 
-def test_the_refusal_names_both_ways_out():
-    with pytest.raises(RunnerError) as excinfo:
-        RollingRunner(WF, REFILL_ENV, boundary=_boundary(0), random_seed=0)
-    message = str(excinfo.value)
-    assert "replenishments" in message and "resources ignored" in message
+def test_the_refill_holds_both_machines_while_it_works():
+    """The scheduler plans refills exclusive on both machines, so the simulator has to
+    keep them that way -- a backend that let them overlap would be running a schedule
+    nobody proved. `dispatch_replenishment` refuses a double booking."""
+    from ofplang.run.simulator import VirtualTimeSimulator
+
+    sim = VirtualTimeSimulator(load_document(REFILL_ENV))
+    sim.dispatch_replenishment("dispenser", "station_1", {"reagent": 4}, duration=2)
+    with pytest.raises(SimulatorError):  # the reader is held
+        sim.dispatch_processing("target", "m0", duration=2)
+    with pytest.raises(SimulatorError):  # and so is the dispenser
+        sim.dispatch_replenishment("dispenser", "station_1", {"reagent": 4}, duration=2)
 
 
-def test_refills_are_only_refused_when_something_consumes():
-    """A refill table over modes that draw nothing constrains nothing, so the
-    scheduler proposes no refill and there is nothing to refuse."""
+def test_both_machines_are_released_when_the_refill_completes():
+    from ofplang.run.simulator import VirtualTimeSimulator
+
+    sim = VirtualTimeSimulator(load_document(REFILL_ENV))
+    uuid = sim.dispatch_replenishment("dispenser", "station_1", {"reagent": 4}, duration=2)
+    sim.advance(2)
+    assert sim.state(uuid)["status"] == "completed"
+    sim.dispatch_replenishment("dispenser", "station_1", {"reagent": 4}, duration=2)
+
+
+def test_a_refill_leaves_the_spots_alone():
+    """The scheduler holds the *device* for a refill, not its spots, so material
+    resting on a stage does not stop the stage's device being topped up -- and a
+    refill moves nothing."""
+    from ofplang.run.simulator import VirtualTimeSimulator
+
+    sim = VirtualTimeSimulator(load_document(REFILL_ENV))
+    sim.place("station_1.core", "plate-1")
+    uuid = sim.dispatch_replenishment("dispenser", "station_1", {"reagent": 4}, duration=2)
+    sim.advance(2)
+    assert sim.state(uuid)["status"] == "completed"
+    assert sim.spot_state("station_1.core") == "plate-1"
+
+
+def test_a_refill_a_replenisher_cannot_perform_is_refused():
+    from ofplang.run.simulator import VirtualTimeSimulator
+
+    sim = VirtualTimeSimulator(load_document(REFILL_ENV))
+    with pytest.raises(SimulatorError):  # no (dispenser, station_0) entry
+        sim.dispatch_replenishment("dispenser", "station_0")
+    with pytest.raises(SimulatorError):
+        sim.dispatch_replenishment("no_such_machine", "station_1", duration=2)
+
+
+def test_a_refill_table_over_modes_that_draw_nothing_plans_no_refill():
+    """Declaring a way to refill a stock nothing consumes constrains nothing."""
     env = load_document(REFILL_ENV)
     del env["processes"]["target"]["modes"][0]["consumption"]
-    RollingRunner(WF, env, random_seed=0).run()  # must not raise
+    status = RollingRunner(WF, env, random_seed=0).run()
+    assert not [a for a in status["activities"] if a.get("kind") == "replenishment"]
 
 
-def test_ignoring_resources_makes_a_refillable_environment_runnable():
-    """With the model off no refill is planned, so the refusal does not apply."""
+def test_ignoring_resources_plans_no_refill_either():
+    """With the model off there is nothing to run out of, so nothing to top up."""
     runner = RollingRunner(WF, REFILL_ENV, random_seed=0, ignore_resources=True)
-    runner.run()
+    status = runner.run()
     assert not runner.failed
+    assert not [a for a in status["activities"] if a.get("kind") == "replenishment"]
 
 
 # -- the off switch ----------------------------------------------------------
@@ -198,3 +247,86 @@ def test_reduction_leaves_the_caller_environment_alone():
     before = copy.deepcopy(env)
     _reduce_environment(env, {"dispenser"})
     assert env == before
+
+
+# -- the replay path ---------------------------------------------------------
+
+
+def test_replay_reproduces_a_plan_that_carries_a_refill():
+    """`ofp-run replay` claims to reproduce a plan the scheduler produced, and the
+    scheduler produces plans with refills. Replay drives the virtual-time simulator,
+    so only the timing and the occupancy are at stake -- but a plan it cannot run at
+    all is a hole in that claim, and it was one."""
+    from ofplang.schedule import schedule
+
+    from ofplang.run.runner import Runner
+
+    report = schedule(WF, REFILL_ENV, document_path={
+        "inventories": {"levels": {"station_1": {"reagent": 0}}}, "activities": []
+    })
+    assert report.plan is not None, [d.code for d in report.diagnostics]
+    assert [a for a in report.plan["activities"] if a["kind"] == "replenishment"]
+
+    status = Runner(report.plan, load_document(REFILL_ENV)).run()
+    replayed = [a for a in status["activities"] if a.get("kind") == "replenishment"]
+    assert len(replayed) == 1
+    assert all(a["status"] == "completed" for a in status["activities"])
+    # The replay reproduces the plan's own timing.
+    planned = next(a for a in report.plan["activities"] if a["kind"] == "replenishment")
+    assert (replayed[0]["start"], replayed[0]["end"]) == (planned["start"], planned["end"])
+
+
+# -- availability -----------------------------------------------------------
+
+
+def test_a_down_replenisher_is_scheduled_around():
+    """A replenisher can go down like any other machine, and the reduction drops the
+    refills it would have performed. With no other way to top the stock up the replan
+    is infeasible -- which is the honest answer, and the first time this path has been
+    reachable at all (nothing used to report a replenisher down)."""
+    from ofplang.run.simulator import DeviceDown, VirtualTimeSimulator
+
+    def factory(environment):
+        sim = VirtualTimeSimulator(environment)
+        sim.schedule_device_down(0, "dispenser")
+        return sim
+
+    runner = RollingRunner(
+        WF, REFILL_ENV, boundary=_boundary(0), backend_factory=factory, random_seed=0
+    )
+    with pytest.raises(RunnerError, match="infeasible"):
+        runner.run()
+    assert DeviceDown is not None  # the injection API this test drives
+
+
+def test_a_replenisher_is_a_machine_the_simulator_knows():
+    """Fault injection used to accept only devices and transporters, so a down
+    replenisher could not be expressed."""
+    from ofplang.run.simulator import UnknownReference, VirtualTimeSimulator
+
+    sim = VirtualTimeSimulator(load_document(REFILL_ENV))
+    sim.schedule_device_down(1, "dispenser")  # must not raise
+    with pytest.raises(UnknownReference):
+        sim.schedule_device_down(1, "no_such_machine")
+
+
+# -- variance ---------------------------------------------------------------
+
+
+def test_variance_cannot_crush_a_refill_to_nothing():
+    """A refill's duration is positive (§5.7), so the variance floor is 1 as it is for
+    a processing -- only a transport may be zero, a same-spot hop being a real no-op.
+    A zero-length refill would be a visit that held two machines for no time."""
+    runner = RollingRunner(
+        WF,
+        REFILL_ENV,
+        boundary=_boundary(0),
+        random_seed=0,
+        poll_interval=1,
+        running_task_margin=1,
+        duration_model=lambda activity, planned: 0,
+    )
+    status = runner.run()
+    for activity in status["activities"]:
+        if activity.get("kind") == "replenishment":
+            assert activity["end"] > activity["start"]

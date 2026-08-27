@@ -209,7 +209,7 @@ class _Op:
     """
 
     uuid: str
-    kind: str  # "processing" | "transport"
+    kind: str  # "processing" | "transport" | "replenishment"
     start: int
     end: int
     seq: int  # dispatch order, for a deterministic tie-break on equal end times
@@ -221,6 +221,16 @@ class _Op:
     # transport: the physical hop.
     from_spot: str | None
     to_spot: str | None
+    # replenishment: the machine performing the refill (§5.6). The device being
+    # filled is in `devices`, because that is what "this operation holds it" means
+    # everywhere else; this is the second machine, held the way a transport holds
+    # its transporter.
+    replenisher: str | None = None
+    # replenishment: what the visit puts in, ``{resource: amount}`` (§6.9). The
+    # physical simulator does not model levels -- nothing observes a stock, so the
+    # scheduler derives every level from the starting one plus the history (§4.7.2)
+    # -- but a refill-running backend acts on this, so it is recorded.
+    amounts: dict | None = None
     # Value seam (D26/D27): the output signature this operation was dispatched with
     # -- a mapping ``{port: value-shape descriptor}`` (None = a legacy dispatch with
     # no signature; then no outputs are ever attached, so `state` / `observe` stay
@@ -317,6 +327,7 @@ class Simulator(Backend):
         # material in a spot does not occupy its device).
         self._busy_devices: set[str] = set()
         self._busy_transporters: set[str] = set()
+        self._busy_replenishers: set[str] = set()
 
         # Operation registry (running and completed), keyed by id.
         self._ops: dict[str, _Op] = {}
@@ -551,6 +562,65 @@ class Simulator(Backend):
             view=view,
         )
 
+    def dispatch_replenishment(
+        self,
+        replenisher: str,
+        device: str,
+        amounts: dict | None = None,
+        duration: int | None = None,
+    ) -> str:
+        """Dispatch a refill of `device` by `replenisher` (SPEC §4.7.1). `duration`
+        defaults to the environment's refill table (§5.7). Returns the operation id.
+
+        Occupies **both** machines for the visit: the device being filled and the
+        replenisher doing the filling. That is the whole physical content of a refill
+        here -- a stock's *level* is not modelled, because nothing observes one. The
+        scheduler derives every level from what the run started with plus the history
+        (§4.7.2), so a simulator that tracked levels would be a second opinion nobody
+        asked for. `amounts` is recorded for a backend that really does put something
+        in, and otherwise unused.
+
+        Spots are deliberately untouched. The scheduler holds the *device* for a
+        refill, not its spots, so material sitting on a stage does not stop the stage's
+        device being topped up -- and a refill moves nothing.
+        """
+        if device not in self._env.devices:
+            raise UnknownReference(f"unknown device: {device}")
+        if replenisher not in self._env.replenishers:
+            raise UnknownReference(f"unknown replenisher: {replenisher}")
+        if duration is None:
+            dur = self._env.refill_duration(replenisher, device)
+            if dur is None:
+                raise UnknownReference(
+                    f"{replenisher} cannot refill {device}: no entry in replenishments"
+                )
+        else:
+            dur = int(duration)
+        if dur <= 0:
+            raise ValueError(f"a refill duration must be positive, got {dur}")
+
+        # Preconditions (D16): both machines idle. A refill is exclusive on each, so
+        # a plan that overlapped one with other work is rejected here rather than
+        # silently double-booking a machine.
+        self._require_devices_free((device,))
+        if replenisher in self._busy_replenishers:
+            raise ResourceBusy(f"replenisher busy: {replenisher}")
+
+        self._busy_devices.add(device)
+        self._busy_replenishers.add(replenisher)
+        return self._register(
+            kind="replenishment",
+            duration=dur,
+            devices=(device,),
+            transporter=None,
+            input_spots=(),
+            output_spots=(),
+            from_spot=None,
+            to_spot=None,
+            replenisher=replenisher,
+            amounts=dict(amounts or {}),
+        )
+
     def dispatch_relay(self, *args, **kwargs):
         """Reject a relay dispatch: a relay is a scheduling junction, not a
         physical operation (D14). The runner keeps relays as bookkeeping."""
@@ -581,6 +651,8 @@ class Simulator(Backend):
         definition=None,
         view=None,
         node=None,
+        replenisher=None,
+        amounts=None,
     ) -> str:
         """Record a running operation over ``[now, now + duration]`` and return its
         id. Dispatch is now-start only (D15)."""
@@ -604,6 +676,8 @@ class Simulator(Backend):
             definition=definition,
             view=view,
             node=node,
+            replenisher=replenisher,
+            amounts=amounts,
         )
         self._ops[op.uuid] = op
         return op.uuid
@@ -656,23 +730,29 @@ class Simulator(Backend):
         Registered via this method rather than the constructor so the environment (what
         exists) and the fault scenario (what happens) stay separate concerns.
 
-        `device` may also name a **transporter** (D39): the fault is recorded the same
-        way and reported by `down_devices`, from which the runner drops the transports
-        that transporter carries. The oracle's dispatch rules are deliberately
-        unchanged by that -- a down transporter still serves a dispatched transport
-        here, exactly as a down device still serves one (D21). What a down machine
-        changes is what gets *planned*."""
+        `device` may also name a **transporter** (D39) or a **replenisher**: the fault
+        is recorded the same way and reported by `down_devices`, from which the runner
+        drops the transports that transporter carries, or the refills that replenisher
+        performs. The oracle's dispatch rules are deliberately unchanged by that -- a
+        down transporter still serves a dispatched transport here, exactly as a down
+        device still serves one (D21). What a down machine changes is what gets
+        *planned*."""
         self._register_fault(time, device, "down")
 
     def schedule_device_up(self, time: int, device: str) -> None:
-        """Register that `device` (or transporter) comes back up at virtual time
-        `time`."""
+        """Register that `device` (or transporter, or replenisher) comes back up at
+        virtual time `time`."""
         self._register_fault(time, device, "up")
 
     def _register_fault(self, time: int, device: str, action: str) -> None:
-        # One id space for both kinds of machine, matching what `down_devices` reports.
-        if device not in self._env.devices and device not in self._env.transporters:
-            raise UnknownReference(f"unknown device or transporter: {device}")
+        # One id space for every kind of machine, matching what `down_devices` reports.
+        known = (
+            device in self._env.devices
+            or device in self._env.transporters
+            or device in self._env.replenishers
+        )
+        if not known:
+            raise UnknownReference(f"unknown device, transporter or replenisher: {device}")
         self._faults.append(
             {"time": int(time), "device": device, "action": action, "applied": False}
         )
@@ -798,12 +878,19 @@ class Simulator(Backend):
     def _complete(self, op: _Op) -> None:
         """Apply an operation's completion: free its resources and move material
         per D15 (a processing consumes its inputs and produces at its outputs; a
-        transport carries the object from source to destination)."""
+        transport carries the object from source to destination; a refill moves
+        nothing at all).
+
+        Every kind is named below rather than left to an `else`. A refill reaching a
+        branch written for transports is not a hypothetical -- it happened, and the
+        assertion there is the only reason it was not silent."""
         # Release the accessed resources (spots are handled below).
         for d in op.devices:
             self._busy_devices.discard(d)
         if op.transporter is not None:
             self._busy_transporters.discard(op.transporter)
+        if op.replenisher is not None:
+            self._busy_replenishers.discard(op.replenisher)
 
         if op.kind == "processing":
             outputs = set(op.output_spots)
@@ -820,7 +907,13 @@ class Simulator(Backend):
                 if s not in inputs and s in self._spot_holds:
                     raise SpotConflict(f"output spot occupied at completion: {s}")
                 self._spot_holds[s] = self._new_obj_id()
-        else:  # transport
+        elif op.kind == "replenishment":
+            # No material effect. A refill puts stock into a device, and a stock is
+            # not material the simulator tracks: it has no spot, no identity, and no
+            # level anyone observes (§4.7.2). Releasing the two machines above is the
+            # whole of what completing a refill does here.
+            pass
+        elif op.kind == "transport":
             # A same-spot no-op leaves the object where it is; a real move carries
             # its id from source to destination (physical move keeps identity, D15).
             assert op.from_spot is not None and op.to_spot is not None  # set for transports
@@ -831,6 +924,8 @@ class Simulator(Backend):
                 if op.to_spot in self._spot_holds:
                     raise SpotConflict(f"destination spot occupied at arrival: {op.to_spot}")
                 self._spot_holds[op.to_spot] = obj
+        else:  # pragma: no cover - dispatch refuses any other kind
+            raise UnknownReference(f"cannot complete an operation of kind {op.kind!r}")
 
         # Value seam (D26/D27): a completed operation dispatched with a signature
         # produces a value at each output port, via a device model -- the injected
@@ -877,6 +972,8 @@ class Simulator(Backend):
             self._busy_devices.discard(d)
         if op.transporter is not None:
             self._busy_transporters.discard(op.transporter)
+        if op.replenisher is not None:
+            self._busy_replenishers.discard(op.replenisher)
         op.status = "failed"
 
 
