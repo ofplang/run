@@ -34,6 +34,11 @@ runner's committed history, keyed the same way, but the status document answers
   Object continuity is already expressed structurally by `arc` + `seq` provenance.
 - Relays (schedule spec §6.4.1) produce no entry, mirroring the status document
   (the scheduler regenerates them from committed transport legs).
+- **Replenishments produce no entry.** A refill has no ports and no views, so there
+  is nothing this document is about; what it did is a stock *level*, and a level is
+  derived from the status (the starting levels plus the history, schedule spec
+  §4.7.2) rather than observed. An empty entry would say only "a refill happened",
+  which the status already says, with times.
 - **Same-spot no-op transports are not recorded** (`from_spot == to_spot`: a physical
   no-op that moves nothing and changes no value). **Value-less completed processing**
   (an activity with no output ports / no signature) *is* recorded, with empty
@@ -87,6 +92,9 @@ fields the scheduler emitted, so the entry is self-describing and pairs 1:1 with
 plan/status activity by provenance), plus the observed `start`/`end`, plus the
 **value fields**. `status` is omitted: every entry is `completed` by the scope rule
 (§1). Provenance keys: processing is identified by `node`; transport by `arc` + `seq`.
+(A replenishment is identified by its `id` -- it has no workflow provenance, the solver
+having placed it rather than the workflow asking for it -- but it is never recorded
+here, so no entry carries one.)
 
 ### 4.1 Processing
 

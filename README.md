@@ -36,7 +36,8 @@ without real hardware; the same dispatch contract targets real hardware later.
 >     dispatches the work that can start now, advances the clock, and polls —
 >     replanning from the committed history as it goes. It re-routes around a
 >     downed machine — a device (its process modes and, by default, its spots'
->     transports) or a transporter (the transports it carries) — polls at a fixed
+>     transports and the refills of it), a transporter (the transports it carries)
+>     or a replenisher (the refills it performs) — polls at a fixed
 >     interval with completion-time estimation, absorbs duration variance (an
 >     operation running longer or shorter than planned), and stops the whole run if
 >     any activity fails (marking the abandoned work cancelled). Machine up/down,
