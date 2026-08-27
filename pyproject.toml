@@ -26,15 +26,21 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.1.6` floor is required: every replan hands the
-# scheduler the workflow, the environment and the status as in-memory documents,
-# and 0.1.6 is where it takes the environment and the execution document that way
-# (0.1.3 was the workflow alone). The `ofplang-validate>=0.1.5` floor is required
-# by the shared front door (`app.py`): it uses validate's `$import` expansion API
-# (`expand` / `validate(..., expand=True)`, 0.1.3) so the runner runs exactly what
-# was validated, and 0.1.5 is where `validate()` takes an already-loaded document,
-# which is what gives the in-memory route a front door at all.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.1.6", "ofplang-validate>=0.1.5"]
+# PyPI. The `ofplang-schedule>=0.2.0` floor says what the runner is tested against:
+# CI resolves the sibling from PyPI, so every run here already happens on 0.2.0,
+# and 0.2.0 is a breaking release (the `machine_id_conflict` rename, ortools 9.15).
+# Nothing in this package calls a 0.2.0-only API yet -- what needs one is the
+# execution document carrying `inventories`, which is the next slice of work -- so
+# the floor is deliberately ahead of need rather than behind it. Before it moved,
+# `>=0.1.6` was the requirement: every replan hands the scheduler the workflow, the
+# environment and the status as in-memory documents, and 0.1.6 is where it takes the
+# environment and the execution document that way (0.1.3 was the workflow alone).
+# The `ofplang-validate>=0.1.5` floor is required by the shared front door
+# (`app.py`): it uses validate's `$import` expansion API (`expand` /
+# `validate(..., expand=True)`, 0.1.3) so the runner runs exactly what was validated,
+# and 0.1.5 is where `validate()` takes an already-loaded document, which is what
+# gives the in-memory route a front door at all.
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.2.0", "ofplang-validate>=0.1.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
