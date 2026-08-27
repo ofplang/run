@@ -11,9 +11,11 @@ Protocol (all JSON, so it is language-neutral at the boundary):
 * **in**: a job object on **stdin** --
   ``{"code", "kind", "inputs", "output_schema", "process", "language", "result_path"}``.
   ``kind`` is ``"process"`` (a value-producing op: its outputs are verified against
-  ``output_schema``) or ``"transport"`` (side-effect only: the return is ignored, nothing
-  to verify); ``inputs`` are the locals bound for the script (input-port views for a
-  process; ``from_spot`` / ``to_spot`` / ``transporter`` / ``view`` for a transport).
+  ``output_schema``) or one of the side-effect-only kinds, ``"transport"`` and
+  ``"replenishment"``, whose return is ignored because there is nothing to verify;
+  ``inputs`` are the locals bound for the script (input-port views for a process;
+  ``from_spot`` / ``to_spot`` / ``transporter`` / ``view`` for a transport;
+  ``replenisher`` / ``device`` / ``amounts`` for a refill).
 * **out**: the *outcome* is written to ``result_path`` (NOT stdout, so the user
   script's own ``print`` cannot corrupt it) as one of
   ``{"outputs": {...}}`` (success) or ``{"error": {"code", "message"}}`` (a script /
@@ -33,6 +35,10 @@ import traceback
 
 from .script import DeviceComputationError, run_python_script, verify_outputs
 
+#: Kinds whose script produces no value: it acts, and the return is ignored. A process is
+#: the only kind whose return is verified against a declared output schema.
+_SIDE_EFFECT_KINDS = frozenset({"transport", "replenishment"})
+
 
 def main() -> int:
     try:
@@ -45,9 +51,12 @@ def main() -> int:
 
     try:
         raw = run_python_script(job.get("code") or "", job.get("inputs") or {})
-        if job.get("kind") == "transport":
-            # A transport script is side-effect only (P5): its return value is ignored and
-            # there are no output ports to verify. Success is simply "it ran without error".
+        if job.get("kind") in _SIDE_EFFECT_KINDS:
+            # A transport or refill script is side-effect only (P5): its return value is
+            # ignored and there are no output ports to verify. Success is simply "it ran
+            # without error". Listed rather than "anything that is not a process", so a
+            # kind added later has to say which it is instead of being handed to output
+            # verification and failing on a `None` it was never asked to return.
             payload: dict = {"outputs": {}}
         else:
             outputs = verify_outputs(raw, job.get("output_schema") or {}, job.get("process"))
