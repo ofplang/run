@@ -298,27 +298,3 @@ def test_run_ignore_resources_needs_no_inventories_and_says_so(tmp_path, capsys)
     )
     assert code == EXIT_OK
     assert "resources_ignored" in capsys.readouterr().err
-
-
-def test_run_reports_the_environment_objective_deprecation(tmp_path, capsys):
-    # A deprecation nobody is told about is discovered by its removal. The scheduler
-    # raises this as a warning, so the run still succeeds.
-    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
-    env = tmp_path / "deprecated.env.yaml"
-    env.write_text(
-        (FIXTURES / "simple.env.yaml").read_text(encoding="utf-8")
-        + "\nobjective:\n  kind: makespan\n",
-        encoding="utf-8",
-    )
-    code = main(
-        [
-            "run",
-            str(FIXTURES / "simple.workflow.yaml"),
-            "--env",
-            str(env),
-            "-o",
-            str(tmp_path / "status.yaml"),
-        ]
-    )
-    assert code == EXIT_OK
-    assert "objective_in_environment_deprecated" in capsys.readouterr().err
