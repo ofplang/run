@@ -1158,18 +1158,25 @@ class RollingRunner:
         """Append a completed activity's I/O views to the observation record (D38).
         Inputs (processing) / moved view (transport) come from the dispatch-time
         stash, popped here; outputs are the values recorded at completion. Values are
-        deep-copied by the recorder, so this is faithful to the moment of completion."""
+        deep-copied by the recorder, so this is faithful to the moment of completion.
+
+        The two kinds are named rather than split as "transport or else", so a kind
+        added later has to say what it observes instead of being filed as a processing
+        with no inputs and no outputs -- a record that looks like an answer and is
+        not."""
         assert self._obs is not None
         cap = self._pending_capture.pop(rec.uuid, {}) if rec.uuid is not None else {}
         if rec.kind == "transport":
             self._obs.record(rec, moved=cap.get("moved"), time_section=self._last_time)
-        else:
+        elif rec.kind == "processing":
             self._obs.record(
                 rec,
                 inputs=cap.get("inputs") or {},
                 outputs=outputs or {},
                 time_section=self._last_time,
             )
+        else:
+            raise RunnerError(f"cannot observe an activity of kind {rec.kind!r}")
 
     def _next_time(self, pending: list[dict]) -> int:
         """The virtual time to advance to next. In fixed-interval mode, one poll
@@ -1435,23 +1442,36 @@ class RollingRunner:
         """A stable identity for an activity across replans: its workflow provenance
         (a processing's `node` path, a transport's `arc` endpoints + `seq`). Pending
         identities are regenerated each replan, but provenance is not, so this lines
-        a committed activity up against a pending one (D9)."""
+        a committed activity up against a pending one (D9).
+
+        A kind this function does not know is **refused**, not given a key. The
+        tempting alternative -- let anything that is not a processing fall through to
+        the transport shape -- is silent and wrong: an activity with no `arc` and no
+        `seq` yields `("transport", ((), None), ((), None), None)`, the *same* key for
+        every such activity. Two of them would collapse into one, so committing the
+        first would mark the rest committed too and `_undispatched` would never
+        return them again. A kind that cannot be identified here cannot be dispatched
+        either (`_commit_start` refuses it), so failing loudly costs a run nothing it
+        was going to complete.
+        """
         kind = activity.get("kind")
         if kind == "processing":
             return ("processing", tuple(activity.get("node") or ()))
-        # transport: identify by the logical arc it serves and its chain position.
-        arc = activity.get("arc") or {}
+        if kind == "transport":
+            # Identify by the logical arc it serves and its chain position.
+            arc = activity.get("arc") or {}
 
-        def endpoint(e):
-            e = e or {}
-            return (tuple(e.get("node") or ()), e.get("port"))
+            def endpoint(e):
+                e = e or {}
+                return (tuple(e.get("node") or ()), e.get("port"))
 
-        return (
-            "transport",
-            endpoint(arc.get("from")),
-            endpoint(arc.get("to")),
-            activity.get("seq"),
-        )
+            return (
+                "transport",
+                endpoint(arc.get("from")),
+                endpoint(arc.get("to")),
+                activity.get("seq"),
+            )
+        raise RunnerError(f"cannot identify an activity of kind {kind!r} across replans")
 
     def _collect_warnings(self, report) -> None:
         """Keep the scheduler's warnings, one line per distinct code.

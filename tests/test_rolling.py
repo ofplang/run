@@ -56,6 +56,54 @@ def test_committed_activities_carry_provenance():
     assert {tuple(a["node"]) for a in procs} == {("SampleSource",), ("SampleTarget",)}
 
 
+def test_provenance_keys_tell_the_two_known_kinds_apart():
+    """The two shapes are distinct, and a transport's carries its arc and position --
+    which is what lets a committed activity be matched to a pending one on a replan."""
+    processing = {"kind": "processing", "node": ["SampleSource"]}
+    transport = {
+        "kind": "transport",
+        "arc": {"from": {"node": ["SampleSource"], "port": "out"},
+                "to": {"node": ["SampleTarget"], "port": "in"}},
+        "seq": 0,
+    }
+    assert RollingRunner._provenance_key(processing) == ("processing", ("SampleSource",))
+    assert RollingRunner._provenance_key(transport) == (
+        "transport", (("SampleSource",), "out"), (("SampleTarget",), "in"), 0,
+    )
+
+
+@pytest.mark.parametrize("kind", ["replenishment", "relay", None, "typo"])
+def test_an_unidentifiable_kind_is_refused_not_guessed(kind):
+    """A kind with no provenance rule must fail, not borrow the transport's.
+
+    Borrowing it is silent and wrong: an activity carrying neither `arc` nor `seq`
+    yields the *same* key as every other such activity, so two of them collapse into
+    one -- committing the first would mark the rest committed and they would never be
+    dispatched. `_commit_start` already refuses a kind it cannot dispatch; this is the
+    same rule for the identity that matches it across replans.
+    """
+    with pytest.raises(RunnerError, match="cannot identify"):
+        RollingRunner._provenance_key({"kind": kind, "id": "replenishment_0"})
+
+
+def test_two_activities_without_provenance_would_have_collided():
+    """Why the refusal above is worth having: had the transport shape been borrowed,
+    these two distinct activities would have shared one key."""
+    def borrowed(activity):  # what the fall-through used to compute
+        arc = activity.get("arc") or {}
+
+        def endpoint(e):
+            e = e or {}
+            return (tuple(e.get("node") or ()), e.get("port"))
+
+        return ("transport", endpoint(arc.get("from")), endpoint(arc.get("to")),
+                activity.get("seq"))
+
+    first = {"kind": "replenishment", "id": "replenishment_0"}
+    second = {"kind": "replenishment", "id": "replenishment_1"}
+    assert borrowed(first) == borrowed(second)  # the collision the refusal prevents
+
+
 def test_interface_workflow_seeds_and_delivers():
     # A workflow with an Object-bearing entry input: the runner seeds `sample` at
     # loader.stage (interface.inputs) and drives it through heat to output.slot.
