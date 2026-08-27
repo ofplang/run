@@ -54,6 +54,19 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   the produced output views are echoed back into a result boundary of the same
 >   schema (`--boundary-out`). Non-script values are typed but still dummy — a real
 >   device backend plugs into the same seam later.
+> - **Device-local consumables** (`ofplang-schedule` §4.7) — a device may declare a
+>   stock it holds and a process mode what it draws per run. What each stock holds
+>   *at the start of the run* is a property of the run, so it goes in the run
+>   boundary (`boundary.inventories.levels`), beside the input views; the level at
+>   any later moment is never stated, it is replayed by the scheduler from those
+>   levels and the `consumption` each completed activity carries. `--ignore-resources`
+>   switches the model off (§4.7.3) for a lab that declares stocks nobody is tracking.
+>   The starting levels are *not* echoed into the result boundary — that document is
+>   written to be fed back, and a second run replays no history, so echoing them
+>   would hand it stock the first run already spent; feed back the status instead.
+>   An environment that also declares **replenishments** is refused before the run
+>   starts: the scheduler would plan refills, and executing one needs a dispatch this
+>   runner does not have yet.
 > - **Python script processes** (spec §22, `python_script_processes`) — an atomic
 >   Pure-Data process may carry a `script: {language: python, code: …}` section.
 >   The built-in device model runs it: the input port values are bound as locals,

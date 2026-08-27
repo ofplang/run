@@ -73,7 +73,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run boundary document (§6.8 / value layer): a `boundary:` mapping with "
         "per-port {spot, view} descriptors for the workflow's entry inputs and final "
         "outputs. `spot` places a boundary Object; `view` supplies an input value "
-        "(unsupplied entry inputs default)",
+        "(unsupplied entry inputs default). An `inventories: {levels: ...}` section "
+        "(§6.10) says what each device-local stock holds at the START of the run; "
+        "required when some mode consumes",
     )
     r.add_argument(
         "--seed",
@@ -107,6 +109,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     r.add_argument(
+        "--ignore-resources",
+        action="store_true",
+        help="switch the consumable model off (§4.7.3): the environment's resource "
+        "declarations are shape-checked but nothing is applied, so a lab that declares "
+        "stocks runs without the boundary saying what they started with",
+    )
+    r.add_argument(
         "-o",
         "--output",
         metavar="OUT",
@@ -117,7 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="write the result boundary document here (YAML): the same schema as "
         "--boundary, with each produced output's `view` filled in; a run-local "
-        "artifact, not part of the §6/§7 status document",
+        "artifact, not part of the §6/§7 status document. `inventories` is not "
+        "echoed -- it names the stock this run STARTED with, so feeding it back "
+        "would give the next run stock this one spent; feed back the status instead",
     )
     r.add_argument(
         "--observation-out",
@@ -253,6 +264,7 @@ def _cmd_run(args) -> int:
             validate=False,
             observation_out=args.observation_out,
             max_ticks=max_ticks,
+            ignore_resources=args.ignore_resources,
         )
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract
@@ -263,6 +275,14 @@ def _cmd_run(args) -> int:
     except (SimulatorError, RunnerError) as exc:
         print(f"ofp-run: execution failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
+
+    # What the scheduler warned about, once per distinct code (a replan repeats the
+    # same warnings every tick). These do not fail a run -- a deprecated section still
+    # works, a switched-off model still schedules -- but a run that never says so is
+    # how a deprecation is discovered by its removal.
+    for diag in result.scheduler_warnings:
+        where = f" ({diag.path})" if getattr(diag, "path", None) else ""
+        print(f"ofp-run: scheduler: {diag.code}{where}: {diag.message}", file=sys.stderr)
 
     # The result boundary is a run-local artifact (D28): the same schema as the
     # supplied boundary with the produced output views filled in, written separately

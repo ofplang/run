@@ -210,14 +210,21 @@ class FrontDoorError(Exception):
 class RunResult:
     """Outcome of a completed `run_workflow`: the §6/§7 `status` document, the result
     `boundary` (produced output views, D28), whether the run `failed` (an activity
-    error or a whole-workflow contract violation), and the structured `failure`
-    reason (D36), or None. A run that could not even start -- malformed input, an
-    infeasible replan -- does not return a `RunResult`; it raises (see `run_workflow`)."""
+    error or a whole-workflow contract violation), the structured `failure` reason
+    (D36) or None, and the scheduler warnings the run collected. A run that could not
+    even start -- malformed input, an infeasible replan -- does not return a
+    `RunResult`; it raises (see `run_workflow`).
+
+    `scheduler_warnings` are the scheduler's warning diagnostics, one per distinct
+    code, in the order first seen. They are handed up rather than printed because
+    this is a library: a CLI decides where they go. Defaulted so a caller that builds
+    a `RunResult` itself (labcode does) is not broken by their arrival."""
 
     status: dict
     result_boundary: dict
     failed: bool
     failure: Any
+    scheduler_warnings: list = field(default_factory=list)
 
 
 def run_workflow(
@@ -232,6 +239,7 @@ def run_workflow(
     validate: bool = True,
     observation_out: str | None = None,
     max_ticks: int | None = DEFAULT_MAX_TICKS,
+    ignore_resources: bool = False,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -253,6 +261,8 @@ def run_workflow(
     activities' I/O views) to that path as the run proceeds. `max_ticks` bounds the loop
     iterations before the run is called non-terminating -- one iteration per poll interval,
     so it also bounds the makespan a fixed-interval run can reach; None lifts it.
+    `ignore_resources` switches the consumable model off (SPEC §4.7.3), so an environment
+    whose modes consume runs without the boundary saying what its stocks started with.
 
     Malformed workflow/environment YAML or an unparsable contract (`yaml.YAMLError`,
     `ContractSyntaxError`) and execution failures (`SimulatorError`, `RunnerError`)
@@ -276,6 +286,7 @@ def run_workflow(
         backend_factory=backend_factory,
         observation_out=observation_out,
         max_ticks=max_ticks,
+        ignore_resources=ignore_resources,
     )
     try:
         status = runner.run()
@@ -291,4 +302,5 @@ def run_workflow(
         result_boundary=runner.result_boundary,
         failed=runner.failed,
         failure=runner.failure,
+        scheduler_warnings=runner.scheduler_warnings,
     )

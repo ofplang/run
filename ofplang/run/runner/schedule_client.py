@@ -24,6 +24,7 @@ def replan(
     random_seed: int | None = None,
     max_time_seconds: float | None = None,
     environment_source: str | None = None,
+    ignore_resources: bool = False,
 ):
     """Run the scheduler on `status_document` and return its `ScheduleReport`.
 
@@ -32,6 +33,11 @@ def replan(
     is not the file it came from, `environment_source` names the file for the plan's
     `meta.environment` provenance -- normalization and reduction happen in memory, and
     the file is still where the environment came from.
+
+    `ignore_resources` switches the consumable model off (SPEC §4.7.3): the environment's
+    resource declarations are still shape-checked but nothing is applied, so a lab that
+    declares stocks can be run without the document stating what it started with. Off is
+    always a relaxation, so no schedule is lost by it.
 
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
@@ -51,4 +57,5 @@ def replan(
         random_seed=random_seed,
         max_time_seconds=max_time_seconds,
         environment_source=environment_source,
+        ignore_resources=ignore_resources,
     )

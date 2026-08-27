@@ -195,3 +195,70 @@ def test_empty_boundary_result_is_wellformed():
     """An empty boundary still yields a well-formed result skeleton."""
     b = parse_boundary(None, _contracts(COUNT))
     assert b.result({}) == {"boundary": {"inputs": {}, "outputs": {}}}
+
+
+# -- inventories (§6.10) -----------------------------------------------------
+
+
+def test_inventories_pass_through_unchanged():
+    """The section mirrors §6.10 exactly, so the translation into the status is an
+    identity copy -- there is no projection to get wrong."""
+    doc = {"boundary": {"inventories": {"levels": {"reader": {"reagent": 6, "tips": 0}}}}}
+    b = parse_boundary(doc, _contracts(COUNT))
+    assert b.inventories == {"levels": {"reader": {"reagent": 6, "tips": 0}}}
+
+
+def test_inventories_absent_stays_absent():
+    """"Every stock starts empty" (`levels: {}`) and "the run does not say" are
+    different claims; only the scheduler can tell whether the second is an error."""
+    assert parse_boundary({"boundary": {}}, _contracts(COUNT)).inventories == {}
+    assert parse_boundary(None, _contracts(COUNT)).inventories == {}
+
+
+def test_inventories_with_empty_levels_is_a_claim_not_an_omission():
+    doc = {"boundary": {"inventories": {"levels": {}}}}
+    assert parse_boundary(doc, _contracts(COUNT)).inventories == {"levels": {}}
+
+
+def test_inventories_are_not_echoed_into_the_result():
+    """A result boundary is fed back in; the starting stock must not travel with it."""
+    doc = {"boundary": {"inventories": {"levels": {"reader": {"reagent": 6}}}}}
+    b = parse_boundary(doc, _contracts(COUNT))
+    assert "inventories" not in b.result({"result": {"value": 1}})["boundary"]
+
+
+def test_unknown_key_under_boundary_is_rejected():
+    """`boundary:` is closed for the same reason a descriptor is: silently ignoring
+    `inventores:` would report `missing_inventories` for a run that did supply it."""
+    with pytest.raises(RunnerError, match="unknown key"):
+        parse_boundary({"boundary": {"inventores": {}}}, _contracts(COUNT))
+
+
+def test_unknown_key_under_inventories_is_rejected():
+    with pytest.raises(RunnerError, match="unknown key"):
+        parse_boundary({"boundary": {"inventories": {"initial": {}}}}, _contracts(COUNT))
+
+
+@pytest.mark.parametrize(
+    "levels",
+    [
+        {"reader": {"reagent": -1}},  # a stock cannot hold less than nothing
+        {"reader": {"reagent": "two"}},  # a level is an integer, not a word
+        {"reader": {"reagent": 1.5}},  # nor a fraction of a unit
+        {"reader": {"reagent": True}},  # `bool` is an `int` in Python; this is a typo
+        {"reader": 6},  # a device holds named stocks, not one number
+    ],
+)
+def test_a_malformed_level_is_rejected_here(levels):
+    """Shape only, but shape early: a level of `"two"` would otherwise travel all the
+    way into the solver before anything said so."""
+    with pytest.raises(RunnerError, match="inventories"):
+        parse_boundary({"boundary": {"inventories": {"levels": levels}}}, _contracts(COUNT))
+
+
+def test_which_devices_and_resources_exist_is_not_checked_here():
+    """Answering that needs the environment definition, which this module does not
+    read; the scheduler reports `unknown_device` / `unknown_resource` /
+    `inventory_exceeds_capacity` against the document it is given."""
+    doc = {"boundary": {"inventories": {"levels": {"no_such_device": {"no_such": 999}}}}}
+    assert parse_boundary(doc, _contracts(COUNT)).inventories["levels"]["no_such_device"]

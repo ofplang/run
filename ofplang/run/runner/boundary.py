@@ -15,6 +15,9 @@ The format is a ``boundary:`` document with one descriptor per boundary port:
       outputs:
         plate_final: { spot: unloader.slot }   # view filled in at run end
         result: {}                             # view filled in at run end
+      inventories:
+        levels:
+          reader: { reagent: 0 }               # stock at the START of the run
 
 A port descriptor has two orthogonal halves -- exactly the two halves of a v0
 boundary value:
@@ -37,9 +40,18 @@ need, and -- critically -- never sends view values to the scheduler:
     projection is one-way: view values never round-trip into a replan, so an
     unpinned output can never silently become a scheduling constraint.
   - ``job`` ({port: view}) -> the entry view values seeded into the value store.
+  - ``inventories`` -> copied verbatim into the §6.10 section of the status handed
+    to the scheduler each replan. Unlike the two above this is *not* a projection:
+    the shape is the scheduler's own, so the translation is an identity copy.
 
 At run end the produced output views are echoed back into a result document of
 the *same* schema (written by ``--boundary-out``), so a boundary round-trips.
+``inventories`` is deliberately **not** echoed there. A level is derived, never
+reported (SPEC §4.7.2): within a run the scheduler replays it from the starting
+levels plus the history, but a *second* ``ofp-run`` invocation starts with no
+history at all, so echoing this run's starting stock into a document meant to be
+fed back would silently hand the next run stock this one already spent. The
+document to feed back for that is the status, which carries the history too.
 
 This module is pure: it parses / validates a boundary doc against the resolved
 contracts (`contracts.py`) and projects it. Loading files and wiring the
@@ -58,6 +70,16 @@ from .runner import RunnerError
 # `sopt`) and is rejected rather than silently ignored.
 _DESCRIPTOR_KEYS = frozenset({"spot", "view"})
 
+# The `boundary:` mapping is closed for the same reason a descriptor is: a key this
+# runner does not read is a typo, and silently ignoring `inventores:` would report
+# `missing_inventories` at the first replan of a run that did supply the stock.
+_BOUNDARY_KEYS = frozenset({"inputs", "outputs", "inventories"})
+
+# `inventories` mirrors SPEC §6.10 exactly, so the translation into the status is an
+# identity copy. `levels` says what the container holds rather than when it held it,
+# so a future sibling (`at:`) would not rename it.
+_INVENTORIES_KEYS = frozenset({"levels"})
+
 
 @dataclass(frozen=True)
 class Boundary:
@@ -65,7 +87,8 @@ class Boundary:
 
     `interface` is the §6.8 boundary constraint (spots only) handed to the
     scheduler; `job` is the entry view values to seed; `output_spots` are the
-    Object outputs the user pinned to a delivery spot (checked at run end, P3).
+    Object outputs the user pinned to a delivery spot (checked at run end, P3);
+    `inventories` is the §6.10 starting stock, passed to the scheduler unchanged.
     The original input / output descriptors are retained so the produced result
     can be echoed back in the same schema (`result`).
     """
@@ -73,6 +96,7 @@ class Boundary:
     interface: dict  # {inputs?: {port: spot}, outputs?: {port: spot}} for the scheduler
     job: dict  # {port: view} entry view values to seed (contract-checked at seed time)
     output_spots: dict  # {port: spot} Object outputs with a declared delivery spot (P3)
+    inventories: dict = field(default_factory=dict)  # §6.10 {levels: {device: {res: n}}}
     _inputs_doc: dict = field(default_factory=dict)  # input descriptors, echoed verbatim
     _outputs_doc: dict = field(default_factory=dict)  # output descriptors (spots kept)
 
@@ -84,6 +108,13 @@ class Boundary:
         delivery spot the user declared; a declared output that did not run has its
         spot echoed with no view. Ports keep the user's declared order, then any
         extra produced outputs the user did not list (so no produced value is lost).
+
+        `inventories` is **not** echoed. It is the one part of the boundary that is
+        not a value the run produced or consumed at its edge: it says what the stock
+        was when *this* run began. A result boundary is written to be fed back in
+        (labcode round-trips Object ids through exactly that), and a second run
+        replays no history -- so echoing it would tell the next run it has stock this
+        one already drank. Levels are derived, not reported (SPEC §4.7.2).
         """
         out_inputs = copy.deepcopy(self._inputs_doc)
         out_outputs: dict = {}
@@ -115,14 +146,69 @@ def _descriptor(desc, port: str, side: str) -> tuple:
     return desc.get("spot"), ("view" in desc), desc.get("view")
 
 
+def _inventories(section) -> dict:
+    """Validate the `inventories` section and return it (a plain copy).
+
+    Shape only -- a mapping carrying just `levels`, whose device and resource keys are
+    names and whose levels are non-negative integers. Whether a device exists, whether
+    it declares that resource, and whether the level fits its capacity are **not**
+    checked here: answering any of them needs the environment definition, which this
+    module does not read, and the scheduler already reports each as `unknown_device` /
+    `unknown_resource` / `inventory_exceeds_capacity` against the document it is given.
+    Checking the shape here is still worth it: a level of `"none"` would otherwise
+    travel all the way into the solver before anything said so.
+    """
+    if not isinstance(section, dict):
+        raise RunnerError("boundary inventories must be a mapping with levels")
+    unknown = set(section) - _INVENTORIES_KEYS
+    if unknown:
+        raise RunnerError(
+            f"boundary inventories has unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    levels = section.get("levels")
+    if levels is None:
+        return {"levels": {}}
+    if not isinstance(levels, dict):
+        raise RunnerError("boundary inventories levels must be a mapping of device -> stock")
+    out: dict = {}
+    for device, stock in levels.items():
+        if not isinstance(device, str):
+            raise RunnerError(f"boundary inventories names a non-string device: {device!r}")
+        if not isinstance(stock, dict):
+            raise RunnerError(
+                f"boundary inventories levels {device!r} must be a mapping of resource -> level"
+            )
+        entry: dict = {}
+        for resource, level in stock.items():
+            if not isinstance(resource, str):
+                raise RunnerError(
+                    f"boundary inventories {device!r} names a non-string resource: {resource!r}"
+                )
+            # `bool` is an `int` in Python; a `true` level is a mistake, not a 1.
+            if not isinstance(level, int) or isinstance(level, bool) or level < 0:
+                raise RunnerError(
+                    f"boundary inventories level {device}.{resource} must be a "
+                    f"non-negative integer, not {level!r}"
+                )
+            entry[resource] = level
+        out[device] = entry
+    return {"levels": out}
+
+
 def parse_boundary(doc, contracts) -> Boundary:
     """Parse and validate a boundary document against the resolved contracts.
 
     `doc` is the loaded YAML (a mapping with a `boundary:` root), or None for no
     boundary (all defaults). Returns a `Boundary` projecting the scheduler
-    interface, the seed job, and the pinned output spots. Raises `RunnerError` on
-    an unknown boundary port, an Object input with no spot, or a Pure Data port
-    given a spot -- surfacing an authoring mistake up front rather than mid-run.
+    interface, the seed job, the pinned output spots and the starting inventories.
+    Raises `RunnerError` on an unknown key at either level, an unknown boundary
+    port, an Object input with no spot, or a Pure Data port given a spot --
+    surfacing an authoring mistake up front rather than mid-run.
+
+    An absent `inventories` stays absent rather than becoming an empty `levels`:
+    "every stock starts empty" and "the run does not say" are different claims, and
+    only the scheduler knows whether any invoked mode consumes and so whether the
+    second is an error (`missing_inventories`).
 
     The value carried in an input `view` is not contract-checked here; that happens
     when it is seeded (`values.seed_entry`), which owns the value-conformance check.
@@ -138,10 +224,16 @@ def parse_boundary(doc, contracts) -> Boundary:
         boundary = {}
     if not isinstance(boundary, dict):
         raise RunnerError("boundary: must be a mapping")
+    unknown = set(boundary) - _BOUNDARY_KEYS
+    if unknown:
+        raise RunnerError(f"boundary has unknown key(s): {', '.join(sorted(unknown))}")
     inputs_doc = boundary.get("inputs") or {}
     outputs_doc = boundary.get("outputs") or {}
     if not isinstance(inputs_doc, dict) or not isinstance(outputs_doc, dict):
         raise RunnerError("boundary inputs / outputs must be mappings")
+    inventories = (
+        _inventories(boundary["inventories"]) if boundary.get("inventories") is not None else {}
+    )
 
     # The entry composite's declared ports are the boundary ports; their resolved
     # types classify each as Object-bearing (needs a spot) or Pure Data (no spot).
@@ -192,4 +284,11 @@ def parse_boundary(doc, contracts) -> Boundary:
 
     # `output_spots` == the pinned Object outputs (Pure Data + spot already errored),
     # kept for the run-end delivery check (P3).
-    return Boundary(interface, job, dict(interface_outputs), dict(inputs_doc), dict(outputs_doc))
+    return Boundary(
+        interface,
+        job,
+        dict(interface_outputs),
+        inventories,
+        dict(inputs_doc),
+        dict(outputs_doc),
+    )

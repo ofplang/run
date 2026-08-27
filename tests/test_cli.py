@@ -245,3 +245,80 @@ def test_run_unwritable_boundary_out_still_emits_the_status(tmp_path, capsys):
     assert code == EXIT_USAGE
     assert "cannot write result boundary" in capsys.readouterr().err
     assert out.is_file()
+
+
+def _boundary_file(tmp_path, level):
+    path = tmp_path / "boundary.yaml"
+    path.write_text(
+        "boundary:\n"
+        "  inventories:\n"
+        "    levels:\n"
+        "      station_1:\n"
+        f"        reagent: {level}\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_run_carries_the_boundary_inventories_into_the_status(tmp_path):
+    # The starting stock reaches the scheduler and comes back in the status it renders.
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+    out = tmp_path / "status.yaml"
+    code = main(
+        [
+            "run",
+            str(FIXTURES / "simple.workflow.yaml"),
+            "--env",
+            str(FIXTURES / "consumable.env.yaml"),
+            "--boundary",
+            _boundary_file(tmp_path, 2),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_OK
+    assert "inventories:" in out.read_text(encoding="utf-8")
+
+
+def test_run_ignore_resources_needs_no_inventories_and_says_so(tmp_path, capsys):
+    # §4.7.3: with the model off a consuming environment runs without the boundary
+    # stating its stocks -- and the run reports that the model was switched off,
+    # because a model that silently does nothing looks like one that agrees.
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+    code = main(
+        [
+            "run",
+            str(FIXTURES / "simple.workflow.yaml"),
+            "--env",
+            str(FIXTURES / "consumable.env.yaml"),
+            "--ignore-resources",
+            "-o",
+            str(tmp_path / "status.yaml"),
+        ]
+    )
+    assert code == EXIT_OK
+    assert "resources_ignored" in capsys.readouterr().err
+
+
+def test_run_reports_the_environment_objective_deprecation(tmp_path, capsys):
+    # A deprecation nobody is told about is discovered by its removal. The scheduler
+    # raises this as a warning, so the run still succeeds.
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+    env = tmp_path / "deprecated.env.yaml"
+    env.write_text(
+        (FIXTURES / "simple.env.yaml").read_text(encoding="utf-8")
+        + "\nobjective:\n  kind: makespan\n",
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "run",
+            str(FIXTURES / "simple.workflow.yaml"),
+            "--env",
+            str(env),
+            "-o",
+            str(tmp_path / "status.yaml"),
+        ]
+    )
+    assert code == EXIT_OK
+    assert "objective_in_environment_deprecated" in capsys.readouterr().err

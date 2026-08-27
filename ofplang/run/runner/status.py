@@ -2,8 +2,9 @@
 scheduler each tick.
 
 The status is the runner's committed history rendered as a §6 document: `now`,
-the `interface` boundary constraint (§6.8) carried through unchanged, and one
-activity entry per committed record marked `completed` / `running`. A completed
+the `interface` boundary constraint (§6.8) and the `inventories` starting stock
+(§6.10) carried through unchanged, and one activity entry per committed record
+marked `completed` / `running`. A completed
 record's `end` is its observed finish; a running record's `end` is the planned
 expected finish (the runner does not know the actual until it observes
 completion). Relays are **not** emitted -- the scheduler regenerates them from the
@@ -22,6 +23,7 @@ def build_status(
     interface: dict | None = None,
     time_section: dict | None = None,
     cancelled: list[dict] | None = None,
+    inventories: dict | None = None,
 ) -> dict:
     """Assemble a §6 execution status from committed records at time `now`.
 
@@ -32,6 +34,12 @@ def build_status(
     a failure. Each is stamped `cancelled` with a zero-length interval at `now` (it
     reached a terminal, non-running state without executing) and appended after the
     committed history.
+
+    `inventories` (§6.10) is what the run *started* with, so -- exactly like
+    `interface` -- it is the same on every tick rather than something recomputed
+    here. The level at `now` is not stated anywhere: the scheduler replays it from
+    these levels and the `consumption` each fixed activity echoes (§4.7.2), which is
+    why a completed activity's original dict is copied whole below.
 
     The failure *reason* (D36) is deliberately NOT put in this document: the status
     must stay a valid §6 execution document (it can be validated and fed back to the
@@ -52,12 +60,15 @@ def build_status(
         entry["end"] = now
         activities.append(entry)
 
-    # Readable top-level order: time, now, interface, activities.
+    # Readable top-level order: time, now, interface, inventories, activities --
+    # the order a rendered plan uses, so a status and a plan read the same way.
     doc: dict = {}
     if time_section:
         doc["time"] = time_section
     doc["now"] = now
     if interface:
         doc["interface"] = interface
+    if inventories:
+        doc["inventories"] = inventories
     doc["activities"] = activities
     return doc

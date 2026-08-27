@@ -174,14 +174,17 @@ def _reduce_environment(
     """Return a copy of `environment` with a down machine made unschedulable, along
     the axes selected by `scope` (spec §7, D21/D39; see `DownScope`).
 
-    `down` holds ids of machines that cannot be used -- devices and transporters
-    alike (`Backend.down_devices`). For a **device**: with `scope` covering
-    processing, every process mode using it is removed; with `scope` covering
-    transport, every transport touching one of its spots is removed. For a
-    **transporter**: every transport it carries is removed *in every scope*, since
-    carrying is the only thing a transporter does and there is no axis to select
-    (D39). Device / spot / transporter definitions are always kept (an isolated spot
-    the scheduler simply never routes to).
+    `down` holds ids of machines that cannot be used -- devices, transporters and
+    replenishers alike (`Backend.down_devices`). For a **device**: with `scope`
+    covering processing, every process mode using it is removed; with `scope`
+    covering transport, every transport touching one of its spots is removed, and so
+    is every refill of it -- putting stock into a device is material movement, so it
+    goes with the transports rather than with the modes. For a **transporter**: every
+    transport it carries is removed *in every scope*, since carrying is the only
+    thing a transporter does and there is no axis to select (D39). For a
+    **replenisher**: every refill it performs is removed in every scope, for the same
+    reason. Device / spot / transporter / replenisher definitions are always kept (an
+    isolated spot the scheduler simply never routes to).
 
     Only new scheduling is affected -- transports already committed in the history are
     untouched. Recovery is automatic: the reduction is recomputed from the full
@@ -189,18 +192,24 @@ def _reduce_environment(
     and transports.
 
     An id names one machine here because the environment definition makes sure of
-    it: a device and a transporter sharing an id is rejected by the environment
-    validator (`device_transporter_id_conflict`, ofplang-schedule >= 0.1.5). Under
-    an older schedule the collision is only a warning, and `down` cannot tell the
-    two apart -- downing one downs the other.
+    it: devices, transporters and replenishers share one id space, and a collision in
+    it is rejected by the environment validator (`machine_id_conflict`,
+    ofplang-schedule >= 0.2.0; it was `device_transporter_id_conflict` from 0.1.5,
+    before replenishers existed). Under an older schedule the collision is only a
+    warning, and `down` cannot tell the machines apart -- downing one downs the other.
     """
     reduced = copy.deepcopy(environment)
-    # A down transporter cannot carry anything, whatever the scope (D39).
+    # A down transporter cannot carry anything, whatever the scope (D39). A down
+    # replenisher likewise cannot refill anything: performing refills is all it does.
     if reduced.get("transports"):
         reduced["transports"] = [
             transport
             for transport in reduced["transports"]
             if transport.get("transporter") not in down
+        ]
+    if reduced.get("replenishments"):
+        reduced["replenishments"] = [
+            entry for entry in reduced["replenishments"] if entry.get("replenisher") not in down
         ]
     if scope in (DownScope.BOTH, DownScope.PROCESSING):
         for process in (reduced.get("processes") or {}).values():
@@ -225,7 +234,39 @@ def _reduce_environment(
                 if transport.get("from") not in down_spots
                 and transport.get("to") not in down_spots
             ]
+        # Refilling a down device is material movement onto it, so it is withdrawn on
+        # the same axis as the transports that would reach it.
+        if reduced.get("replenishments"):
+            reduced["replenishments"] = [
+                entry for entry in reduced["replenishments"] if entry.get("device") not in down
+            ]
     return reduced
+
+
+def _refusable_replenishment(environment: dict) -> bool:
+    """Whether this environment would have the scheduler plan a refill this runner
+    cannot carry out.
+
+    The scheduler only proposes refills when the consumable model is on (some invoked
+    mode declares `consumption`) *and* a `replenishments` entry says some replenisher
+    can reach some device. When both hold, a plan carries `kind: replenishment`
+    activities -- and there is no third dispatch on `Backend` to execute one, so the
+    runner would take the environment, schedule happily, and only then fail on the
+    first refill it was asked to start.
+
+    Refusing before anything runs is the honest version of that, and it says which
+    part of the environment to change. Note this reads the *declared* modes rather
+    than the invoked ones: the runner has no instance to ask, so an environment whose
+    consuming modes this particular workflow never invokes is refused too. That is
+    the conservative direction -- it never lets an unexecutable plan start.
+    """
+    if not (environment.get("replenishments") or []):
+        return False
+    return any(
+        mode.get("consumption")
+        for process in (environment.get("processes") or {}).values()
+        for mode in (process.get("modes") or [])
+    )
 
 
 class RollingRunner:
@@ -254,6 +295,7 @@ class RollingRunner:
         down_scope: DownScope = DownScope.BOTH,
         observe: bool = False,
         observation_out: str | None = None,
+        ignore_resources: bool = False,
     ):
         # The workflow as an in-memory document. `workflow` is either a path to a
         # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
@@ -288,6 +330,20 @@ class RollingRunner:
             if isinstance(environment_path, dict)
             else load_document(environment_path)
         )
+        # The consumable model (SPEC §4.7) switched off for this run: the scheduler
+        # shape-checks the environment's resource declarations but applies none of
+        # them, so a lab that declares stocks runs without the boundary stating what
+        # it started with. Off is always a relaxation.
+        self._ignore_resources = ignore_resources
+        # A refill is planned but not executable here (see `_refusable_replenishment`).
+        # Refuse before anything is dispatched rather than mid-run, and name both ways
+        # out.
+        if not ignore_resources and _refusable_replenishment(self._environment):
+            raise RunnerError(
+                "the environment declares replenishments and modes that consume, so "
+                "the scheduler would plan refills this runner cannot execute; remove "
+                "`replenishments` or run with resources ignored"
+            )
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
         # outputs from inputs; without one the built-in `script_device_model` is used
@@ -369,6 +425,11 @@ class RollingRunner:
         # conformance is checked when it is seeded.
         self.boundary = parse_boundary(boundary, self.contracts)
         self.interface = self.boundary.interface
+        # What every stock held when this run began (§6.10). Carried into the status
+        # unchanged on every tick -- the level at `now` is the scheduler's to replay
+        # from this plus the `consumption` each fixed activity echoes (§4.7.2), so
+        # nothing here ever recomputes it.
+        self.inventories = self.boundary.inventories
         # Whole-workflow input values (F4): {entry_port: view value}. Seeded at the
         # boundary at run start; a missing entry input falls back to a typed default.
         self.job = self.boundary.job
@@ -439,6 +500,11 @@ class RollingRunner:
         # optional trace hook; None (the default) means no per-check reporting.
         self.failure: Failure | None = None
         self._contract_observer = contract_observer
+        # Warnings the scheduler raised, first occurrence only (a replan repeats the
+        # same ones every tick, and the deprecation notices among them are worth
+        # exactly one line each). A caller reports them; the runner does not print.
+        self.scheduler_warnings: list = []
+        self._warned_codes: set = set()
 
         # Observation document (D38): an optional value-layer record of completed
         # activities' I/O views, off by default (zero overhead). `observe` accumulates
@@ -646,6 +712,7 @@ class RollingRunner:
             self.interface,
             self._last_time,
             cancelled,
+            inventories=self.inventories or None,
         )
 
     def _check_output_spots(self) -> None:
@@ -1022,7 +1089,12 @@ class RollingRunner:
             if down
             else self._environment
         )
-        status_doc = build_status(self.log.records(), self.now, self.interface)
+        status_doc = build_status(
+            self.log.records(),
+            self.now,
+            self.interface,
+            inventories=self.inventories or None,
+        )
         report = replan(
             self._workflow,
             environment,
@@ -1030,7 +1102,9 @@ class RollingRunner:
             running_task_margin=self.margin,
             random_seed=self.seed,
             environment_source=self.environment_path,
+            ignore_resources=self._ignore_resources,
         )
+        self._collect_warnings(report)
         if not report.ok:
             raise RunnerError(self._failure_message(report))
         plan = report.plan
@@ -1378,6 +1452,24 @@ class RollingRunner:
             endpoint(arc.get("to")),
             activity.get("seq"),
         )
+
+    def _collect_warnings(self, report) -> None:
+        """Keep the scheduler's warnings, one line per distinct code.
+
+        Every replan re-derives the same warnings from the same environment, so
+        recording each occurrence would give one copy per tick. The first is the one
+        worth reporting: what they say -- a deprecated section, a model switched off
+        -- is a property of the inputs, not of the moment. An error needs no place
+        here; it stops the run and `_failure_message` names it.
+        """
+        for diag in getattr(report, "diagnostics", None) or []:
+            if getattr(diag, "severity", "error") != "warning":
+                continue
+            code = getattr(diag, "code", None)
+            if code in self._warned_codes:
+                continue
+            self._warned_codes.add(code)
+            self.scheduler_warnings.append(diag)
 
     @staticmethod
     def _failure_message(report) -> str:
