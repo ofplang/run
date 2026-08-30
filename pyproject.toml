@@ -26,12 +26,16 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.2.3` floor is required, not merely tested against:
-# the runner now *executes* refills, and 0.2.3 is where a running refill is held to
-# `now + margin` like any other running activity. Against an older scheduler a
-# refill that overran was reported free the moment its estimate said so, and the run
-# stopped with `device busy` -- which is how that bug was found. 0.2.0 is where the
-# execution document may carry `inventories` at all, and where the
+# PyPI. The `ofplang-schedule>=0.2.4` floor is required, not merely tested against:
+# this runner holds only the devices a mode *accesses* (`device_access: false`, spec
+# §4.4.2 -- material resting in a refrigerator occupies a slot, not the machine), and
+# 0.2.4 is where the scheduler learned that key. An older one refuses such an
+# environment outright with `unknown_key`, so there would be no plan to execute.
+# 0.2.3 was the previous requirement: the runner *executes* refills, and it is where
+# a running refill is held to `now + margin` like any other running activity. Against
+# an older scheduler a refill that overran was reported free the moment its estimate
+# said so, and the run stopped with `device busy` -- which is how that bug was found.
+# 0.2.0 is where the execution document may carry `inventories` at all, and where the
 # `machine_id_conflict` rename and the ortools 9.15 floor landed. Before that,
 # `>=0.1.6` was the requirement: every replan hands the scheduler the workflow, the
 # environment and the status as in-memory documents, and 0.1.6 is where it takes the
@@ -41,7 +45,7 @@ classifiers = [
 # `validate(..., expand=True)`, 0.1.3) so the runner runs exactly what was validated,
 # and 0.1.5 is where `validate()` takes an already-loaded document, which is what
 # gives the in-memory route a front door at all.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.2.3", "ofplang-validate>=0.1.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.2.4", "ofplang-validate>=0.1.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
