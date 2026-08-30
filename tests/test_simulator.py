@@ -15,6 +15,7 @@ import pytest
 
 from ofplang.run.simulator import (
     ClockError,
+    DeviceDown,
     Environment,
     MissingObject,
     RelayNotSupported,
@@ -332,6 +333,77 @@ def test_processing_device_busy_is_error():
     with pytest.raises(ResourceBusy):
         # `cook` also needs station_0; it is busy until `source` completes.
         sim.dispatch_processing("cook", "fast")
+
+
+# A refrigerator that holds plates without being held by them (spec §4.4.2): two
+# slots, a `chill` mode per slot declaring `device_access: false`, and a `service`
+# mode that does access the machine. Built inline like the others.
+FRIDGE_ENV = {
+    "time": {"unit": "second"},
+    "devices": [{"id": "fridge", "spots": ["slot_1", "slot_2"]}],
+    "processes": {
+        "chill": {
+            "modes": [
+                {
+                    "id": "slot_1",
+                    "devices": ["fridge"],
+                    "device_access": False,
+                    "duration": 180,
+                    "input_spots": {"plate": "fridge.slot_1"},
+                    "output_spots": {"out": "fridge.slot_1"},
+                },
+                {
+                    "id": "slot_2",
+                    "devices": ["fridge"],
+                    "device_access": False,
+                    "duration": 180,
+                    "input_spots": {"plate": "fridge.slot_2"},
+                    "output_spots": {"out": "fridge.slot_2"},
+                },
+            ]
+        },
+        # Accesses the machine and touches no spot -- a defrost cycle, say.
+        "service": {"modes": [{"id": "run", "devices": ["fridge"], "duration": 5}]},
+    },
+}
+
+
+def make_fridge_sim() -> Simulator:
+    sim = VirtualTimeSimulator(FRIDGE_ENV)
+    sim.place("fridge.slot_1")
+    sim.place("fridge.slot_2")
+    return sim
+
+
+def test_non_accessing_processing_holds_its_spot_not_its_device():
+    """Two plates rest in one fridge at once, and the machine stays free.
+
+    A mode declaring `device_access: false` binds its spots like any other but
+    busies no device (§4.4.2), so neither the second chill nor an operation that
+    *does* access the fridge is refused while the first is resting.
+    """
+    sim = make_fridge_sim()
+    sim.dispatch_processing("chill", "slot_1")
+    sim.dispatch_processing("chill", "slot_2")  # same device, would be ResourceBusy
+    sim.dispatch_processing("service", "run")  # and the machine itself is free
+
+
+def test_a_non_accessing_mode_still_takes_its_spot():
+    """What it drops is the device, not the spot: the slot is still exclusive."""
+    sim = make_fridge_sim()
+    sim.dispatch_processing("chill", "slot_1")
+    with pytest.raises(SpotConflict):
+        # A second plate cannot be put where the first one is resting; `place`
+        # occupies the spot the same way the arriving transport would.
+        sim.place("fridge.slot_1")
+
+
+def test_a_down_device_still_refuses_a_non_accessing_mode():
+    """Material cannot be put into a machine that is out of service."""
+    sim = make_fridge_sim()
+    sim.schedule_device_down(0, "fridge")
+    with pytest.raises(DeviceDown):
+        sim.dispatch_processing("chill", "slot_1")
 
 
 def test_pure_data_processing_occupies_nothing():

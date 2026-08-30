@@ -25,6 +25,11 @@ class Mode:
     A mode occupies its `devices` and the spots bound to its Object-bearing input
     and output ports for its `duration`. A Pure-Data-only mode names no device and
     no spot -- it just takes time (D12).
+
+    `device_access: false` (spec §4.4.2) is the third shape: the mode binds its spots
+    and takes time, but holds no device -- material resting in a refrigerator or a
+    storage hotel. The devices stay named (they own the spots, and a down device
+    still makes the mode unavailable); they are simply not busied.
     """
 
     id: str
@@ -33,6 +38,7 @@ class Mode:
     # Object-bearing port name -> qualified spot "<device>.<spot>" (§8.2).
     input_spots: dict[str, str]
     output_spots: dict[str, str]
+    device_access: bool = True
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,7 @@ def environment_from_dict(raw: dict) -> Environment:
                 duration=int(mdef["duration"]),
                 input_spots=dict(mdef.get("input_spots") or {}),
                 output_spots=dict(mdef.get("output_spots") or {}),
+                device_access=bool(mdef.get("device_access", True)),
             )
         processes[name] = Process(name=name, modes=modes)
 

@@ -450,11 +450,16 @@ class Simulator(Backend):
         # device cannot run processes, D21); devices idle; every input spot holds
         # material; every output spot is free -- unless it is also one of this
         # operation's own input spots (an in-place transform, §5.5).
+        # A non-accessing mode (§4.4.2) holds no device: the material rests on it
+        # and anything else may access it meanwhile, so neither the idle check below
+        # nor the busy-marking on commit applies to it. A *down* device still blocks
+        # it -- material cannot be put into a machine that is out of service.
+        held = m.devices if m.device_access else ()
         self._apply_faults()
         for d in m.devices:
             if d in self._down:
                 raise DeviceDown(f"device is down: {d}")
-        self._require_devices_free(m.devices)
+        self._require_devices_free(held)
         for s in in_spots:
             if s not in self._spot_holds:
                 raise MissingObject(f"input spot is empty: {s}")
@@ -463,12 +468,12 @@ class Simulator(Backend):
                 raise SpotConflict(f"output spot already occupied: {s}")
 
         # Commit: occupy the devices for the run (spots change only on completion).
-        for d in m.devices:
+        for d in held:
             self._busy_devices.add(d)
         return self._register(
             kind="processing",
             duration=dur,
-            devices=m.devices,
+            devices=held,
             transporter=None,
             input_spots=in_spots,
             output_spots=out_spots,
