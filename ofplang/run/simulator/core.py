@@ -174,13 +174,11 @@ def default_device_model(process, mode, inputs, output_schema, definition):
     # for entry in ((definition or {}).get("objects") or {}).get("transform") or []:
     #     ins = {role: inputs[_port(ref)] for role, ref in (entry.get("inputs") or {}).items()}
     #     outs = entry.get("outputs") or {}
-    #     if entry.get("kind") == "array_uncons":     # Array<T> -> T (head) + Array<T> (tail)
-    #         outputs[_port(outs["head"])] = ins["xs"][0]
-    #         outputs[_port(outs["tail"])] = ins["xs"][1:]
-    #     elif entry.get("kind") == "array_cons":     # T (head) + Array<T> (tail) -> Array<T> (xs)
-    #         outputs[_port(outs["xs"])] = [ins["head"], *ins["tail"]]
-    #     elif entry.get("kind") == "array_reverse":  # Array<T> -> Array<T> reversed
-    #         outputs[_port(outs["ys"])] = list(reversed(ins["xs"]))
+    #     if entry.get("kind") == "array_flatten":       # Array<Array<T>> -> Array<T>
+    #         outputs[_port(outs["xs"])] = [x for xs in ins["xss"] for x in xs]
+    #     elif entry.get("kind") == "array_unflatten":   # Array<T> -> Array<Array<T>>
+    #         outputs[_port(outs["xss"])] = _group(ins["xs"])  # grouping is the
+    #             # process's own semantics; spec 14.4.3 does not prescribe it
 
     return outputs
 
