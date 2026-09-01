@@ -45,7 +45,14 @@ classifiers = [
 # `validate(..., expand=True)`, 0.1.3) so the runner runs exactly what was validated,
 # and 0.1.5 is where `validate()` takes an already-loaded document, which is what
 # gives the in-memory route a front door at all.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.2.4", "ofplang-validate>=0.1.5"]
+# Upper bounds are deliberate. A sibling's minor version is where a
+# specification revision lands, and a revision may reject documents an earlier one
+# accepted: the 0.1 revision removed transform kinds and an output mode and renamed
+# a process marker. Without a cap, an already-published release of this package
+# would pick up the next such sibling and start refusing its own examples. The
+# bounds cannot protect what is already on PyPI without one, which is why they go
+# in now rather than at the first breakage.
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.3,<0.4", "ofplang-validate>=0.2,<0.3"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
