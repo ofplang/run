@@ -5,6 +5,12 @@
 # it as `Array<Cup>` rather than `Cup`. A structured node reshapes dataflow that way,
 # and neither the runner nor the scheduler it plans through has a representation for
 # it; the capability gate is what says so before a run starts.
+#
+# The `cups` output port and its `returns` entry are what make the document valid:
+# a map node's exposed Object output is subject to linearity (spec 12.2), so the
+# `Array<Cup>` has to be referred to exactly once. Without them the Cups the node
+# creates would have no fate, and the document would be refused for that instead --
+# which is not what this fixture is for.
 spec_version: "0.0"
 features:
   - node_map
@@ -20,6 +26,7 @@ processes:
   main:
     kind: composite
     inputs: {labels: {type: Array<String>, phase: data}}
+    outputs: {cups: {type: Array<Cup>, phase: data}}
     body:
       nodes:
         - id: make_cups
@@ -27,5 +34,6 @@ processes:
           process: make
           each:
             label: {from: inputs.labels}
-      returns: {}
+      returns:
+        cups: {from: make_cups.cup}
 entry: main
