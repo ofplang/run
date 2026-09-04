@@ -363,3 +363,75 @@ def test_cli_reports_failure_on_inconsistent_plan(tmp_path, capsys):
     code = main(["replay", str(plan_path), "--env", str(env_path)])
     assert code == EXIT_FAILED
     assert "execution failed" in capsys.readouterr().err
+
+
+# Plan C: the same one-source-one-target workflow planned twice as two jobs
+# (SPEC §6.11). Both jobs render the identical `node` paths and the identical arc,
+# and are told apart by `job` alone; the two runs are sequenced on the one station
+# each of them needs. makespan 10.
+def _leg(job, start, end):
+    return {
+        "kind": "transport",
+        "job": job,
+        "start": start,
+        "end": end,
+        "from_spot": "station_0.core",
+        "to_spot": "station_1.core",
+        "transporter": "transport",
+        "arc": {
+            "from": {"node": ["Source"], "port": "source_out"},
+            "to": {"node": ["Target"], "port": "target_in"},
+        },
+    }
+
+
+def _step(job, process, node, start, end):
+    return {
+        "kind": "processing",
+        "job": job,
+        "start": start,
+        "end": end,
+        "process": process,
+        "mode": "0",
+        "node": [node],
+    }
+
+
+PLAN_C = {
+    "time": {"unit": "second"},
+    "jobs": [{"id": "job1"}, {"id": "job2"}],
+    "outcome": "optimal",
+    "objective": {"kind": "makespan", "value": 10},
+    "activities": [
+        _step("job1", "source", "Source", 0, 2),
+        _leg("job1", 2, 3),
+        _step("job1", "target", "Target", 3, 5),
+        _step("job2", "source", "Source", 5, 7),
+        _leg("job2", 7, 8),
+        _step("job2", "target", "Target", 8, 10),
+    ],
+}
+
+
+def test_replays_a_joint_plan():
+    """Nothing in the replay path keys off a node path, so two jobs rendering the
+    same one run as the two separate pieces of work they are."""
+    status = Runner(PLAN_C, ENV).run()
+    assert status["now"] == 10
+    assert all(a["status"] == "completed" for a in status["activities"])
+    assert [a.get("job") for a in status["activities"]] == [
+        "job1",
+        "job1",
+        "job1",
+        "job2",
+        "job2",
+        "job2",
+    ]
+
+
+def test_a_joint_plans_status_carries_the_roster():
+    """The status is fed back to the scheduler, and each activity's copied `job` has
+    to name a roster entry there (`unknown_job`, SPEC §6.11) -- so dropping `jobs`
+    would make every status from a joint plan an invalid §6 document."""
+    status = Runner(PLAN_C, ENV).run()
+    assert status["jobs"] == [{"id": "job1"}, {"id": "job2"}]

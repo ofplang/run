@@ -17,6 +17,12 @@ How it drives the backend:
 * Relays and zero-distance same-spot transports carry no physical operation
   (D14/D19): they are bookkeeping and are marked complete without a dispatch.
 
+A plan of several jointly planned workflows (§6.11) replays like any other. Nothing
+here keys off a node path -- the sweep is over the plan's own event times, and each
+record holds its own activity -- so two jobs rendering the same `node` never collide.
+The `job` each activity carries is copied through into the status untouched, together
+with the `jobs` roster it names.
+
 Each real dispatch passes the plan's own duration (`end - start`), so the backend
 reproduces the plan's timeline exactly rather than re-deriving it from the
 environment. The runner holds the provenance the backend lacks (D10): which
@@ -156,7 +162,14 @@ class Runner:
     def _build_status(self) -> dict:
         """Assemble the execution status (§6/§7) recording the completed run: every
         activity marked `completed` at its actual times, with `now` at the makespan
-        and the `interface` carried through unchanged (§6.8)."""
+        and the `interface` (§6.8) and `jobs` (§6.11) carried through unchanged.
+
+        `jobs` has to come along for the same reason `interface` does -- the status is
+        a §6 document that is fed back to the scheduler -- but with a sharper edge:
+        each activity's copied provenance includes the `job` it belongs to, and a
+        `job` naming no roster entry is not a valid document at all
+        (`unknown_job`). Dropping the roster would make every status from a joint
+        plan invalid."""
         out_activities = []
         for rec in self._records:
             entry = dict(rec.activity)  # preserve provenance (node / arc / seq)
@@ -167,11 +180,14 @@ class Runner:
 
         makespan = max((r.end for r in self._records), default=0)
 
-        # Emit a readable top-level order: time, now, interface, activities, meta.
+        # Emit a readable top-level order: time, now, jobs, interface, activities,
+        # meta -- the order a rendered plan uses, so a plan and a status read alike.
         status: dict = {}
         if "time" in self.plan:
             status["time"] = self.plan["time"]
         status["now"] = makespan
+        if "jobs" in self.plan:
+            status["jobs"] = self.plan["jobs"]
         if "interface" in self.plan:
             status["interface"] = self.plan["interface"]
         status["activities"] = out_activities
