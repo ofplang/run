@@ -3,7 +3,7 @@
 This unifies the three previously separate run boundaries into one document:
 
   - the interface spot placement (§6.8) -- where boundary Objects physically sit;
-  - the whole-workflow input view values (formerly the ``--job``);
+  - the whole-workflow input view values (``entry_values``; formerly the ``--job``);
   - the whole-workflow output view values (formerly ``--outputs``).
 
 The format is a ``boundary:`` document with one descriptor per boundary port:
@@ -39,7 +39,7 @@ need, and -- critically -- never sends view values to the scheduler:
     scheduler each replan, keeping the scheduler value-independent (D9/D26). The
     projection is one-way: view values never round-trip into a replan, so an
     unpinned output can never silently become a scheduling constraint.
-  - ``job`` ({port: view}) -> the entry view values seeded into the value store.
+  - ``entry_values`` ({port: view}) -> the entry view values seeded into the store.
   - ``inventories`` -> copied verbatim into the §6.10 section of the status handed
     to the scheduler each replan. Unlike the two above this is *not* a projection:
     the shape is the scheduler's own, so the translation is an identity copy.
@@ -86,7 +86,7 @@ class Boundary:
     """A parsed, validated run boundary, projected for the runner's collaborators.
 
     `interface` is the §6.8 boundary constraint (spots only) handed to the
-    scheduler; `job` is the entry view values to seed; `output_spots` are the
+    scheduler; `entry_values` is what to seed; `output_spots` are the
     Object outputs the user pinned to a delivery spot (checked at run end, P3);
     `inventories` is the §6.10 starting stock, passed to the scheduler unchanged.
     The original input / output descriptors are retained so the produced result
@@ -94,7 +94,7 @@ class Boundary:
     """
 
     interface: dict  # {inputs?: {port: spot}, outputs?: {port: spot}} for the scheduler
-    job: dict  # {port: view} entry view values to seed (contract-checked at seed time)
+    entry_values: dict  # {port: view} to seed (contract-checked at seed time)
     output_spots: dict  # {port: spot} Object outputs with a declared delivery spot (P3)
     inventories: dict = field(default_factory=dict)  # §6.10 {levels: {device: {res: n}}}
     _inputs_doc: dict = field(default_factory=dict)  # input descriptors, echoed verbatim
@@ -200,7 +200,7 @@ def parse_boundary(doc, contracts) -> Boundary:
 
     `doc` is the loaded YAML (a mapping with a `boundary:` root), or None for no
     boundary (all defaults). Returns a `Boundary` projecting the scheduler
-    interface, the seed job, the pinned output spots and the starting inventories.
+    interface, the entry values, the pinned output spots and the starting inventories.
     Raises `RunnerError` on an unknown key at either level, an unknown boundary
     port, an Object input with no spot, or a Pure Data port given a spot --
     surfacing an authoring mistake up front rather than mid-run.
@@ -242,9 +242,9 @@ def parse_boundary(doc, contracts) -> Boundary:
     entry_outputs = contracts.processes[entry].outputs if entry is not None else {}
 
     # Inputs: an Object input must name a spot; a Pure Data input must not. A
-    # supplied `view` becomes a job value (checked later at seed time).
+    # supplied `view` becomes an entry value (checked later at seed time).
     interface_inputs: dict = {}
-    job: dict = {}
+    entry_values: dict = {}
     for port, desc in inputs_doc.items():
         if port not in entry_inputs:
             raise RunnerError(f"boundary input {port!r} is not an entry input of the workflow")
@@ -257,7 +257,7 @@ def parse_boundary(doc, contracts) -> Boundary:
         if spot is not None:
             interface_inputs[port] = spot
         if has_view:
-            job[port] = view
+            entry_values[port] = view
 
     # Outputs: a delivery spot is optional (an unpinned Object output stays where it
     # is produced), but a Pure Data output can carry none. A supplied `view` here is
@@ -286,7 +286,7 @@ def parse_boundary(doc, contracts) -> Boundary:
     # kept for the run-end delivery check (P3).
     return Boundary(
         interface,
-        job,
+        entry_values,
         dict(interface_outputs),
         inventories,
         dict(inputs_doc),

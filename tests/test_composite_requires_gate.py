@@ -67,5 +67,5 @@ def test_gate_helper_reflects_checked_requires():
     runner = RollingRunner(WF, ENV, _boundary(5), random_seed=0)
     assert runner._requires_gate_open(("Pre",)) is True         # not under a nested composite
     assert runner._requires_gate_open(("W", "Make")) is False   # under W, requires not yet checked
-    runner._checked_requires.add(("W",))
+    runner.jobs[0].checked_requires.add(("W",))
     assert runner._requires_gate_open(("W", "Make")) is True  # opens once W's requires is checked

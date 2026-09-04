@@ -41,11 +41,11 @@ def test_entry_composite_contracts_are_parsed():
     # The top-level entry composite's contracts are picked up (unlike nested / other
     # composites), so they can be checked at the run boundary.
     runner = RollingRunner(WF, ENV, _boundary(72), random_seed=0)
-    assert runner._entry_is_composite is True
-    assert "main" in runner._contract_asts
+    assert runner.jobs[0].entry_is_composite is True
+    assert "main" in runner.jobs[0].contract_asts
     assert (
-        "requires" in runner._contract_asts["main"]
-        and "ensures" in runner._contract_asts["main"]
+        "requires" in runner.jobs[0].contract_asts["main"]
+        and "ensures" in runner.jobs[0].contract_asts["main"]
     )
 
 

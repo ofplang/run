@@ -43,8 +43,8 @@ def test_run_phase_requires_is_classified_preflight():
     runner = RollingRunner(WF, ENV, random_seed=0)
     # `check`'s requires reads only the run-phase `limit`, so it is hoisted to preflight
     # (and is not left as a dispatch-time `requires`).
-    assert "requires_preflight" in runner._contract_asts["check"]
-    assert "requires" not in runner._contract_asts["check"]
+    assert "requires_preflight" in runner.jobs[0].contract_asts["check"]
+    assert "requires" not in runner.jobs[0].contract_asts["check"]
 
 
 def test_data_phase_requires_stays_runtime():
@@ -56,8 +56,8 @@ def test_data_phase_requires_stays_runtime():
         {"boundary": {"inputs": {"raw": {"view": 1}}}},
         random_seed=0,
     )
-    assert "requires" in runner._contract_asts["score"]
-    assert "requires_preflight" not in runner._contract_asts["score"]
+    assert "requires" in runner.jobs[0].contract_asts["score"]
+    assert "requires_preflight" not in runner.jobs[0].contract_asts["score"]
 
 
 # -- behavior ----------------------------------------------------------------
@@ -96,7 +96,7 @@ def test_producer_fed_run_phase_requires_is_deferred_to_dispatch():
         {"boundary": {"inputs": {"seed": {"view": 5}}}},
         random_seed=0,
     )
-    assert "requires_preflight" in runner._contract_asts["check"]
+    assert "requires_preflight" in runner.jobs[0].contract_asts["check"]
     checkable, deferred = runner._split_preflight(("Check",), "check")
     assert not checkable and len(deferred) == 1
 

@@ -40,7 +40,7 @@ def test_object_input_projects_spot_and_view():
     doc = {"boundary": {"inputs": {"sample": {"spot": "loader.stage", "view": {"barcode": "ABC"}}}}}
     b = parse_boundary(doc, _contracts(TYPED))
     assert b.interface == {"inputs": {"sample": "loader.stage"}}
-    assert b.job == {"sample": {"barcode": "ABC"}}
+    assert b.entry_values == {"sample": {"barcode": "ABC"}}
     assert b.output_spots == {}
 
 
@@ -49,7 +49,7 @@ def test_pure_data_input_projects_view_only():
     doc = {"boundary": {"inputs": {"start": {"view": {"value": 42}}}}}
     b = parse_boundary(doc, _contracts(COUNT))
     assert b.interface == {}  # no Objects -> no interface at all
-    assert b.job == {"start": {"value": 42}}
+    assert b.entry_values == {"start": {"value": 42}}
 
 
 def test_input_view_omitted_is_not_seeded():
@@ -57,7 +57,7 @@ def test_input_view_omitted_is_not_seeded():
     doc = {"boundary": {"inputs": {"sample": {"spot": "loader.stage"}}}}
     b = parse_boundary(doc, _contracts(TYPED))
     assert b.interface == {"inputs": {"sample": "loader.stage"}}
-    assert b.job == {}  # view omitted -> seed_entry will default it
+    assert b.entry_values == {}  # view omitted -> seed_entry will default it
 
 
 def test_object_output_projects_spot():
@@ -79,7 +79,7 @@ def test_output_view_on_input_is_ignored():
     }
     b = parse_boundary(doc, _contracts(LOAD))
     assert b.output_spots == {"result": "unloader.slot"}
-    assert b.job == {}  # nothing from the output view leaks into the seed
+    assert b.entry_values == {}  # nothing from the output view leaks into the seed
 
 
 def test_unpinned_object_output_is_allowed():
@@ -96,7 +96,7 @@ def test_empty_and_absent_boundary():
     empty boundary (all defaults)."""
     for doc in (None, {}, {"boundary": {}}, {"boundary": {"inputs": {}, "outputs": {}}}):
         b = parse_boundary(doc, _contracts(COUNT))
-        assert b.interface == {} and b.job == {} and b.output_spots == {}
+        assert b.interface == {} and b.entry_values == {} and b.output_spots == {}
 
 
 # -- validation --------------------------------------------------------------

@@ -306,7 +306,7 @@ def test_dispatch_with_an_unproduced_input_fails_gracefully():
     # advanced to), so the guard is driven directly. `unproduced_inputs` itself is
     # unit-tested in tests/test_dataflow.py.
     runner = RollingRunner(COUNT_WF, COUNT_ENV, _count_boundary(1), random_seed=0)
-    seed_entry(runner.dataflow, runner.contracts, runner.values, runner.job)
+    seed_entry(runner.dataflow, runner.contracts, runner.values, runner.jobs[0].entry_values)
 
     # count_chain is S1 -> S2. S1's only input comes from the (now seeded) boundary;
     # S2's comes from S1, which has not run.
@@ -410,7 +410,9 @@ def test_output_spot_delivery_check_flags_empty_spot():
         random_seed=0,
     )
     # output.slot is empty before any delivery; claim `result` should be there.
-    runner.boundary = dataclasses.replace(runner.boundary, output_spots={"result": "output.slot"})
+    runner.jobs[0].boundary = dataclasses.replace(
+        runner.boundary, output_spots={"result": "output.slot"}
+    )
     with pytest.raises(RunnerError, match="did not reach its declared spot"):
         runner._check_output_spots()
 
