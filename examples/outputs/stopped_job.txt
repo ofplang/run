@@ -18,7 +18,7 @@ one plate cracks in the oven; what happens to the other two
    49 ->  50  job3   completed  m0      discard
    50 ->  50  job1   cancelled          bin.chute
    50 ->  50  job1   cancelled  m0      discard
-  occupied: oven.tray_1 since 50 (left by job1)
+  occupied: oven.tray_1 since 23 (left by job1)
   makespan 50; finished ['job2', 'job3']; stopped ['job1']
 
 --on-job-failure stop
@@ -38,7 +38,7 @@ one plate cracks in the oven; what happens to the other two
    26 ->  26  job3   cancelled  tray_1  assay
    26 ->  26  job3   cancelled          bin.chute
    26 ->  26  job3   cancelled  m0      discard
-  occupied: oven.tray_1 since 26 (left by job1)
+  occupied: oven.tray_1 since 23 (left by job1)
   occupied: oven.tray_2 since 26 (left by job2)
-  occupied: bench.slot_a since 26 (left by job3)
+  occupied: bench.slot_a since 8 (left by job3)
   makespan 26; finished -; stopped ['job1', 'job2', 'job3']

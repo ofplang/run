@@ -89,6 +89,13 @@ class Job:
     # records the one that stopped this job, so a run where two jobs failed for
     # different reasons can say both.
     failure: Failure | None = None
+    # Spots the failing activity touched, claimed as occupied whatever the backend
+    # says about them. A failed transport claims both ends though the backend's
+    # ledger names only the source: that ledger holds material where it was on the
+    # reasoning that nothing follows a failure, and isolating the failure is what
+    # removes that reasoning. Remembered here because it is a fact about the moment
+    # this job stopped, while the rest of its residue is re-read from the world.
+    residue_claim: set = field(default_factory=set)
 
     # Derived from the workflow, all read on the dispatch path.
     output_schemas: dict = field(default_factory=dict)

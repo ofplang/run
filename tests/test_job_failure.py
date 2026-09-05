@@ -112,8 +112,11 @@ def test_the_stopped_jobs_material_is_declared_occupied():
     and the failed assay's interval has ended, so without this section it believes the
     tray free and carries the next job's plate onto the cracked plate."""
     status, _runner = _oven_run("job1", "job2", "job3")
+    failed = [a for a in status["activities"] if a["status"] == "failed"]
+    assert len(failed) == 1
     assert status["occupied"] == [
-        {"spot": "oven.tray_1", "job": "job1", "since": status["now"]}
+        # Dated when the plate was actually left there, not when we noticed.
+        {"spot": "oven.tray_1", "since": failed[0]["end"], "job": "job1"}
     ]
     # ... and nothing was ever planned onto it after the failure.
     later = [
@@ -123,17 +126,15 @@ def test_the_stopped_jobs_material_is_declared_occupied():
     assert later and all("tray_1" not in str(a.get("to_spot") or "") for a in later)
 
 
-def test_the_residue_is_dated_now_not_when_the_plate_arrived():
-    """🔴 Measured: any earlier `since` makes the document infeasible. The stopped
-    job's own activities already hold the spot up to `now` (its failed one, and the
-    work the scheduler cancels at `now`), so an earlier date double-books the spot
-    against the very history that put the plate there."""
+def test_the_residue_is_dated_when_the_plate_was_left_there():
+    """The truthful moment, not the moment we noticed. A plan holds the spot from
+    `max(since, now)` whatever this says (schedule SPEC §6.12), so the date is free to
+    record what actually happened -- and this section is the only place it is."""
     status, runner = _oven_run("job1", "job2", "job3")
     entry = status["occupied"][0]
-    assert entry["since"] == status["now"] == runner.now
-    # The moment it arrived is not lost -- it is the end of the activity that failed.
     failed = [a for a in status["activities"] if a["status"] == "failed"]
-    assert len(failed) == 1 and failed[0]["end"] < entry["since"]
+    assert entry["since"] == failed[0]["end"]
+    assert entry["since"] < status["now"] == runner.now  # long before the run ended
 
 
 def test_a_spot_another_job_now_holds_is_not_claimed_as_this_jobs_residue():
@@ -252,3 +253,49 @@ def test_cli_reports_the_single_workflow_failure_as_it_always_did(capsys):
     err = capsys.readouterr().err
     assert "ofp-run: execution failed" in err
     assert "job '" not in err  # no job prefix: this run has no named jobs
+
+
+# -- a spot a running activity holds is not residue ---------------------------
+
+
+def test_a_spot_a_running_activity_holds_is_not_declared_residue():
+    """🔴 §6.12 is for what the plan "does not otherwise account for", and a running
+    activity accounts for its spots perfectly well -- the model holds them over its
+    interval. Declaring them here as well describes the same material twice, and the
+    two descriptions overlap: measured to make the replan infeasible and stop every
+    other job in the run, the exact opposite of what isolating a failure is for.
+
+    Here one job has two branches: A is still baking on tray_2 when B's transport into
+    tray_1 fails. The invariant is checked on every document the run builds.
+    """
+    workflow = load_document(FIXTURES / "two_branch.workflow.yaml")
+    runner = RollingRunner(
+        [JobRequest(id=job_id, workflow=workflow) for job_id in ("job1", "job2")],
+        OVEN_ENV,
+        poll_interval=None,
+        random_seed=0,
+    )
+    for source in ("bench.slot_a", "bench.slot_b"):
+        runner.sim.schedule_transport_failure("arm", source, "oven.tray_1")
+
+    original = runner._occupied_now
+    saw_a_running_spot = False
+
+    def watch():
+        nonlocal saw_a_running_spot
+        entries = original()
+        running = {
+            spot
+            for rec in runner.log.running()
+            for spot in runner._spots_of(rec.activity)
+        }
+        saw_a_running_spot = saw_a_running_spot or bool(running)
+        assert not ({e["spot"] for e in entries} & running), (entries, running)
+        return entries
+
+    runner._occupied_now = watch  # type: ignore[method-assign]
+    runner.run()
+    # The check is only worth anything if something really was running at the time.
+    assert saw_a_running_spot
+    # And the spot is claimed once that bake has finished, not before.
+    assert "oven.tray_2" in {e["spot"] for e in runner._occupied_now()}

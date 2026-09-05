@@ -401,9 +401,6 @@ class RollingRunner:
         self.occupied: list[dict] = [{"since": 0, **entry} for entry in occupied or []]
         # Work abandoned when a job stopped, captured as it stopped (see `_stop_job`).
         self._cancelled: list[dict] = []
-        # Spots a stopped job left material on (`_record_residue`), kept apart from the
-        # laboratory's own because they are dated differently -- see `_occupied_now`.
-        self._residue: list[dict] = []
         # What every stock held when this run began (§6.10). One per run however many
         # jobs draw on it, which is why it is here and not on the job. Carried into
         # the status unchanged on every tick -- the level at `now` is the scheduler's
@@ -662,8 +659,11 @@ class RollingRunner:
                 a for a in self._undispatched() if self._job_of(a) is target
             ]
             # The failing activity is only *this* job's extra claim on a spot; the
-            # others stopped because it did, and are holding whatever they were holding.
-            self._record_residue(target, activity if target is job else None)
+            # others stopped because it did, and are holding whatever they were
+            # holding. What each job is holding is re-read every tick
+            # (`_occupied_now`); only this claim has to be remembered.
+            if target is job and activity is not None:
+                target.residue_claim |= self._spots_of(activity)
         # The scheduler learns a job stopped from the terminal status in the history,
         # and answers the next replan with its remaining work `cancelled`. But the
         # answer has to be *asked for*: without this a tick may decide it need not
@@ -1273,7 +1273,7 @@ class RollingRunner:
             # the exception.
             #
             # A run of several does not. One job's residue can make the rest
-            # unplannable -- that is the cost of declaring it (`_record_residue`) --
+            # unplannable -- that is the cost of declaring it (`_occupied_now`) --
             # and killing the run by exception would throw away the status describing
             # everything the other jobs did complete. So every job stops, what is
             # running is waited out, and the run ends the way any other failure ends
@@ -1673,72 +1673,94 @@ class RollingRunner:
         spots |= {activity[k] for k in ("from_spot", "to_spot") if activity.get(k)}
         return spots
 
-    def _record_residue(self, job: Job, activity: dict | None) -> None:
-        """Declare the spots a stopped job is still holding, as `occupied` (§6.12).
+    def _occupied_now(self) -> list[dict]:
+        """The `occupied` section (§6.12) as of this moment: what the laboratory was
+        already holding, plus what each stopped job is still holding.
 
-        🔴 This is not bookkeeping -- it is what makes the rest of the run *runnable*.
-        The scheduler models occupancy through activity intervals, and the interval of
-        the activity that put the material there has ended, so without this section the
-        model believes the spot free and plans another job's material straight onto it.
-        Measured: a failed assay leaves its plate on the reader, and the very next plan
-        carries the other job's plate to the same stage.
+        🔴 Computed here, every time it is asked, rather than fixed when the job
+        stopped -- because **a spot a running activity is holding is not residue.**
+        §6.12 is for what the plan "does not otherwise account for", and a running
+        activity accounts for its spots perfectly well: the model holds them over its
+        interval. Declaring them here as well describes the same material twice, and the
+        two descriptions overlap -- which was measured to make the replan infeasible and
+        stop every other job in the run, the exact opposite of what isolating a failure
+        is for.
+
+        Asking each tick also makes it self-healing: while a stopped job's last
+        operation is still finishing, its spot is accounted for by that operation; the
+        moment it completes, the spot becomes residue and is declared from then on.
+        """
+        entries = list(self.occupied)
+        seen = {entry.get("spot") for entry in entries}
+        running = {
+            spot for rec in self.log.running() for spot in self._spots_of(rec.activity)
+        }
+        owners = self._spot_owners()
+        for job in self._jobs:
+            if not job.stopped:
+                continue
+            for spot in sorted(self._residue_spots(job, owners) - running - seen):
+                entry: dict = {"spot": spot, "since": self._held_since(job, spot)}
+                if job.id:
+                    entry["job"] = job.id
+                entries.append(entry)
+                seen.add(spot)
+        return entries
+
+    def _residue_spots(self, job: Job, owners: dict) -> set[str]:
+        """The spots a stopped `job` may still be holding.
 
         A spot is *this job's* only if this job touched it last. 🔴 Ownership, not
         acquaintance: two jobs of one workflow use the same bench slot one after the
         other, so "every spot this job ever touched" claims the plate the next job has
         just made -- which was measured to make that job unplannable and take the whole
-        run down with it. The last activity to touch a spot is the one that decided
-        what is on it.
+        run down with it. The last activity to touch a spot is the one that decided what
+        is on it.
 
-        On top of that, and unconditionally, every spot the *failing* activity touched.
-        The backend's occupancy is not an observation -- even the real out-of-process
-        backend keeps the same in-memory ledger -- and that ledger says a failed
-        operation leaves material exactly where it was, reasoning that "the run stops on
-        failure and nothing follows". Isolating the failure is precisely what removes
-        that premise. So a failed transport claims *both* ends, though the ledger names
-        only the source. Over-claiming costs a slower plan; under-claiming means putting
-        a plate where a plate already is.
+        On top of that, and unconditionally, every spot the *failing* activity touched
+        (`job.residue_claim`). The backend's occupancy is not an observation -- even the
+        real out-of-process backend keeps the same in-memory ledger -- and that ledger
+        says a failed operation leaves material exactly where it was, reasoning that
+        "the run stops on failure and nothing follows". Isolating the failure is
+        precisely what removes that premise. So a failed transport claims *both* ends,
+        though the ledger names only the source. Over-claiming costs a slower plan;
+        under-claiming means putting a plate where a plate already is.
 
         Only for a run of named jobs. A single workflow's failure ends the run, so there
         is nothing left to plan around, and its document stays what it was.
         """
         if not self._named:
-            return
-        candidates = {
-            spot for spot, (_end, owner) in self._spot_owners().items() if owner is job
-        }
+            return set()
+        candidates = {spot for spot, (_end, owner) in owners.items() if owner is job}
         # Boundary material that has not moved yet has no activity to have touched it.
         if job.placed:
             candidates |= set((job.interface.get("inputs") or {}).values())
         held = {spot for spot in candidates if self.sim.spot_state(spot) is not None}
-        if activity is not None:
-            held |= self._spots_of(activity)
+        return held | job.residue_claim
 
-        already = {entry.get("spot") for entry in self._occupied_now()}
-        for spot in sorted(held - already):
-            entry: dict = {"spot": spot}
-            if job.id:
-                entry["job"] = job.id
-            self._residue.append(entry)
+    def _held_since(self, job: Job, spot: str) -> int:
+        """When this spot became occupied: the end of the last of the job's finished
+        activities to touch it, or -- for boundary material that never moved -- the
+        release at which it appeared (§6.8). `now` is the floor for anything the history
+        cannot date.
 
-    def _occupied_now(self) -> list[dict]:
-        """The `occupied` section (§6.12) as of this moment: what the laboratory was
-        already holding, plus what each stopped job left behind.
-
-        🔴 A residue entry is dated **`now`**, re-stamped on every tick, not fixed at
-        the moment the job failed. Measured: any earlier `since` makes the document
-        infeasible. The document already accounts for the spot up to `now` through the
-        stopped job's own activities -- the failed one, and the work the scheduler
-        cancels at `now` -- so the material's interval already runs to `now`, and an
-        earlier `since` double-books the spot against the very history that put the
-        plate there. What this section adds is that it is *still* held from here on,
-        which is exactly what `now` says. The moment it arrived is not lost: it is the
-        end of the activity that failed.
-
-        The laboratory's own entries keep the date they were given (normally 0, before
-        the run): no history claims those spots, so nothing collides with them.
+        The truthful moment, not the moment we noticed. A plan holds the spot from
+        `max(since, now)` whatever this says (schedule SPEC §6.12), so the date is free
+        to record what actually happened -- and this section is the only place it is
+        recorded.
         """
-        return self.occupied + [{**entry, "since": self.now} for entry in self._residue]
+        ends = [
+            rec.end
+            for rec in self.log.records()
+            if rec.status != "running"
+            and self._job_of(rec.activity) is job
+            and spot in self._spots_of(rec.activity)
+        ]
+        if ends:
+            return min(max(ends), self.now)
+        if spot in set((job.interface.get("inputs") or {}).values()):
+            return job.release
+        return self.now
 
     def _spot_owners(self) -> dict[str, tuple[int, Job | None]]:
         """For each spot the committed history touched, `(when, whose)` for the last
