@@ -545,9 +545,11 @@ class RollingRunner:
     def _only_job(self) -> Job:
         """The one job of a single-workflow run.
 
-        Every accessor below, and every use of it inside the loop, is a place that
-        will have to say *which* job once a run may carry several. Naming it rather
-        than reaching into `_jobs[0]` is what makes those places findable.
+        What is left of a seam that used to run through the whole class: every place
+        the loop needed a job now takes one, and these are the survivors -- the public
+        accessors below, which answer for *the* job because that is what a caller with
+        one workflow means. A run of several has no such job, and says so rather than
+        answering for whichever happens to be first.
         """
         if len(self._jobs) != 1:
             raise RunnerError(
