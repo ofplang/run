@@ -161,3 +161,24 @@ ofp-run run --jobs examples/shared_refill.run.yaml \
 
 The script exists for the *contrast*: one run cannot show what the other job
 changed. It writes `outputs/shared_refill.txt`.
+
+## `stopped_job` — one plate cracks; what happens to the other two
+
+- `stopped_job.env.yaml` — a two-tray oven. `assay` declares `device_access: false`,
+  so a plate rests on its tray without holding the oven, which makes the *trays* the
+  scarce thing rather than the machine.
+- `render_stopped_job.py` — runs three jobs of `shared_refill.workflow.yaml` in it
+  with every assay on `tray_1` failing (injected from Python, like the device fault
+  in `reroute`), once with `--on-job-failure continue` and once with `stop`.
+
+With `continue` (the default) the failing job stops and the other two finish, sharing
+`tray_2` one after the other. With `stop` the first failure ends the run and the other
+two are abandoned wherever they had got to — and every job's material is declared, not
+just the one that failed.
+
+🔴 The `occupied` section is what makes the `continue` run *executable*, not merely
+tidy. The scheduler models occupancy through activity intervals, and the failed
+assay's interval has ended — so without that section the model believes `tray_1` free
+and would carry the third job's plate onto the plate that is still sitting there.
+Serialising the two survivors onto one tray is the true price of the crack, and a plan
+that did not pay it could not be run. It writes `outputs/stopped_job.txt`.

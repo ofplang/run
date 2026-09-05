@@ -414,7 +414,7 @@ def test_output_spot_delivery_check_flags_empty_spot():
         runner.boundary, output_spots={"result": "output.slot"}
     )
     with pytest.raises(RunnerError, match="did not reach its declared spot"):
-        runner._check_output_spots()
+        runner._check_output_spots(runner.jobs[0])
 
 
 def test_create_workflow_records_producer_but_has_no_outputs():

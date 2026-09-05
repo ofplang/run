@@ -1,0 +1,44 @@
+one plate cracks in the oven; what happens to the other two
+==========================================================
+
+--on-job-failure continue
+-------------------------
+    0 ->   2  job1   completed  slot_b  make_plate
+    2 ->   3  job1   completed          oven.tray_1
+    3 ->   5  job2   completed  slot_a  make_plate
+    3 ->  23  job1   failed     tray_1  assay
+    5 ->   6  job2   completed          oven.tray_2
+    6 ->   8  job3   completed  slot_a  make_plate
+    6 ->  26  job2   completed  tray_2  assay
+   26 ->  27  job2   completed          bin.chute
+   27 ->  28  job2   completed  m0      discard
+   27 ->  28  job3   completed          oven.tray_2
+   28 ->  48  job3   completed  tray_2  assay
+   48 ->  49  job3   completed          bin.chute
+   49 ->  50  job3   completed  m0      discard
+   50 ->  50  job1   cancelled          bin.chute
+   50 ->  50  job1   cancelled  m0      discard
+  occupied: oven.tray_1 since 50 (left by job1)
+  makespan 50; finished ['job2', 'job3']; stopped ['job1']
+
+--on-job-failure stop
+---------------------
+    0 ->   2  job1   completed  slot_b  make_plate
+    2 ->   3  job1   completed          oven.tray_1
+    3 ->   5  job2   completed  slot_a  make_plate
+    3 ->  23  job1   failed     tray_1  assay
+    5 ->   6  job2   completed          oven.tray_2
+    6 ->   8  job3   completed  slot_a  make_plate
+    6 ->  26  job2   completed  tray_2  assay
+   26 ->  26  job1   cancelled          bin.chute
+   26 ->  26  job1   cancelled  m0      discard
+   26 ->  26  job2   cancelled          bin.chute
+   26 ->  26  job2   cancelled  m0      discard
+   26 ->  26  job3   cancelled          oven.tray_1
+   26 ->  26  job3   cancelled  tray_1  assay
+   26 ->  26  job3   cancelled          bin.chute
+   26 ->  26  job3   cancelled  m0      discard
+  occupied: oven.tray_1 since 26 (left by job1)
+  occupied: oven.tray_2 since 26 (left by job2)
+  occupied: bench.slot_a since 26 (left by job3)
+  makespan 26; finished -; stopped ['job1', 'job2', 'job3']

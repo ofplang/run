@@ -225,6 +225,10 @@ class RunResult:
     failed: bool
     failure: Any
     scheduler_warnings: list = field(default_factory=list)
+    # Why each *named* job stopped, in roster order: `(job id, Failure)`. Empty for a
+    # single-workflow run, whose one job is unnamed and whose reason is `failure` --
+    # so a caller that only knows the old field reports exactly what it always did.
+    job_failures: list = field(default_factory=list)
 
 
 def run_workflow(
@@ -242,6 +246,7 @@ def run_workflow(
     ignore_resources: bool = False,
     inventories: dict | None = None,
     occupied: list[dict] | None = None,
+    on_job_failure: str = "continue",
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -252,6 +257,10 @@ def run_workflow(
     `inventories` and `occupied` then say what the laboratory itself starts with,
     there being no single boundary to say it in. Every job's workflow goes through the
     same front door, one at a time, so a rejection names the job it came from.
+
+    `on_job_failure` decides what one job's failure does to the rest: `continue` (the
+    default) stops that job alone, `stop` stops the run. A single workflow is a single
+    job, so the two are indistinguishable there.
 
     `workflow` and `env` are each either a path to a YAML file or an already-loaded
     document (a mapping) -- the former lets a caller run a workflow it rewrote in memory
@@ -307,6 +316,7 @@ def run_workflow(
         ignore_resources=ignore_resources,
         inventories=inventories,
         occupied=occupied,
+        on_job_failure=on_job_failure,
     )
     try:
         status = runner.run()
@@ -323,4 +333,7 @@ def run_workflow(
         failed=runner.failed,
         failure=runner.failure,
         scheduler_warnings=runner.scheduler_warnings,
+        job_failures=[
+            (job.id, job.failure) for job in runner.jobs if job.id and job.failure
+        ],
     )

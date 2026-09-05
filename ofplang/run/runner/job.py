@@ -28,6 +28,7 @@ from .contract_eval import parse as parse_contract
 from .contract_eval import referenced_ports
 from .contracts import Contracts, to_descriptor
 from .dataflow import from_workflow
+from .failure import Failure
 from .values import ValueStore
 
 
@@ -73,6 +74,22 @@ class Job:
     # line in the constructor.
     placed: bool = False
 
+    # Whether this job has stopped: something of its own failed, so no more of ITS
+    # work is dispatched (SPEC §6.2). The other jobs of the run are unaffected -- a
+    # laboratory does not down tools because one plate cracked -- which is the whole
+    # point of the job being the unit here rather than the run.
+    #
+    # 🔴 The scheduler needs no telling. A terminal activity in the status stops the
+    # job on its side too, and it answers the next replan with that job's remaining
+    # work already `cancelled`. This flag exists because there is a *window* before
+    # that answer arrives: a tick may legitimately decide it need not replan, and the
+    # stale plan still lists this job's work as dispatchable.
+    stopped: bool = False
+    # Why it stopped (D36). The run records the first failure of the whole run; this
+    # records the one that stopped this job, so a run where two jobs failed for
+    # different reasons can say both.
+    failure: Failure | None = None
+
     # Derived from the workflow, all read on the dispatch path.
     output_schemas: dict = field(default_factory=dict)
     process_defs: dict = field(default_factory=dict)
@@ -98,7 +115,12 @@ class Job:
         entry: dict = {"id": self.id}
         if self.release:
             entry["release"] = self.release
-        if self.bound is not None:
+        # 🔴 A stopped job carries no `bound`. The scheduler already drops a stopped
+        # job's deadline constraint (it can never be met), so keeping it would change
+        # no plan -- but it would leave the document reporting a completion this job
+        # was promised and will not reach, which is a lie a reader has no way to
+        # detect. A promise that cannot be kept is withdrawn, not restated.
+        if self.bound is not None and not self.stopped:
             entry["bound"] = self.bound
         if self.fingerprint is not None:
             entry["fingerprint"] = self.fingerprint

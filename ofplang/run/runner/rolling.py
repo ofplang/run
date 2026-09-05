@@ -46,7 +46,6 @@ from __future__ import annotations
 import copy
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -54,6 +53,7 @@ from ..backend import Backend
 from ..simulator import VirtualTimeSimulator
 from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
+from .failure import Failure
 from .job import Job, JobRequest, build_job
 from .loader import load_document
 from .observation import ObservationRecorder
@@ -90,19 +90,6 @@ def _accepts_node(func) -> bool:
 #: limit entirely, for a long virtual run against a backend whose clock does advance.
 DEFAULT_MAX_TICKS = 100_000
 
-
-@dataclass
-class Failure:
-    """Why a run stopped (D36): a machine-readable `kind` (reason code), a
-    human-readable `detail`, the `subject` that failed (a node path label, `main`, or
-    an activity), and the virtual time `now` at which it was detected. The runner
-    records the first failure that stopped the run; the CLI prints it and the final
-    status echoes it."""
-
-    kind: str
-    detail: str
-    subject: str
-    now: int
 
 
 def _normalize_mode_ids(environment: dict) -> dict:
@@ -270,6 +257,7 @@ class RollingRunner:
         ignore_resources: bool = False,
         inventories: dict | None = None,
         occupied: list[dict] | None = None,
+        on_job_failure: str = "continue",
     ):
         # The workflow as an in-memory document. `workflow` is either a path to a
         # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
@@ -390,6 +378,19 @@ class RollingRunner:
         # by the entry point it always used, with a top-level `interface` and no
         # roster, so its plan is byte-for-byte what it was.
         self._named = any(job.id for job in self._jobs)
+        # What one job's failure does to the rest (SPEC §6.11). `continue` isolates
+        # it: that job stops and the others carry on, which is why they were planned
+        # together in the first place -- a laboratory does not down tools because one
+        # plate cracked. `stop` is the older, blunter reading, kept for a run where the
+        # jobs are parts of one experiment rather than independent work.
+        #
+        # A run of one workflow is a run of one job, so the two are indistinguishable
+        # there: the only job stopping stops the run either way.
+        if on_job_failure not in ("continue", "stop"):
+            raise RunnerError(
+                f"on_job_failure must be 'continue' or 'stop', got {on_job_failure!r}"
+            )
+        self._on_job_failure = on_job_failure
         # Spots the laboratory is already holding (§6.12): declared at run start, and
         # added to when a job stops leaving material behind.
         # `since` -- when the spot became occupied -- is required by the document
@@ -398,6 +399,11 @@ class RollingRunner:
         # beginning" is the only thing a run's opening state can mean, and a caller
         # writing it out would be answering a question that has one answer.
         self.occupied: list[dict] = [{"since": 0, **entry} for entry in occupied or []]
+        # Work abandoned when a job stopped, captured as it stopped (see `_stop_job`).
+        self._cancelled: list[dict] = []
+        # Spots a stopped job left material on (`_record_residue`), kept apart from the
+        # laboratory's own because they are dated differently -- see `_occupied_now`.
+        self._residue: list[dict] = []
         # What every stock held when this run began (§6.10). One per run however many
         # jobs draw on it, which is why it is here and not on the job. Carried into
         # the status unchanged on every tick -- the level at `now` is the scheduler's
@@ -515,7 +521,7 @@ class RollingRunner:
         loop assumes the job set was known at the start.
         """
         for job in self._jobs:
-            if job.placed or job.release > self.now:
+            if job.placed or job.stopped or job.release > self.now:
                 continue
             for _port, spot in (job.interface.get("inputs") or {}).items():
                 self.sim.place(spot)
@@ -600,12 +606,70 @@ class RollingRunner:
             return "/".join(node) if node else "main"
         return f"{activity.get('from_spot')} -> {activity.get('to_spot')}"
 
-    def _record_failure(self, kind: str, detail: str, subject: str) -> None:
-        """Record why the run stopped (D36), first failure wins (later ones are the
-        cascade of the first). Does not itself stop the run -- the caller sets
-        `failed` / `_stopping`."""
+    def _record_failure(
+        self, job: Job | None, kind: str, detail: str, subject: str
+    ) -> None:
+        """Record why something failed (D36), first failure wins at each level (later
+        ones are the cascade of the first). Does not itself stop anything -- the caller
+        calls `_stop_job`.
+
+        Two levels, because a run of several jobs can fail in several unrelated ways:
+        the run keeps the first failure of the whole run (what the CLI has always
+        printed), and the job keeps the one that stopped *it*. `job` is None for a
+        failure that belongs to no job -- a refill's.
+        """
+        failure = Failure(kind=kind, detail=detail, subject=subject, now=self.now)
+        if job is not None and job.failure is None:
+            job.failure = failure
         if self.failure is None:
-            self.failure = Failure(kind=kind, detail=detail, subject=subject, now=self.now)
+            self.failure = failure
+
+    def _stop_job(self, job: Job | None, activity: dict | None = None) -> None:
+        """Stop `job`: dispatch no more of its work, record what it left behind, and
+        decide whether that stops the run (D25, per job since SPEC §6.11).
+
+        `activity` is the one that failed, where there was one.
+
+        Everything stops when `job` is None -- a refill's failure, or a replan nothing
+        can be planned from: neither can be attributed, and a refill that failed leaves
+        the stock it was topping up short. Everything stops under
+        `on_job_failure="stop"` too, which is what that policy means.
+
+        🔴 `_stopping` is *derived* from the jobs rather than set alongside them, so the
+        two can never disagree. That matters: a run whose jobs were left un-stopped
+        while the run stopped would, at the end, check their boundary deliveries and
+        echo their outputs -- reporting as delivered the work it had just abandoned.
+
+        A run of one workflow is a run of one job, so `all(...)` is true the moment that
+        job stops: `_stopping` is set exactly when it always was, and every
+        single-workflow run behaves identically. What changes is only that a run with
+        other jobs left, and the policy to use them, carries on.
+        """
+        self.failed = True
+        if job is None or self._on_job_failure == "stop":
+            targets: list[Job] = list(self._jobs)
+        else:
+            targets = [job]
+        for target in targets:
+            if target.stopped:
+                continue
+            target.stopped = True
+            # What this job never got to do. It has to be captured *now*: the next plan
+            # answers with this work `cancelled`, which is not a status the runner
+            # commits and not something `_last_pending` keeps -- so by the end of the
+            # run there would be nothing left to say what was abandoned.
+            self._cancelled += [
+                a for a in self._undispatched() if self._job_of(a) is target
+            ]
+            # The failing activity is only *this* job's extra claim on a spot; the
+            # others stopped because it did, and are holding whatever they were holding.
+            self._record_residue(target, activity if target is job else None)
+        # The scheduler learns a job stopped from the terminal status in the history,
+        # and answers the next replan with its remaining work `cancelled`. But the
+        # answer has to be *asked for*: without this a tick may decide it need not
+        # replan, and the stale plan still lists that job's work as dispatchable.
+        self._observed_change = True
+        self._stopping = all(target.stopped for target in self._jobs)
 
     def run(self) -> dict:
         """Drive to completion and return the final execution status (§6/§7).
@@ -666,8 +730,7 @@ class RollingRunner:
                 )
                 is not None
             ):
-                self.failed = True
-                self._stopping = True
+                self._stop_job(job)
 
         # Atomic preconditions that are knowable at run start -- `requires` referencing
         # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
@@ -712,7 +775,7 @@ class RollingRunner:
                     # is dispatched -- `_needs_replan` returns True for the tick a
                     # pending activity comes due, so a dispatch always follows a fresh
                     # plan (D9: pending identities are only stable within one plan).
-                    pending = self._undispatched()
+                    pending = self._dispatchable()
                 # The run is done when there is neither unstarted work nor anything
                 # still running. `_needs_replan` asks for a fresh plan before this is
                 # ever read as empty, so the completion test never rests on a stale one.
@@ -744,39 +807,52 @@ class RollingRunner:
         for job in self._jobs:
             job.outputs = collect_outputs(job.dataflow, job.values)
 
-        # On a run that completed, verify each pinned Object output actually reached
-        # its declared delivery spot (P3, D28). The §6.8 interface_out node holds the
-        # spot to the makespan, so a completed run must leave it occupied; an empty
-        # spot means the boundary delivery did not happen -- an inconsistency, raised.
-        # Skipped on a failed / stopped run (delivery legitimately may not have run).
-        if not self.failed:
-            self._check_output_spots()
+        # For each job that got there, verify each pinned Object output actually
+        # reached its declared delivery spot (P3, D28). The §6.8 interface_out node
+        # holds the spot to the makespan, so a job that finished must leave it
+        # occupied; an empty spot means the boundary delivery did not happen -- an
+        # inconsistency, raised.
+        for job in self._jobs:
+            # A stopped job delivered nothing and promised nothing: its outputs never
+            # reached their spots (that is what stopping means) and its postcondition
+            # is about a result it does not have. Checking either would report a
+            # failure that is the first one's shadow.
+            if job.stopped:
+                continue
+            self._check_output_spots(job)
             # Whole-workflow postcondition contracts (v0 §9 `ensures` on the entry
             # composite, D32 Phase 1): checked once the outputs are assembled, over the
             # boundary inputs and produced outputs. A violation is a runtime contract
             # violation (v0 §9.3): set `self.failed` (exit 1). The activities stay
             # `completed` -- the failure is at the whole-workflow boundary, not any one
-            # activity. Only checked on an otherwise-successful run (the guard above).
-            for job in self._jobs:
-                entry = job.contracts.entry
-                if (
-                    job.entry_is_composite
-                    and entry is not None
-                    and job.contract_asts.get(entry, {}).get("ensures")
-                    and self._violated_contract(
-                        job, entry, "ensures", self._main_contract_inputs(job), job.outputs,
-                        self._subject("main", job),
-                    )
-                    is not None
-                ):
-                    self.failed = True
+            # activity. Only checked for a job that ran to the end (the guard above).
+            entry = job.contracts.entry
+            if (
+                job.entry_is_composite
+                and entry is not None
+                and job.contract_asts.get(entry, {}).get("ensures")
+                and self._violated_contract(
+                    job, entry, "ensures", self._main_contract_inputs(job), job.outputs,
+                    self._subject("main", job),
+                )
+                is not None
+            ):
+                self.failed = True
         # Echo the produced output views back into a result document of the same
         # boundary schema (D28), for `--boundary-out`. A run of named jobs keys them by
         # job -- one file still, like the status and the observation document -- while
         # a single unnamed workflow returns the document it always did.
         if self._named:
+            # A stopped job is left out: the boundary document is the claim that these
+            # outputs were produced and delivered, and a job that stopped delivered
+            # nothing. What it did produce before it stopped is in the observation
+            # document, which claims only to record what was observed.
             self.result_boundary = {
-                "jobs": {job.id: job.boundary.result(job.outputs) for job in self._jobs}
+                "jobs": {
+                    job.id: job.boundary.result(job.outputs)
+                    for job in self._jobs
+                    if not job.stopped
+                }
             }
         else:
             job = self._only_job
@@ -795,7 +871,7 @@ class RollingRunner:
                 time_section=self._last_time,
             )
 
-        cancelled = self._cancelled_activities() if self._stopping else None
+        cancelled = self._cancelled_activities()
         return build_status(
             self.log.records(),
             self.now,
@@ -804,21 +880,20 @@ class RollingRunner:
             cancelled,
             inventories=self.inventories or None,
             jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
-            occupied=self.occupied or None,
+            occupied=self._occupied_now() or None,
         )
 
-    def _check_output_spots(self) -> None:
-        """Verify every pinned Object output landed on its declared delivery spot
-        (P3, D28). The runner does not read spot state in normal operation (D15);
+    def _check_output_spots(self, job: Job) -> None:
+        """Verify every pinned Object output of `job` landed on its declared delivery
+        spot (P3, D28). The runner does not read spot state in normal operation (D15);
         this is the one end-of-run sanity read. Raises `RunnerError` on a spot the
         boundary delivery left empty."""
-        for job in self._jobs:
-            for port, spot in job.boundary.output_spots.items():
-                if self.sim.spot_state(spot) is None:
-                    raise RunnerError(
-                        f"boundary output {self._subject(port, job)!r} did not reach "
-                        f"its declared spot {spot!r}"
-                    )
+        for port, spot in job.boundary.output_spots.items():
+            if self.sim.spot_state(spot) is None:
+                raise RunnerError(
+                    f"boundary output {self._subject(port, job)!r} did not reach "
+                    f"its declared spot {spot!r}"
+                )
 
     def _preflight_atomic_requires(self) -> None:
         """Run-start preflight (D37): check each atomic invocation's phase-hoisted
@@ -829,7 +904,8 @@ class RollingRunner:
         for job in self._jobs:
             if self._stopping:
                 return
-            self._preflight_job(job)
+            if not job.stopped:
+                self._preflight_job(job)
 
     def _preflight_job(self, job: Job) -> None:
         """`_preflight_atomic_requires` for one job."""
@@ -850,8 +926,7 @@ class RollingRunner:
                 )
                 is not None
             ):
-                self.failed = True
-                self._stopping = True
+                self._stop_job(job)
                 return
 
     def _main_contract_inputs(self, job: Job) -> dict:
@@ -969,7 +1044,9 @@ class RollingRunner:
             if not held and first_violation is None:
                 first_violation = expr
         if first_violation is not None:
-            self._record_failure(f"contract_{section}", f"{subject}: {first_violation}", subject)
+            self._record_failure(
+                job, f"contract_{section}", f"{subject}: {first_violation}", subject
+            )
         return first_violation
 
     def _composite_ready(self, job: Job, mapping: dict) -> bool:
@@ -998,7 +1075,8 @@ class RollingRunner:
         for job in self._jobs:
             if self._stopping:
                 return
-            self._check_job_composites(job)
+            if not job.stopped:
+                self._check_job_composites(job)
 
     def _check_job_composites(self, job: Job) -> None:
         """`_check_ready_composites` for one job."""
@@ -1022,8 +1100,7 @@ class RollingRunner:
                     )
                     is not None
                 ):
-                    self.failed = True
-                    self._stopping = True
+                    self._stop_job(job)
                     return
             # `ensures`: over the composite's inputs and outputs, checked once its
             # outputs exist (before any downstream consumer of them runs).
@@ -1043,8 +1120,7 @@ class RollingRunner:
                     )
                     is not None
                 ):
-                    self.failed = True
-                    self._stopping = True
+                    self._stop_job(job)
                     return
 
     def _requires_gate_open(self, job: Job, node) -> bool:
@@ -1107,7 +1183,7 @@ class RollingRunner:
         # (D34) does not count: replanning cannot open that gate, and the poll that
         # eventually does sets `_observed_change` anyway -- counting it would replan on
         # every tick until it opened.
-        undispatched = self._undispatched()
+        undispatched = self._dispatchable()
         for activity in undispatched:
             if int(activity["start"]) > self.now:
                 continue
@@ -1120,6 +1196,23 @@ class RollingRunner:
         # Nothing left to dispatch and nothing running: ask once more, so the loop's
         # completion test reads a plan that is current.
         return not undispatched and not self.log.running()
+
+    def _dispatchable(self) -> list[dict]:
+        """The undispatched work the run may still start: `_undispatched` minus what
+        belongs to a job that has stopped.
+
+        Kept apart from `_undispatched` because the two are asked different questions.
+        This one drives dispatch, "is a replan due", and "is the run over"; the raw one
+        answers "what never ran", which for a stopped job is exactly the work this
+        filters out -- so cancelling from a filtered list would report nothing.
+        """
+        return [a for a in self._undispatched() if not self._is_stopped(a)]
+
+    def _is_stopped(self, activity: dict) -> bool:
+        """Whether this activity belongs to a job that has stopped. A refill belongs to
+        no job, so it is never stopped by one -- it serves whoever is left."""
+        job = self._job_of(activity)
+        return job is not None and job.stopped
 
     def _undispatched(self) -> list[dict]:
         """The last plan's pending activities that have not been dispatched.
@@ -1160,7 +1253,7 @@ class RollingRunner:
             None if self._named else self._only_job.interface,
             inventories=self.inventories or None,
             jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
-            occupied=self.occupied or None,
+            occupied=self._occupied_now() or None,
         )
         report = replan(
             [(job.id, job.workflow) for job in self._jobs]
@@ -1175,7 +1268,22 @@ class RollingRunner:
         )
         self._collect_warnings(report)
         if not report.ok:
-            raise RunnerError(self._failure_message(report))
+            # 🔴 A run of one workflow raises, as it always has: there is one job, its
+            # work is the whole run, and an unplannable run has nothing to report but
+            # the exception.
+            #
+            # A run of several does not. One job's residue can make the rest
+            # unplannable -- that is the cost of declaring it (`_record_residue`) --
+            # and killing the run by exception would throw away the status describing
+            # everything the other jobs did complete. So every job stops, what is
+            # running is waited out, and the run ends the way any other failure ends
+            # it: a final status, a reason, exit 1.
+            if not self._named:
+                raise RunnerError(self._failure_message(report))
+            message = self._failure_message(report)
+            self._record_failure(None, "replan_infeasible", message, "run")
+            self._stop_job(None)
+            return []
         plan = report.plan
         self._last_time = plan.get("time")
         # 🔴 What the scheduler promised each job, taken back so the next tick can hand
@@ -1204,10 +1312,14 @@ class RollingRunner:
         # finished by now (we polled on the previous advance), so the backend's
         # preconditions hold.
         for act in pending:
-            # A `requires` violation in `_commit_start` sets `_stopping` (D32); stop
-            # dispatching the rest of this tick's pending work at once (D25).
+            # A `requires` violation in `_commit_start` can stop the whole run (D32);
+            # stop dispatching the rest of this tick's pending work at once (D25).
             if self._stopping:
                 break
+            # ... and when it stopped only one job, the rest of that job's work in this
+            # (now stale) plan is skipped while everyone else's is dispatched.
+            if self._is_stopped(act):
+                continue
             if int(act["start"]) <= self.now:
                 # Gate a body activity on its composite's `requires` being checked
                 # (v0 §9 / D34 gap): an input-independent body node must not run before
@@ -1329,6 +1441,7 @@ class RollingRunner:
                 subject = self._subject(self._fmt_node(tuple(activity["node"])), job)
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
                 self._record_failure(
+                    job,
                     "input_not_produced",
                     f"{subject}: input(s) {unproduced} have no value because their "
                     f"producer has not completed; the activity was dispatched while a "
@@ -1337,8 +1450,7 @@ class RollingRunner:
                     f"defers its successors.",
                     subject,
                 )
-                self.failed = True
-                self._stopping = True
+                self._stop_job(job, activity)
                 return
             # Pass the output value signature (D26/D27) so the backend generates a
             # typed value for each output port at completion, and the assembled input
@@ -1365,8 +1477,7 @@ class RollingRunner:
             )
             if violated is not None:
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
-                self.failed = True
-                self._stopping = True
+                self._stop_job(job, activity)
                 return
             # Pass the workflow provenance (`node`) only to a backend that opts in, so a
             # backend predating this extension is driven unchanged (backward compatible).
@@ -1456,9 +1567,9 @@ class RollingRunner:
                     if absent:
                         subject = self._subject(self._fmt_node(tuple(rec.activity["node"])), job)
                         rec.status = "failed"
-                        self.failed = True
-                        self._stopping = True
+                        self._stop_job(job, rec.activity)
                         self._record_failure(
+                            job,
                             "backend_output_missing",
                             f"{subject}: the device model produced no value for declared "
                             f"output(s) {absent}",
@@ -1487,9 +1598,9 @@ class RollingRunner:
                             self._fmt_node(tuple(rec.activity["node"])), job
                         )
                         rec.status = "failed"
-                        self.failed = True
-                        self._stopping = True
+                        self._stop_job(job, rec.activity)
                         self._record_failure(
+                            job,
                             "backend_output_type",
                             f"{subject}: output {nonconformant!r} does not conform "
                             "to its declared type",
@@ -1520,8 +1631,7 @@ class RollingRunner:
                         is not None
                     ):
                         rec.status = "failed"
-                        self.failed = True
-                        self._stopping = True
+                        self._stop_job(job, rec.activity)
                         # Withdraw this invocation's outputs (review #5): they were
                         # recorded above so `ensures` could read them, but a value that
                         # failed its postcondition must not surface as a produced
@@ -1540,19 +1650,123 @@ class RollingRunner:
                 # Record why (D36): a model-driven failure carries a (code, message)
                 # reason (e.g. a script error, v0 §22.2); an injected D25 failure has none,
                 # so it is reported generically against the activity's subject.
+                # 🔴 A refill belongs to no job (`_job_of` answers None), so its
+                # failure stops the run: nothing else can be attributed, and the stock
+                # it was topping up is now short.
+                failed_job = self._job_of(rec.activity)
                 subject = self._activity_subject(rec.activity)
                 reason = observed_state.get("reason")
                 if reason is not None:
-                    self._record_failure(reason[0], reason[1], subject)
+                    self._record_failure(failed_job, reason[0], reason[1], subject)
                 else:
-                    self._record_failure("activity_failed", f"activity {subject} failed", subject)
-                self.failed = True
-                self._stopping = True
+                    self._record_failure(
+                        failed_job, "activity_failed", f"activity {subject} failed", subject
+                    )
+                self._stop_job(failed_job, rec.activity)
 
-    def _cancelled_activities(self) -> list[dict]:
-        """The last plan's pending activities that never started because the run
-        stopped on a failure (D25) -- exactly the work left undispatched."""
-        return self._undispatched()
+    @staticmethod
+    def _spots_of(activity: dict) -> set[str]:
+        """Every spot an activity touches: a processing's input and output spots, a
+        transport's two ends. What it could be holding, in other words."""
+        spots = set((activity.get("input_spots") or {}).values())
+        spots |= set((activity.get("output_spots") or {}).values())
+        spots |= {activity[k] for k in ("from_spot", "to_spot") if activity.get(k)}
+        return spots
+
+    def _record_residue(self, job: Job, activity: dict | None) -> None:
+        """Declare the spots a stopped job is still holding, as `occupied` (§6.12).
+
+        🔴 This is not bookkeeping -- it is what makes the rest of the run *runnable*.
+        The scheduler models occupancy through activity intervals, and the interval of
+        the activity that put the material there has ended, so without this section the
+        model believes the spot free and plans another job's material straight onto it.
+        Measured: a failed assay leaves its plate on the reader, and the very next plan
+        carries the other job's plate to the same stage.
+
+        A spot is *this job's* only if this job touched it last. 🔴 Ownership, not
+        acquaintance: two jobs of one workflow use the same bench slot one after the
+        other, so "every spot this job ever touched" claims the plate the next job has
+        just made -- which was measured to make that job unplannable and take the whole
+        run down with it. The last activity to touch a spot is the one that decided
+        what is on it.
+
+        On top of that, and unconditionally, every spot the *failing* activity touched.
+        The backend's occupancy is not an observation -- even the real out-of-process
+        backend keeps the same in-memory ledger -- and that ledger says a failed
+        operation leaves material exactly where it was, reasoning that "the run stops on
+        failure and nothing follows". Isolating the failure is precisely what removes
+        that premise. So a failed transport claims *both* ends, though the ledger names
+        only the source. Over-claiming costs a slower plan; under-claiming means putting
+        a plate where a plate already is.
+
+        Only for a run of named jobs. A single workflow's failure ends the run, so there
+        is nothing left to plan around, and its document stays what it was.
+        """
+        if not self._named:
+            return
+        candidates = {
+            spot for spot, (_end, owner) in self._spot_owners().items() if owner is job
+        }
+        # Boundary material that has not moved yet has no activity to have touched it.
+        if job.placed:
+            candidates |= set((job.interface.get("inputs") or {}).values())
+        held = {spot for spot in candidates if self.sim.spot_state(spot) is not None}
+        if activity is not None:
+            held |= self._spots_of(activity)
+
+        already = {entry.get("spot") for entry in self._occupied_now()}
+        for spot in sorted(held - already):
+            entry: dict = {"spot": spot}
+            if job.id:
+                entry["job"] = job.id
+            self._residue.append(entry)
+
+    def _occupied_now(self) -> list[dict]:
+        """The `occupied` section (§6.12) as of this moment: what the laboratory was
+        already holding, plus what each stopped job left behind.
+
+        🔴 A residue entry is dated **`now`**, re-stamped on every tick, not fixed at
+        the moment the job failed. Measured: any earlier `since` makes the document
+        infeasible. The document already accounts for the spot up to `now` through the
+        stopped job's own activities -- the failed one, and the work the scheduler
+        cancels at `now` -- so the material's interval already runs to `now`, and an
+        earlier `since` double-books the spot against the very history that put the
+        plate there. What this section adds is that it is *still* held from here on,
+        which is exactly what `now` says. The moment it arrived is not lost: it is the
+        end of the activity that failed.
+
+        The laboratory's own entries keep the date they were given (normally 0, before
+        the run): no history claims those spots, so nothing collides with them.
+        """
+        return self.occupied + [{**entry, "since": self.now} for entry in self._residue]
+
+    def _spot_owners(self) -> dict[str, tuple[int, Job | None]]:
+        """For each spot the committed history touched, `(when, whose)` for the last
+        activity to touch it -- the one that decided what is on it now."""
+        owners: dict[str, tuple[int, Job | None]] = {}
+        for rec in self.log.records():
+            owner = self._job_of(rec.activity)
+            for spot in self._spots_of(rec.activity):
+                previous = owners.get(spot)
+                if previous is None or rec.end >= previous[0]:
+                    owners[spot] = (rec.end, owner)
+        return owners
+
+    def _cancelled_activities(self) -> list[dict] | None:
+        """The work that never started because a job -- or the run -- stopped (D25).
+
+        Two sources, in this order: what each stopped job left behind, captured as it
+        stopped, and (when the run itself is stopping) whatever is still undispatched.
+        A run of one workflow reaches both with the same set, so it reports exactly
+        what it always did.
+        """
+        cancelled = list(self._cancelled)
+        if self._stopping:
+            seen = {self._provenance_key(a) for a in cancelled}
+            cancelled += [
+                a for a in self._undispatched() if self._provenance_key(a) not in seen
+            ]
+        return cancelled or None
 
     @staticmethod
     def _provenance_key(activity: dict):

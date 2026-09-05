@@ -158,6 +158,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "§6/§7 status document",
     )
     r.add_argument(
+        "--on-job-failure",
+        choices=("continue", "stop"),
+        default="continue",
+        metavar="POLICY",
+        help="what one job's failure does to the rest of a --jobs run (§6.11): "
+        "`continue` (default) stops that job alone and lets the others finish -- which "
+        "is why they were planned together -- while `stop` stops the whole run. A "
+        "single workflow is a single job, so this makes no difference to it",
+    )
+    r.add_argument(
         "--no-validate",
         action="store_true",
         help="skip the one-shot ofplang-validate front-door check of the workflow "
@@ -338,6 +348,7 @@ def _cmd_run(args) -> int:
             ignore_resources=args.ignore_resources,
             inventories=run_doc.inventories if run_doc else None,
             occupied=run_doc.occupied if run_doc else None,
+            on_job_failure=args.on_job_failure,
         )
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract
@@ -373,8 +384,20 @@ def _cmd_run(args) -> int:
         # Report the failure reason (D36): its code and human-readable detail, from
         # the structured `failure` (a contract violation, a script error, or a
         # generic activity failure). Falls back to a generic line if unset.
-        failure = result.failure
-        if failure is not None:
+        #
+        # A run of named jobs reports one line per job that stopped, because they
+        # stopped for unrelated reasons and naming only the first would hide the rest.
+        # A failure belonging to no job -- an unplannable replan, a refill that failed
+        # -- leaves that list empty and falls through to the run-level line below,
+        # which is also the only line a single workflow ever prints.
+        if result.job_failures:
+            for job_id, failure in result.job_failures:
+                print(
+                    f"ofp-run: job {job_id!r} failed: {failure.kind}: {failure.detail}",
+                    file=sys.stderr,
+                )
+        elif result.failure is not None:
+            failure = result.failure
             print(f"ofp-run: execution failed: {failure.kind}: {failure.detail}", file=sys.stderr)
         else:
             print("ofp-run: execution failed: an activity failed", file=sys.stderr)

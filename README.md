@@ -152,7 +152,7 @@ pip install -e ".[test]"
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [--no-validate] [-o OUT]
-ofp-run run --jobs <run doc> --env <env> [...]
+ofp-run run --jobs <run doc> --env <env> [--on-job-failure continue|stop] [...]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
 
@@ -190,7 +190,14 @@ a value that operation has not produced yet. The default is 0, which is only saf
 with a backend whose operations cannot finish later than planned (the in-process
 virtual-time simulator); against a wall-clock or real backend set it to at least
 the poll interval, or a successor is refused with `input_not_produced` rather than
-computing on a typed default. `--jobs` runs
+computing on a typed default. `--on-job-failure`
+decides what one job's failure does to the rest of a `--jobs` run: `continue` (the
+default) stops that job alone and lets the others finish — which is why they were
+planned together — while `stop` stops the whole run. A stopped job's remaining work is
+reported `cancelled`, and the spots its material is still sitting on are declared in
+the status (`occupied`, §6.12) so the rest of the run is planned around them rather
+than onto them. A single workflow is a single job, so this makes no difference to it.
+`--jobs` runs
 **several workflows together** in one laboratory (schedule SPEC §6.11) in place of
 the single `<workflow>` argument. Its run document names each job — an `id`, the
 workflow it runs, its own `boundary`, and the `release` time before which it may not
@@ -237,8 +244,8 @@ execute it:
 [`examples/`](examples/README.md) holds runnable scenarios — supplied inputs and
 computed outputs, views routed across a composite boundary, a script process with
 contracts checked at runtime, re-routing around a device that goes down, the drift
-fixed-interval polling costs, and two jobs run together needing a refill neither
-needs alone. Most are Python scripts rather than CLI invocations, because what they
+fixed-interval polling costs, two jobs run together needing a refill neither needs
+alone, and one job of three failing while the others finish. Most are Python scripts rather than CLI invocations, because what they
 demonstrate is injected from code: a device model, a machine fault, a polling
 interval. Their output is committed under
 `examples/outputs/`, so an example can be read without being run.
