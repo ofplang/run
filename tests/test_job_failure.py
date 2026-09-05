@@ -19,11 +19,20 @@ The scheduler is a required dependency; these tests skip if it is not installed.
 
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+# Planning several workflows together arrived in ofplang-schedule 0.4.0, and this
+# package's floor is still the release before it -- so on an installed sibling that
+# predates it there is nothing here to run. Removed when the floor is raised.
+if not hasattr(import_module("ofplang.schedule.scheduler.api"), "schedule_jobs"):
+    pytest.skip(
+        "needs a scheduler that plans several jobs (ofplang-schedule >= 0.4)",
+        allow_module_level=True,
+    )
 
 from ofplang.run.cli import EXIT_FAILED, main  # noqa: E402
 from ofplang.run.runner import (  # noqa: E402

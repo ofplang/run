@@ -45,9 +45,7 @@ def replan(
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
     try:
-        from ofplang.schedule.scheduler.api import JobInput
         from ofplang.schedule.scheduler.api import schedule as _schedule
-        from ofplang.schedule.scheduler.api import schedule_jobs as _schedule_jobs
     except ImportError as exc:  # pragma: no cover - depends on install state
         raise RunnerError(
             "ofplang.schedule is required for rolling-horizon `run`; install the "
@@ -58,7 +56,20 @@ def replan(
     # laboratory's machines and draw on its stocks, which is the whole reason to plan
     # them together rather than one after another. A single unnamed workflow keeps the
     # entry point it always had, so its plan is what it always was.
+    #
+    # 🔴 Imported here rather than above, because a scheduler that predates joint
+    # planning still runs a single workflow perfectly well -- and importing the joint
+    # entry point up front would break every run against one, reporting it as the
+    # sibling being missing when it is installed and merely older.
     if isinstance(workflow, list):
+        try:
+            from ofplang.schedule.scheduler.api import JobInput
+            from ofplang.schedule.scheduler.api import schedule_jobs as _schedule_jobs
+        except ImportError as exc:
+            raise RunnerError(
+                "planning several jobs together needs ofplang-schedule >= 0.4; the "
+                "installed one can plan a single workflow only"
+            ) from exc
         return _schedule_jobs(
             [JobInput(job_id, doc) for job_id, doc in workflow],
             environment,
