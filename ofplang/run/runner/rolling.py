@@ -1725,8 +1725,15 @@ class RollingRunner:
         says a failed operation leaves material exactly where it was, reasoning that
         "the run stops on failure and nothing follows". Isolating the failure is
         precisely what removes that premise. So a failed transport claims *both* ends,
-        though the ledger names only the source. Over-claiming costs a slower plan;
-        under-claiming means putting a plate where a plate already is.
+        though the ledger names only the source.
+
+        🔴 The asymmetry is what decides it, and neither side is free. Under-claiming
+        means putting a plate where a plate already is -- a plan nothing can execute.
+        Over-claiming costs a slower plan, and where the spot is scarce it can cost
+        more than that: measured, a job's residue plus this claim took both trays of a
+        two-tray oven and left the surviving jobs with nowhere to work. That is
+        reported for what it is (`jobs_not_plannable_together`) rather than run into,
+        and it is the price of not colliding in the laboratory.
 
         Only for a run of named jobs. A single workflow's failure ends the run, so there
         is nothing left to plan around, and its document stays what it was.
