@@ -52,7 +52,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.3,<0.4", "ofplang-validate>=0.2,<0.3"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.4,<0.5", "ofplang-validate>=0.2,<0.3"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"

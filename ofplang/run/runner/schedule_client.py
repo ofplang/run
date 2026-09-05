@@ -45,7 +45,9 @@ def replan(
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
     try:
+        from ofplang.schedule.scheduler.api import JobInput
         from ofplang.schedule.scheduler.api import schedule as _schedule
+        from ofplang.schedule.scheduler.api import schedule_jobs as _schedule_jobs
     except ImportError as exc:  # pragma: no cover - depends on install state
         raise RunnerError(
             "ofplang.schedule is required for rolling-horizon `run`; install the "
@@ -56,26 +58,9 @@ def replan(
     # laboratory's machines and draw on its stocks, which is the whole reason to plan
     # them together rather than one after another. A single unnamed workflow keeps the
     # entry point it always had, so its plan is what it always was.
-    #
-    # 🔴 Imported here rather than above, because a scheduler that predates joint
-    # planning still runs a single workflow perfectly well -- and importing the joint
-    # entry point up front would break every run against one, reporting it as the
-    # sibling being missing when it is installed and merely older.
     if isinstance(workflow, list):
-        from ofplang.schedule.scheduler import api as _api
-
-        # Asked for rather than imported, because on the floor this package pins they
-        # are legitimately absent -- so their absence is a fact to test, not an error
-        # to catch, and saying so is also what lets this type-check against either.
-        job_input = getattr(_api, "JobInput", None)
-        _schedule_jobs = getattr(_api, "schedule_jobs", None)
-        if job_input is None or _schedule_jobs is None:
-            raise RunnerError(
-                "planning several jobs together needs ofplang-schedule >= 0.4; the "
-                "installed one can plan a single workflow only"
-            )
         return _schedule_jobs(
-            [job_input(job_id, doc) for job_id, doc in workflow],
+            [JobInput(job_id, doc) for job_id, doc in workflow],
             environment,
             document_path=status_document,
             running_task_margin=running_task_margin,
