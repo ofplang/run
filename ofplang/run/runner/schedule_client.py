@@ -62,16 +62,20 @@ def replan(
     # entry point up front would break every run against one, reporting it as the
     # sibling being missing when it is installed and merely older.
     if isinstance(workflow, list):
-        try:
-            from ofplang.schedule.scheduler.api import JobInput
-            from ofplang.schedule.scheduler.api import schedule_jobs as _schedule_jobs
-        except ImportError as exc:
+        from ofplang.schedule.scheduler import api as _api
+
+        # Asked for rather than imported, because on the floor this package pins they
+        # are legitimately absent -- so their absence is a fact to test, not an error
+        # to catch, and saying so is also what lets this type-check against either.
+        job_input = getattr(_api, "JobInput", None)
+        _schedule_jobs = getattr(_api, "schedule_jobs", None)
+        if job_input is None or _schedule_jobs is None:
             raise RunnerError(
                 "planning several jobs together needs ofplang-schedule >= 0.4; the "
                 "installed one can plan a single workflow only"
-            ) from exc
+            )
         return _schedule_jobs(
-            [JobInput(job_id, doc) for job_id, doc in workflow],
+            [job_input(job_id, doc) for job_id, doc in workflow],
             environment,
             document_path=status_document,
             running_task_margin=running_task_margin,
