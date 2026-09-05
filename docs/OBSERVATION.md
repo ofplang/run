@@ -96,10 +96,18 @@ plan/status activity by provenance), plus the observed `start`/`end`, plus the
 having placed it rather than the workflow asking for it -- but it is never recorded
 here, so no entry carries one.)
 
+**`job`** (schedule spec §6.11) is echoed first, ahead of `node`, on a run that covers
+several workflows at once. It is part of the provenance, not decoration: two jobs of
+one workflow render the *same* `node` path and the same arc, so without it two entries
+would be indistinguishable and the record would say a value was produced without
+saying by whose work. A run of a single workflow carries no `job` anywhere, exactly as
+its status document does not.
+
 ### 4.1 Processing
 
 ```yaml
 kind: processing
+job: morning                                 # echoed only in a run of several jobs
 process: heat_sample
 mode: fast
 node: [heat]
