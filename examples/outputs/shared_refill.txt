@@ -1,0 +1,26 @@
+one plate assayed, and the refill that only two of them need
+============================================================
+
+one job: 2 units needed, 2 in stock
+-----------------------------------
+    0 ->   3  morning    processing     make_plate
+    3 ->   5  morning    transport      transport
+    5 ->  15  morning    processing     assay
+   15 ->  17  morning    transport      transport
+   17 ->  18  morning    processing     discard
+  makespan 18, 0 replenishment(s)
+
+two jobs: 4 units needed, 2 in stock
+------------------------------------
+    0 ->   3  morning    processing     make_plate
+    0 ->   4             replenishment  reader
+    4 ->   6  morning    transport      transport
+    6 ->   9  afternoon  processing     make_plate
+    6 ->  16  morning    processing     assay
+   16 ->  18  morning    transport      transport
+   18 ->  19  morning    processing     discard
+   18 ->  20  afternoon  transport      transport
+   20 ->  30  afternoon  processing     assay
+   30 ->  32  afternoon  transport      transport
+   32 ->  33  afternoon  processing     discard
+  makespan 33, 1 replenishment(s)

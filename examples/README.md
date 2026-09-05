@@ -131,3 +131,33 @@ finishing there — an upper bound — and its successors slip: source 0–2, tr
 the polled schedule reports 3, 6, 9. Both are rendered
 (`outputs/poll_drift.exact.svg`, `outputs/poll_drift.polled.svg`) so the drift can
 be read off the two charts.
+
+## `shared_refill` — two jobs run together, and the refill only the pair needs
+
+- `shared_refill.workflow.yaml` — one plate: made, assayed, discarded. It says
+  nothing about consumables anywhere.
+- `shared_refill.env.yaml` — one `reader` holding at most 6 units of `reagent`;
+  each assay draws 2, and a `dispenser` can top it up.
+- `shared_refill.run.yaml` — the run document: two jobs, both running that
+  workflow, plus what the reader holds at the start of the run (2 units).
+- `render_shared_refill.py` — runs one job, then the two together, and prints both
+  schedules side by side.
+
+One job needs 2 units and has 2, so it is planned with no replenishment at all. Two
+jobs need 4, so exactly **one** refill appears — covering both. Neither workflow
+mentions a resource and neither asks to be refilled: the stock belongs to the
+*device* (SPEC §4.7), so running the two jobs against one laboratory is what puts
+them on one stock, and one visit tops it up for whichever assays follow, from either
+job. That refill carries no `job` in the status: the scheduler decided to run it, and
+it serves both.
+
+Unlike the examples above, nothing here is injected — the two-job run is exactly
+what the CLI does:
+
+```sh
+ofp-run run --jobs examples/shared_refill.run.yaml \
+    --env examples/shared_refill.env.yaml
+```
+
+The script exists for the *contrast*: one run cannot show what the other job
+changed. It writes `outputs/shared_refill.txt`.

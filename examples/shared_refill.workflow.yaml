@@ -1,0 +1,50 @@
+# One plate assayed, and nothing about consumables anywhere in it.
+#
+# That absence is the point. Whether a run needs a refill is not a property of the
+# workflow at all: `assay` is an ordinary atomic process, and that running it draws
+# on a reagent belongs to the *device* that runs it (SPEC §4.7). So this same file,
+# planned once, needs no refill — and planned twice against one reader, needs one.
+# See shared_refill.document.yaml for the numbers and the commands.
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  make_plate:                                   # creates the material internally
+    kind: atomic
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      create:
+        - outputs.plate
+
+  assay:                                        # draws on the reader's reagent
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.out: inputs.plate
+
+  discard:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      consume:
+        - inputs.plate
+
+  main:
+    kind: composite
+    body:
+      nodes:
+        - { id: Make, process: make_plate }
+        - { id: Assay, process: assay, state: { plate: { from: Make.plate } } }
+        - { id: Drop, process: discard, state: { plate: { from: Assay.out } } }
+
+entry: main

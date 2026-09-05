@@ -152,6 +152,7 @@ pip install -e ".[test]"
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [--no-validate] [-o OUT]
+ofp-run run --jobs <run doc> --env <env> [...]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
 
@@ -189,7 +190,17 @@ a value that operation has not produced yet. The default is 0, which is only saf
 with a backend whose operations cannot finish later than planned (the in-process
 virtual-time simulator); against a wall-clock or real backend set it to at least
 the poll interval, or a successor is refused with `input_not_produced` rather than
-computing on a typed default. `--no-validate`
+computing on a typed default. `--jobs` runs
+**several workflows together** in one laboratory (schedule SPEC §6.11) in place of
+the single `<workflow>` argument. Its run document names each job — an `id`, the
+workflow it runs, its own `boundary`, and the `release` time before which it may not
+start — plus the two things that belong to the laboratory rather than to any one job:
+what its stocks hold at the start of the run (`inventories`, §6.10) and which spots it
+is already holding (`occupied`, §6.12). The jobs are planned *together*, so they
+compete for the same machines and draw on the same stocks: a refill neither job needs
+alone can appear because the pair of them does. Each job's activities carry its `id`
+in the status, and the plan's roster reports the completion the scheduler promised
+each one. See `examples/shared_refill.run.yaml`. `--no-validate`
 skips the one-shot `ofplang-validate` front-door check of the workflow — use it
 when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
 `$import` is still resolved and the capability gate still runs, since both are
@@ -225,10 +236,11 @@ execute it:
 
 [`examples/`](examples/README.md) holds runnable scenarios — supplied inputs and
 computed outputs, views routed across a composite boundary, a script process with
-contracts checked at runtime, re-routing around a device that goes down, and the
-drift fixed-interval polling costs. Each is a Python script rather than a CLI
-invocation, because what each one demonstrates is injected from code: a device
-model, a machine fault, a polling interval. Their output is committed under
+contracts checked at runtime, re-routing around a device that goes down, the drift
+fixed-interval polling costs, and two jobs run together needing a refill neither
+needs alone. Most are Python scripts rather than CLI invocations, because what they
+demonstrate is injected from code: a device model, a machine fault, a polling
+interval. Their output is committed under
 `examples/outputs/`, so an example can be read without being run.
 
 ## Tests

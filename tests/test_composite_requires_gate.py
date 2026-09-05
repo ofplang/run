@@ -65,7 +65,8 @@ def test_gate_helper_reflects_checked_requires():
     # The gate is closed for a body activity of `W` until wrap's `requires` is checked,
     # and open for an activity outside any requires-bearing composite.
     runner = RollingRunner(WF, ENV, _boundary(5), random_seed=0)
-    assert runner._requires_gate_open(("Pre",)) is True         # not under a nested composite
-    assert runner._requires_gate_open(("W", "Make")) is False   # under W, requires not yet checked
-    runner.jobs[0].checked_requires.add(("W",))
-    assert runner._requires_gate_open(("W", "Make")) is True  # opens once W's requires is checked
+    job = runner.jobs[0]
+    assert runner._requires_gate_open(job, ("Pre",)) is True   # not under a nested composite
+    assert runner._requires_gate_open(job, ("W", "Make")) is False  # W's requires unchecked
+    job.checked_requires.add(("W",))
+    assert runner._requires_gate_open(job, ("W", "Make")) is True  # opens once it is checked

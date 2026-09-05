@@ -6,6 +6,9 @@ Thin presentation layer over the library. Subcommands:
         [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
         [--seed N] [--margin M] [--poll-interval D] [--max-ticks N] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
+    ofp-run run --jobs <run doc> --env <env> [...]
+        the same, for several workflows run together (SPEC §6.11): the run
+        document names each job, its workflow and boundary, and when it may start
     ofp-run replay <plan> --env <env> [-o OUT]
         replay a given execution plan on the simulator
 
@@ -36,6 +39,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -47,6 +51,7 @@ from ofplang.run.runner import (
     Runner,
     RunnerError,
     load_document,
+    parse_run_document,
     serialize_document,
 )
 from ofplang.run.simulator import SimulatorError
@@ -65,7 +70,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # `run` -- rolling-horizon: drive a workflow to completion, replanning as it goes.
     r = sub.add_parser("run", help="drive a workflow to completion (rolling-horizon)")
-    r.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
+    r.add_argument(
+        "workflow",
+        metavar="WORKFLOW",
+        nargs="?",
+        help="ofplang v0 workflow YAML (omit when --jobs names a run document)",
+    )
+    r.add_argument(
+        "--jobs",
+        metavar="RUNDOC",
+        help="run document (YAML): a `jobs:` list naming each job's id, workflow, "
+        "boundary and release time, plus the laboratory's own `inventories` (§6.10) "
+        "and `occupied` spots (§6.12). The jobs are planned TOGETHER (§6.11), so they "
+        "share the machines and draw on the same stocks. Mutually exclusive with a "
+        "WORKFLOW argument and with --boundary, which each job carries its own of",
+    )
     r.add_argument("--env", required=True, metavar="ENV", help="execution environment YAML (§5)")
     r.add_argument(
         "--boundary",
@@ -213,20 +232,72 @@ def _print_front_door(fd: FrontDoorResult) -> None:
 
 
 def _cmd_run(args) -> int:
+    # Exactly one of the two ways of saying what to run. Both is a contradiction and
+    # neither is nothing to run, so each is refused rather than resolved by precedence.
+    if bool(args.workflow) == bool(args.jobs):
+        print(
+            "ofp-run: give either a WORKFLOW or --jobs RUNDOC, not both",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.jobs and args.boundary:
+        # Each job in a run document carries its own boundary -- that is what makes
+        # them different runs of the same workflow -- so a run-level one has no job to
+        # belong to.
+        print(
+            "ofp-run: --boundary applies to a single workflow; with --jobs each job "
+            "carries its own",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
     # Inputs must exist; a missing file is a usage error, not a failure.
-    for label, path in (("workflow", args.workflow), ("environment", args.env)):
-        if not Path(path).is_file():
+    for label, path in (
+        ("workflow", args.workflow),
+        ("run document", args.jobs),
+        ("environment", args.env),
+    ):
+        if path is not None and not Path(path).is_file():
             print(f"ofp-run: {label} not found: {path!r}", file=sys.stderr)
+            return EXIT_USAGE
+
+    run_doc = None
+    if args.jobs:
+        doc, err = _read_document(args.jobs, "run document")
+        if err is not None:
+            return err
+        assert doc is not None  # err is None => a document was loaded
+        try:
+            run_doc = parse_run_document(doc, Path(args.jobs).parent)
+        except RunnerError as exc:
+            print(f"ofp-run: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
     # Front door (shared with any CLI, `ofplang.run.app`): the full ofplang-validate
     # pass (skipped under --no-validate) plus the always-on capability gate. A
     # malformed / unsupported workflow never ran, so it is a usage error (EXIT_USAGE),
     # distinct from an execution failure; the runner library is not invoked.
-    fd = front_door_check(args.workflow, validate=not args.no_validate)
-    if not fd.ok:
-        _print_front_door(fd)
-        return EXIT_USAGE
+    #
+    # A run document's workflows go through it one at a time, and the failing job is
+    # named: several jobs commonly run the same workflow, and a diagnostic that does
+    # not say which job it came from sends the reader to the wrong file.
+    if run_doc is not None:
+        requests = []
+        for request in run_doc.jobs:
+            fd = front_door_check(request.workflow, validate=not args.no_validate)
+            if not fd.ok:
+                print(f"ofp-run: job {request.id!r}:", file=sys.stderr)
+                _print_front_door(fd)
+                return EXIT_USAGE
+            assert fd.document is not None  # ok => load + expand succeeded
+            requests.append(replace(request, workflow=fd.document))
+        target: object = requests
+    else:
+        fd = front_door_check(args.workflow, validate=not args.no_validate)
+        if not fd.ok:
+            _print_front_door(fd)
+            return EXIT_USAGE
+        target = fd.document
 
     # `--max-ticks 0` is the way to say "no limit" (the library spells that None); a
     # negative count is not a limit at all, so it is an input error rather than something
@@ -255,7 +326,7 @@ def _cmd_run(args) -> int:
         # Validation + `$import` expansion already happened at the front door above,
         # so run trusting on the expanded document (not a re-read of the raw file).
         result = run_workflow(
-            fd.document,
+            target,
             args.env,
             boundary,
             running_task_margin=args.margin,
@@ -265,6 +336,8 @@ def _cmd_run(args) -> int:
             observation_out=args.observation_out,
             max_ticks=max_ticks,
             ignore_resources=args.ignore_resources,
+            inventories=run_doc.inventories if run_doc else None,
+            occupied=run_doc.occupied if run_doc else None,
         )
     except (yaml.YAMLError, ContractSyntaxError) as exc:
         # Malformed workflow / environment YAML or an unparsable contract

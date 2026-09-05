@@ -30,7 +30,7 @@ Two pieces, kept separate so the trusting core stays honest:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -240,9 +240,18 @@ def run_workflow(
     observation_out: str | None = None,
     max_ticks: int | None = DEFAULT_MAX_TICKS,
     ignore_resources: bool = False,
+    inventories: dict | None = None,
+    occupied: list[dict] | None = None,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
+
+    `workflow` may instead be a list of `JobRequest`s -- a run of several named jobs,
+    planned together (SPEC §6.11), read from a run document (`runner.rundoc`). Each
+    carries its own workflow, boundary and release, so `boundary` must be left unset;
+    `inventories` and `occupied` then say what the laboratory itself starts with,
+    there being no single boundary to say it in. Every job's workflow goes through the
+    same front door, one at a time, so a rejection names the job it came from.
 
     `workflow` and `env` are each either a path to a YAML file or an already-loaded
     document (a mapping) -- the former lets a caller run a workflow it rewrote in memory
@@ -269,12 +278,21 @@ def run_workflow(
     propagate to the caller, which maps them to exit codes -- keeping this a thin
     front door, not an error-swallowing wrapper."""
     if validate:
-        fd = front_door_check(workflow, validate=True)
-        if not fd.ok:
-            raise FrontDoorError(fd)
-        # Run exactly what the front door validated/expanded: the import-resolved
-        # document, not a re-read of the raw file (so a `$import` workflow runs).
-        workflow = fd.document
+        if isinstance(workflow, list):
+            checked = []
+            for request in workflow:
+                fd = front_door_check(request.workflow, validate=True)
+                if not fd.ok:
+                    raise FrontDoorError(fd)
+                checked.append(replace(request, workflow=fd.document))
+            workflow = checked
+        else:
+            fd = front_door_check(workflow, validate=True)
+            if not fd.ok:
+                raise FrontDoorError(fd)
+            # Run exactly what the front door validated/expanded: the import-resolved
+            # document, not a re-read of the raw file (so a `$import` workflow runs).
+            workflow = fd.document
 
     runner = RollingRunner(
         workflow,
@@ -287,6 +305,8 @@ def run_workflow(
         observation_out=observation_out,
         max_ticks=max_ticks,
         ignore_resources=ignore_resources,
+        inventories=inventories,
+        occupied=occupied,
     )
     try:
         status = runner.run()

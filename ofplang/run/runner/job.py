@@ -39,11 +39,12 @@ class Job:
     run, which carries no job identity at all — matching the scheduler, whose
     single-workflow path prefixes nothing and labels nothing.
 
-    `release` is the earliest time any of its activities may start. It lives here
-    rather than being read from a document each tick because the runner rebuilds the
-    roster it hands the scheduler on every replan: a release the runner did not hold
-    would survive the first tick and vanish on the second.
+    `release` is the earliest time any of its activities may start, and `bound` the
+    completion the scheduler promised it. Both live here for the same reason: the
+    runner rebuilds the roster it hands the scheduler on every replan, so anything it
+    does not hold survives the first tick and vanishes on the second.
     """
+
 
     id: str
     workflow: dict
@@ -51,6 +52,26 @@ class Job:
     contracts: Contracts
     boundary: Boundary
     release: int = 0
+
+    # 🔴 What the scheduler promised this job, read back from each plan's roster
+    # (§6.11) and handed straight back on the next replan. It has to live here: the
+    # status is rebuilt from the commit log every tick, so a bound the runner did not
+    # hold would be gone by the second one -- and every job would look like a new
+    # arrival with no promise, re-derived each tick. The guarantee that an earlier job
+    # is not disturbed by a later one would hold inside one solve and nowhere else.
+    bound: int | None = None
+    # Likewise the digest of the workflow this job runs. Carrying it back is what lets
+    # the scheduler check that the workflows handed over are the ones it planned for;
+    # dropping it is safe (the check is skipped) but costs the check for nothing.
+    fingerprint: str | None = None
+
+    # Whether this job's boundary material has been placed. Entry material is *there*,
+    # given, from the job's release (§6.8) -- so the runner places it when the clock
+    # reaches that, not at run start, or the scheduler would be planning around a spot
+    # that is physically full while it believes it free. This is also exactly what a
+    # job arriving mid-run does, which is why it is a step in the tick rather than a
+    # line in the constructor.
+    placed: bool = False
 
     # Derived from the workflow, all read on the dispatch path.
     output_schemas: dict = field(default_factory=dict)
@@ -67,6 +88,24 @@ class Job:
     values: ValueStore = field(default_factory=ValueStore)
     outputs: dict = field(default_factory=dict)
 
+    def roster_entry(self) -> dict:
+        """This job as a `jobs` entry of the execution document (§6.11).
+
+        Everything the scheduler needs to recognise it again: who it is, when it may
+        start, what it was promised, which workflow it runs, and where its boundary
+        material sits.
+        """
+        entry: dict = {"id": self.id}
+        if self.release:
+            entry["release"] = self.release
+        if self.bound is not None:
+            entry["bound"] = self.bound
+        if self.fingerprint is not None:
+            entry["fingerprint"] = self.fingerprint
+        if self.interface:
+            entry["interface"] = self.interface
+        return entry
+
     @property
     def interface(self) -> dict:
         """The §6.8 boundary constraint handed to the scheduler — spots only, never
@@ -82,6 +121,23 @@ class Job:
         *job* also meant one of several workflows being run together.
         """
         return self.boundary.entry_values
+
+
+@dataclass(frozen=True)
+class JobRequest:
+    """A job as *asked for*: what the run document (§6.11) says about one.
+
+    The description, not the machinery — the four things a caller can state about a
+    job, from which `build_job` derives everything else. It is a type of its own
+    because a run of several jobs has to be handed several of these, and a tuple of
+    positional arguments would leave the reader of a call site guessing which is the
+    release and which the id.
+    """
+
+    id: str
+    workflow: dict
+    boundary: dict | None = None
+    release: int = 0
 
 
 def build_job(

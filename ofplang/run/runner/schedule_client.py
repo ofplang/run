@@ -28,6 +28,9 @@ def replan(
 ):
     """Run the scheduler on `status_document` and return its `ScheduleReport`.
 
+    `workflow` is one workflow document, or -- for a run of named jobs -- a list of
+    `(job id, workflow document)` pairs, which are planned together (§6.11).
+
     `workflow` and `environment` are documents (or paths); the environment is normally
     the runner's normalized dict, reduced when machines are down (D21). Since that dict
     is not the file it came from, `environment_source` names the file for the plan's
@@ -42,12 +45,30 @@ def replan(
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
     try:
+        from ofplang.schedule.scheduler.api import JobInput
         from ofplang.schedule.scheduler.api import schedule as _schedule
+        from ofplang.schedule.scheduler.api import schedule_jobs as _schedule_jobs
     except ImportError as exc:  # pragma: no cover - depends on install state
         raise RunnerError(
             "ofplang.schedule is required for rolling-horizon `run`; install the "
             "sibling repo (e.g. `pip install -e ../ofplang-schedule`)"
         ) from exc
+
+    # A run of named jobs is planned jointly (SPEC §6.11): they compete for the
+    # laboratory's machines and draw on its stocks, which is the whole reason to plan
+    # them together rather than one after another. A single unnamed workflow keeps the
+    # entry point it always had, so its plan is what it always was.
+    if isinstance(workflow, list):
+        return _schedule_jobs(
+            [JobInput(job_id, doc) for job_id, doc in workflow],
+            environment,
+            document_path=status_document,
+            running_task_margin=running_task_margin,
+            random_seed=random_seed,
+            max_time_seconds=max_time_seconds,
+            environment_source=environment_source,
+            ignore_resources=ignore_resources,
+        )
 
     return _schedule(
         workflow,

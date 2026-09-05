@@ -1,0 +1,40 @@
+# Two jobs run together, and the refill only the pair of them needs.
+#
+# A run document says what a run of a *laboratory* is asked to do: which jobs, each
+# job's workflow and boundary, when each may start, and what the lab's own stocks
+# hold to begin with (SPEC §6.10 / §6.11).
+#
+#   ofp-run run --jobs examples/shared_refill.run.yaml \
+#       --env examples/shared_refill.env.yaml
+#
+# Both jobs run the same file. Each assays one plate and each assay draws 2 units of
+# `reader.reagent`; the reader starts with the 2 units below and holds at most 6. So
+# one job on its own needs no refill at all, and the two together need exactly one —
+# which the scheduler plans, and the runner dispatches, without either workflow
+# mentioning a resource anywhere. The stock belongs to the *device* (§4.7), so
+# running the two jobs against one lab is what puts them on one stock.
+#
+# That refill carries no `job` in the plan or the status: the scheduler decided to
+# run it, and it serves both.
+#
+# Neither job declares a `boundary`: `make_plate` creates its own material, so there
+# is nothing to place at the run boundary and nothing to deliver at the end. A job
+# that did would name its own document here — which is the point of putting it per
+# job, since two runs of one workflow differ in exactly that.
+#
+# Nor does either declare a `release`: both may start at once, and the scheduler
+# decides the order. Give the second one `release: 30` to say it cannot start before
+# then — a plate that has not been prepared yet.
+jobs:
+  - id: morning
+    workflow: shared_refill.workflow.yaml
+  - id: afternoon
+    workflow: shared_refill.workflow.yaml
+
+# What the reader holds at the START of the run (§6.10). Stated here rather than in
+# a boundary because the stock is the laboratory's, not any one job's — with two
+# jobs there is no single boundary it could belong to.
+inventories:
+  levels:
+    reader:
+      reagent: 2

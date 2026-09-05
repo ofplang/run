@@ -64,6 +64,10 @@ def entry_doc(
     # Structural echo, in a readable order; skip `status` / `start` / `end` (the
     # record's observed times win, added below).
     for key in (
+        # `job` first, and before `node`: in a run of several jobs the same node path
+        # occurs once per job, so without it two entries are indistinguishable -- the
+        # record would say a value was produced without saying by whose work.
+        "job",
         "process",
         "mode",
         "node",
@@ -151,7 +155,8 @@ def format_text(entries: list[dict]) -> str:
         if entry.get("kind") != "processing":
             continue
         node = "/".join(entry.get("node") or ()) or "main"
-        lines.append(f"  {node} [{entry.get('process')}]")
+        job = entry.get("job")
+        lines.append(f"  {f'{job}:' if job else ''}{node} [{entry.get('process')}]")
         lines.append(f"      in : {_ports_repr(entry.get('inputs'))}")
         lines.append(f"      out: {_ports_repr(entry.get('outputs'))}")
     return "\n".join(lines) + ("\n" if lines else "")

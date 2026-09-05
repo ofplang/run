@@ -19,13 +19,18 @@ Built on top of the simulator. Two entry points:
 from __future__ import annotations
 
 from .contract_eval import ContractSyntaxError
+from .job import JobRequest
 from .loader import load_document, serialize_document
 from .rolling import DEFAULT_MAX_TICKS, DownScope, RollingRunner
+from .rundoc import RunDocument, parse_run_document
 from .runner import Runner, RunnerError
 
 __all__ = [
     "Runner",
     "RollingRunner",
+    "JobRequest",
+    "RunDocument",
+    "parse_run_document",
     "RunnerError",
     "DownScope",
     "DEFAULT_MAX_TICKS",

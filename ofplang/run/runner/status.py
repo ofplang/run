@@ -24,6 +24,8 @@ def build_status(
     time_section: dict | None = None,
     cancelled: list[dict] | None = None,
     inventories: dict | None = None,
+    jobs: list[dict] | None = None,
+    occupied: list[dict] | None = None,
 ) -> dict:
     """Assemble a §6 execution status from committed records at time `now`.
 
@@ -66,9 +68,20 @@ def build_status(
     if time_section:
         doc["time"] = time_section
     doc["now"] = now
+    # The roster of jobs this run covers (§6.11), each entry carrying what the
+    # scheduler needs to recognise it again -- including the completion it promised,
+    # which is only ever true because the runner held on to it.
+    if jobs:
+        doc["jobs"] = jobs
+    # `interface` is the single-workflow form; a joint run carries one per job in the
+    # roster above, and the two are mutually exclusive (§6.11).
     if interface:
         doc["interface"] = interface
     if inventories:
         doc["inventories"] = inventories
+    # Spots held by something this run does not otherwise account for (§6.12): what a
+    # stopped job left behind, and whatever the laboratory was already holding.
+    if occupied:
+        doc["occupied"] = occupied
     doc["activities"] = activities
     return doc

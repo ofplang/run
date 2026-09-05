@@ -48,12 +48,13 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from ..backend import Backend
 from ..simulator import VirtualTimeSimulator
 from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
-from .job import Job, build_job
+from .job import Job, JobRequest, build_job
 from .loader import load_document
 from .observation import ObservationRecorder
 from .provenance import CommitLog, Committed
@@ -267,6 +268,8 @@ class RollingRunner:
         observe: bool = False,
         observation_out: str | None = None,
         ignore_resources: bool = False,
+        inventories: dict | None = None,
+        occupied: list[dict] | None = None,
     ):
         # The workflow as an in-memory document. `workflow` is either a path to a
         # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
@@ -274,9 +277,39 @@ class RollingRunner:
         # file). Every collaborator below -- dataflow, contracts, process defs, and the
         # scheduler on each replan -- accepts the document directly, so it is read at
         # most once and never re-serialized.
-        workflow_doc = workflow if isinstance(workflow, dict) else load_document(workflow)
-        if not isinstance(workflow_doc, dict):
-            raise RunnerError("workflow must be a mapping")
+        #
+        # For a run of several jobs (§6.11) `workflow` is instead a list of
+        # `JobRequest`s -- id, workflow, boundary, release -- one per job, each read
+        # the same way. The boundary is per job because it says where *that* job's
+        # material sits, so the run-level `boundary` argument is meaningless then and
+        # supplying it is an error rather than a silently ignored value.
+        requests: list[JobRequest]
+        if isinstance(workflow, list):
+            if boundary is not None:
+                raise RunnerError(
+                    "a run of named jobs carries a boundary per job; put it on the "
+                    "JobRequest rather than on the run"
+                )
+            requests = list(workflow)
+        else:
+            requests = [JobRequest(id="", workflow=workflow, boundary=boundary)]
+        for request in requests:
+            if not isinstance(request.workflow, dict) and not isinstance(
+                request.workflow, (str, Path)
+            ):
+                raise RunnerError("workflow must be a mapping or a path")
+        loaded = [
+            (
+                request,
+                request.workflow
+                if isinstance(request.workflow, dict)
+                else load_document(request.workflow),
+            )
+            for request in requests
+        ]
+        for _request, doc in loaded:
+            if not isinstance(doc, dict):
+                raise RunnerError("workflow must be a mapping")
         # `environment_path` is likewise a path or an already-loaded environment document
         # (a caller that reads it for its own reasons -- a dialect front door inspecting
         # `x-` keys -- need not have it read a second time here). The document is copied
@@ -343,13 +376,46 @@ class RollingRunner:
         # the job and the runner holds a list of them. There is exactly one today:
         # what makes several possible is that `build_job` reads nothing but its
         # arguments, so admitting one is appending to this list.
-        self._jobs: list[Job] = [build_job(workflow_doc, boundary)]
+        self._jobs: list[Job] = [
+            build_job(doc, request.boundary, id=request.id, release=request.release)
+            for request, doc in loaded
+        ]
+        self._by_id: dict[str, Job] = {job.id: job for job in self._jobs}
+        if len(self._by_id) != len(self._jobs):
+            # The id keys the roster, the plan's activities and the provenance of every
+            # commit, so two jobs sharing one would have each other's work committed
+            # against them. Caught here rather than diagnosed later from the symptom.
+            raise RunnerError("job ids must be distinct")
+        # Whether this run carries *named* jobs. A single unnamed workflow is planned
+        # by the entry point it always used, with a top-level `interface` and no
+        # roster, so its plan is byte-for-byte what it was.
+        self._named = any(job.id for job in self._jobs)
+        # Spots the laboratory is already holding (§6.12): declared at run start, and
+        # added to when a job stops leaving material behind.
+        # `since` -- when the spot became occupied -- is required by the document
+        # (§6.12), and for a spot the laboratory was already holding when the run
+        # began the answer is 0. Defaulted rather than demanded: "occupied from the
+        # beginning" is the only thing a run's opening state can mean, and a caller
+        # writing it out would be answering a question that has one answer.
+        self.occupied: list[dict] = [{"since": 0, **entry} for entry in occupied or []]
         # What every stock held when this run began (§6.10). One per run however many
         # jobs draw on it, which is why it is here and not on the job. Carried into
         # the status unchanged on every tick -- the level at `now` is the scheduler's
         # to replay from this plus the `consumption` each fixed activity echoes
         # (§4.7.2), so nothing here ever recomputes it.
-        self.inventories = self._only_job.boundary.inventories
+        # Stated for the run when there is a run to state it for (the run document,
+        # §6.11), and otherwise read off the single job's boundary, where it has always
+        # lived. Both are kept: the boundary form is what every existing run uses.
+        if inventories is not None:
+            self.inventories = inventories
+        else:
+            declared = [job.boundary.inventories for job in self._jobs if job.boundary.inventories]
+            if any(other != declared[0] for other in declared[1:]):
+                raise RunnerError(
+                    "jobs declare conflicting starting inventories; the stock is the "
+                    "laboratory's, so state it once for the run"
+                )
+            self.inventories = declared[0] if declared else {}
         # The result boundary (D28): the same-schema document echoing the produced
         # output views, assembled at the end of a run (the CLI writes it to
         # `--boundary-out`). Empty until `run()` completes.
@@ -431,10 +497,46 @@ class RollingRunner:
         self._pending_capture: dict[str, dict] = {}
         if observe or observation_out is not None:
             self._obs: ObservationRecorder | None = ObservationRecorder(
-                path=observation_out, interface=self._only_job.interface or None
+                path=observation_out,
+                interface=None if self._named else (self._only_job.interface or None),
             )
         else:
             self._obs = None
+
+    def _place_released(self) -> None:
+        """Put each job's entry material on its spots once its release has come.
+
+        Entry material is *there*, given, from the job's release (§6.8) — so the
+        moment the clock reaches it is the moment the Objects appear. Called every
+        tick, and idempotent: a job is placed once.
+
+        🔴 This is the seam a job arriving mid-run slots into. Arriving *is* this:
+        entering the roster and having your material appear. Nothing else about the
+        loop assumes the job set was known at the start.
+        """
+        for job in self._jobs:
+            if job.placed or job.release > self.now:
+                continue
+            for _port, spot in (job.interface.get("inputs") or {}).items():
+                self.sim.place(spot)
+            job.placed = True
+
+    def _subject(self, name: str, job: Job) -> str:
+        """How a diagnostic names something. In a run of several jobs the same node
+        path belongs to several of them, so the job comes too."""
+        return f"{job.id}:{name}" if job.id else name
+
+    def _job_of(self, activity: dict) -> Job | None:
+        """The job an activity belongs to (§6.11), or None for one that belongs to no
+        job -- a replenishment, which the scheduler decided to run and which commonly
+        serves several.
+
+        A single-workflow run carries no `job` on anything and its one job is named by
+        the empty string, so the same lookup serves both.
+        """
+        if activity.get("kind") == "replenishment":
+            return None
+        return self._by_id.get(activity.get("job", ""))
 
     @property
     def _only_job(self) -> Job:
@@ -526,32 +628,46 @@ class RollingRunner:
         more work, waits for what is still running to finish, and returns a final
         status with the failed activity `failed` and the abandoned work `cancelled`
         (D25). `self.failed` records that this happened (the CLI maps it to exit 1)."""
-        # Seed the boundary inputs: the entry Objects sit on their interface spots
-        # at the start of the run (§6.8), and every entry input port gets its
-        # boundary view value seeded from the job (contract-checked) or a typed
-        # default (D27 F4).
-        for _port, spot in (self._only_job.interface.get("inputs") or {}).items():
-            self.sim.place(spot)
-        job = self._only_job
-        seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
+        # Seed every job's boundary inputs: each entry input port gets its view value
+        # from the boundary (contract-checked) or a typed default (D27 F4).
+        #
+        # 🔴 Seeding and *placing* part company here. A view value is information, known
+        # from the start and read by nobody before the job runs, so all of it is seeded
+        # now. Where the Object physically sits is not: entry material is there, given,
+        # from the job's release (§6.8), and putting it on a spot before then would have
+        # the scheduler plan around a place it believes free while it is full.
+        # `_place_released` does that, each tick, and it is exactly what a job arriving
+        # mid-run will do.
+        for job in self._jobs:
+            seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
+        # Spots the laboratory was already holding (§6.12) are occupied in the backend
+        # too, so an operation that should never have been planned onto one fails loudly
+        # instead of quietly succeeding against a world the plan disagrees with.
+        for held in self.occupied:
+            spot = held.get("spot")
+            if spot:
+                self.sim.place(spot)
+        self._place_released()
 
         # Whole-workflow precondition contracts (v0 §9 `requires` on the entry composite,
         # D32 Phase 1): checked once the boundary inputs are seeded, before any work is
         # dispatched. A violation stops the run before it starts (graceful, D25): no
         # activity runs, `self.failed`/`_stopping` are set, and the loop below breaks
         # immediately (nothing is running), so the final status is emptily terminal.
-        entry = self._only_job.contracts.entry
-        if (
-            self._only_job.entry_is_composite
-            and entry is not None
-            and self._only_job.contract_asts.get(entry, {}).get("requires")
-            and self._violated_contract(
-                entry, "requires", self._main_contract_inputs(), {}, "main"
-            )
-            is not None
-        ):
-            self.failed = True
-            self._stopping = True
+        for job in self._jobs:
+            entry = job.contracts.entry
+            if (
+                job.entry_is_composite
+                and entry is not None
+                and job.contract_asts.get(entry, {}).get("requires")
+                and self._violated_contract(
+                    job, entry, "requires", self._main_contract_inputs(job), {},
+                    self._subject("main", job),
+                )
+                is not None
+            ):
+                self.failed = True
+                self._stopping = True
 
         # Atomic preconditions that are knowable at run start -- `requires` referencing
         # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
@@ -565,6 +681,11 @@ class RollingRunner:
 
         while True:
             self.ticks += 1
+            # A job whose release has come now has its material on its spots. At run
+            # start this placed everything released at 0; from here on it is what makes
+            # a later release real, and -- once a job may arrive mid-run -- what makes
+            # an arrival real.
+            self._place_released()
             if self.max_ticks is not None and self.ticks > self.max_ticks:
                 # One iteration per poll interval, so this is reached either because the run
                 # is genuinely longer than the limit or because time is not moving. Only the
@@ -620,8 +741,8 @@ class RollingRunner:
         # Assemble the whole-workflow outputs from the produced values (D26); exposed
         # via `job.outputs` and `job.values.snapshot()` (v0-lite: a runner-internal
         # channel, not the §6/§7 document).
-        job = self._only_job
-        job.outputs = collect_outputs(job.dataflow, job.values)
+        for job in self._jobs:
+            job.outputs = collect_outputs(job.dataflow, job.values)
 
         # On a run that completed, verify each pinned Object output actually reached
         # its declared delivery spot (P3, D28). The §6.8 interface_out node holds the
@@ -636,20 +757,30 @@ class RollingRunner:
             # violation (v0 §9.3): set `self.failed` (exit 1). The activities stay
             # `completed` -- the failure is at the whole-workflow boundary, not any one
             # activity. Only checked on an otherwise-successful run (the guard above).
-            entry = self._only_job.contracts.entry
-            if (
-                self._only_job.entry_is_composite
-                and entry is not None
-                and self._only_job.contract_asts.get(entry, {}).get("ensures")
-                and self._violated_contract(
-                    entry, "ensures", self._main_contract_inputs(), self._only_job.outputs, "main"
-                )
-                is not None
-            ):
-                self.failed = True
+            for job in self._jobs:
+                entry = job.contracts.entry
+                if (
+                    job.entry_is_composite
+                    and entry is not None
+                    and job.contract_asts.get(entry, {}).get("ensures")
+                    and self._violated_contract(
+                        job, entry, "ensures", self._main_contract_inputs(job), job.outputs,
+                        self._subject("main", job),
+                    )
+                    is not None
+                ):
+                    self.failed = True
         # Echo the produced output views back into a result document of the same
-        # boundary schema (D28), for `--boundary-out`.
-        self.result_boundary = self._only_job.boundary.result(self._only_job.outputs)
+        # boundary schema (D28), for `--boundary-out`. A run of named jobs keys them by
+        # job -- one file still, like the status and the observation document -- while
+        # a single unnamed workflow returns the document it always did.
+        if self._named:
+            self.result_boundary = {
+                "jobs": {job.id: job.boundary.result(job.outputs) for job in self._jobs}
+            }
+        else:
+            job = self._only_job
+            self.result_boundary = job.boundary.result(job.outputs)
 
         # A stopped run reports the work that never ran as cancelled (D25). The failure
         # reason (D36) is NOT put in the status -- it stays a valid §6 document -- but is
@@ -668,10 +799,12 @@ class RollingRunner:
         return build_status(
             self.log.records(),
             self.now,
-            self._only_job.interface,
+            None if self._named else self._only_job.interface,
             self._last_time,
             cancelled,
             inventories=self.inventories or None,
+            jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
+            occupied=self.occupied or None,
         )
 
     def _check_output_spots(self) -> None:
@@ -679,11 +812,13 @@ class RollingRunner:
         (P3, D28). The runner does not read spot state in normal operation (D15);
         this is the one end-of-run sanity read. Raises `RunnerError` on a spot the
         boundary delivery left empty."""
-        for port, spot in self._only_job.boundary.output_spots.items():
-            if self.sim.spot_state(spot) is None:
-                raise RunnerError(
-                    f"boundary output {port!r} did not reach its declared spot {spot!r}"
-                )
+        for job in self._jobs:
+            for port, spot in job.boundary.output_spots.items():
+                if self.sim.spot_state(spot) is None:
+                    raise RunnerError(
+                        f"boundary output {self._subject(port, job)!r} did not reach "
+                        f"its declared spot {spot!r}"
+                    )
 
     def _preflight_atomic_requires(self) -> None:
         """Run-start preflight (D37): check each atomic invocation's phase-hoisted
@@ -691,22 +826,27 @@ class RollingRunner:
         before any work is dispatched, over the run-start-available values. A violation
         stops the run before it starts (like an atomic `requires`, but caught up front,
         so no dependent work runs). Skipped once the run is already stopping."""
-        if self._stopping:
-            return
-        for node, process in self._only_job.dataflow.process_of.items():
+        for job in self._jobs:
+            if self._stopping:
+                return
+            self._preflight_job(job)
+
+    def _preflight_job(self, job: Job) -> None:
+        """`_preflight_atomic_requires` for one job."""
+        for node, process in job.dataflow.process_of.items():
             # Only the preflight candidates whose referenced inputs are *actually*
             # fixed at run start for this node (boundary / literal / unconnected) are
             # checked here; any candidate reading a producer-fed input is deferred to
             # dispatch (checked once the producer has run), so we never evaluate a
             # requires against a not-yet-produced input's typed default.
-            checkable, _deferred = self._split_preflight(node, process)
+            checkable, _deferred = self._split_preflight(job, node, process)
             if not checkable:
                 continue
-            job = self._only_job
             inputs = assemble_inputs(job.dataflow, job.contracts, job.values, node)
             if (
                 self._violated_exprs(
-                    process, "requires_preflight", checkable, inputs, {}, self._fmt_node(node)
+                    job, process, "requires_preflight", checkable, inputs, {},
+                    self._subject(self._fmt_node(node), job),
                 )
                 is not None
             ):
@@ -714,19 +854,18 @@ class RollingRunner:
                 self._stopping = True
                 return
 
-    def _main_contract_inputs(self) -> dict:
+    def _main_contract_inputs(self, job: Job) -> dict:
         """The entry composite's input view values, for its own whole-workflow contract
         checks (v0 §9 on `main`, D32 Phase 1): each declared entry input read from the
         boundary-seeded value store. Every entry input is seeded at run start
         (`seed_entry`), so all are present."""
-        entry = self._only_job.contracts.entry
-        job = self._only_job
+        entry = job.contracts.entry
         return {
             port: job.values.get((), port)
             for port in job.contracts.processes[entry].inputs
         }
 
-    def _contract_resolver(self, process: str, inputs: dict, outputs: dict):
+    def _contract_resolver(self, job: Job, process: str, inputs: dict, outputs: dict):
         """Build the `resolve(scope, port, fields)` callback `contract_eval` needs:
         map a `.view` reference to this invocation's actual view value. A bare `.view`
         is the value itself (a primitive scalar or a view record); `.view.length` on
@@ -737,9 +876,9 @@ class RollingRunner:
             if not fields:
                 return value
             rtype = (
-                self._only_job.contracts.input_type(process, port)
+                job.contracts.input_type(process, port)
                 if scope == "inputs"
-                else self._only_job.contracts.output_type(process, port)
+                else job.contracts.output_type(process, port)
             )
             if isinstance(rtype, ArrayType):
                 return len(value)  # the only Array view field is `length`
@@ -747,7 +886,7 @@ class RollingRunner:
 
         return resolve
 
-    def _input_available_at_start(self, node, port: str) -> bool:
+    def _input_available_at_start(self, job: Job, node, port: str) -> bool:
         """Whether input `port` of `node` has a value fixed at run start.
 
         True when the port is fed by the boundary (a seeded entry input), bound to a
@@ -756,23 +895,23 @@ class RollingRunner:
         producer completes, so a `requires` over it cannot be preflighted (D37 assumed
         run-phase inputs are always boundary/literal; a legal run->run producer output
         breaks that assumption). `input_source` uses `()` for the boundary node."""
-        source = self._only_job.dataflow.input_source.get((tuple(node), port))
+        source = job.dataflow.input_source.get((tuple(node), port))
         if source is not None:
             return source[0] == ()
         return True  # a static literal or an unconnected input: fixed at run start
 
-    def _split_preflight(self, node, process: str):
+    def _split_preflight(self, job: Job, node, process: str):
         """Partition a process's preflight-candidate `requires` at `node` into those
         actually checkable at run start (every referenced input fixed at run start)
         and those deferred to dispatch (a referenced input is producer-fed). The split
         is a static property of the dataflow, so it is the same at preflight and at
         dispatch -- guaranteeing each expression is checked exactly once."""
-        candidates = self._only_job.contract_asts.get(process, {}).get("requires_preflight") or []
+        candidates = job.contract_asts.get(process, {}).get("requires_preflight") or []
         checkable, deferred = [], []
         for pair in candidates:
             _expr, ast = pair
             if all(
-                self._input_available_at_start(node, port)
+                self._input_available_at_start(job, node, port)
                 for _s, port in referenced_ports(ast)
             ):
                 checkable.append(pair)
@@ -781,21 +920,23 @@ class RollingRunner:
         return checkable, deferred
 
     def _violated_contract(
-        self, process: str, section: str, inputs: dict, outputs: dict, subject: str
+        self, job: Job, process: str, section: str, inputs: dict, outputs: dict, subject: str
     ):
         """Evaluate `process`'s stored `section` (requires / ensures) contracts for
         `subject`; see `_violated_exprs`."""
         return self._violated_exprs(
+            job,
             process,
             section,
-            self._only_job.contract_asts.get(process, {}).get(section) or [],
+            job.contract_asts.get(process, {}).get(section) or [],
             inputs,
             outputs,
             subject,
         )
 
     def _violated_exprs(
-        self, process: str, section: str, exprs, inputs: dict, outputs: dict, subject: str
+        self, job: Job, process: str, section: str, exprs, inputs: dict, outputs: dict,
+        subject: str,
     ):
         """Evaluate an explicit list of `(expr, ast)` contracts for `subject` and return
         the first violated expression, or None if all hold.
@@ -807,7 +948,7 @@ class RollingRunner:
         is a runtime contract violation (v0 §9.3)."""
         if not exprs:
             return None
-        resolve = self._contract_resolver(process, inputs, outputs)
+        resolve = self._contract_resolver(job, process, inputs, outputs)
         first_violation = None
         for expr, ast in exprs:
             try:
@@ -831,16 +972,16 @@ class RollingRunner:
             self._record_failure(f"contract_{section}", f"{subject}: {first_violation}", subject)
         return first_violation
 
-    def _composite_ready(self, mapping: dict) -> bool:
+    def _composite_ready(self, job: Job, mapping: dict) -> bool:
         """Whether every value-store key in `mapping` (a composite's inputs or outputs,
         port -> (node, port)) has been produced / seeded. Literal-bound ports are not
         in `mapping`, so they never gate readiness (their value is always available)."""
-        return all(self._only_job.values.has(node, port) for (node, port) in mapping.values())
+        return all(job.values.has(node, port) for (node, port) in mapping.values())
 
-    def _composite_values(self, mapping: dict, literals: dict) -> dict:
+    def _composite_values(self, job: Job, mapping: dict, literals: dict) -> dict:
         """A composite's port -> view value map: each routed port read from the value
         store, plus each literal-bound port's constant."""
-        store = self._only_job.values
+        store = job.values
         values = {
             cport: store.get(node, port) for cport, (node, port) in mapping.items()
         }
@@ -854,24 +995,30 @@ class RollingRunner:
         `_checked_requires` / `_checked_ensures`). A violation stops the run gracefully
         (D25) at the composite boundary -- no single activity is marked failed, like the
         entry composite (D33). Skipped once the run is already stopping."""
-        if self._stopping:
-            return
-        for path, b in self._only_job.composites.items():
-            asts = self._only_job.contract_asts.get(b.process)
+        for job in self._jobs:
+            if self._stopping:
+                return
+            self._check_job_composites(job)
+
+    def _check_job_composites(self, job: Job) -> None:
+        """`_check_ready_composites` for one job."""
+        for path, b in job.composites.items():
+            asts = job.contract_asts.get(b.process)
             if not asts:
                 continue  # this composite declares no contracts
             # `requires`: over the composite's inputs, checked before its body's
             # input-dependent activities can run (they wait on the same values).
             if (
                 "requires" in asts
-                and path not in self._only_job.checked_requires
-                and self._composite_ready(b.inputs)
+                and path not in job.checked_requires
+                and self._composite_ready(job, b.inputs)
             ):
-                self._only_job.checked_requires.add(path)
-                inputs = self._composite_values(b.inputs, b.input_literals)
+                job.checked_requires.add(path)
+                inputs = self._composite_values(job, b.inputs, b.input_literals)
                 if (
                     self._violated_contract(
-                        b.process, "requires", inputs, {}, self._fmt_node(path)
+                        job, b.process, "requires", inputs, {},
+                        self._subject(self._fmt_node(path), job),
                     )
                     is not None
                 ):
@@ -882,16 +1029,17 @@ class RollingRunner:
             # outputs exist (before any downstream consumer of them runs).
             if (
                 "ensures" in asts
-                and path not in self._only_job.checked_ensures
-                and self._composite_ready(b.inputs)
-                and self._composite_ready(b.outputs)
+                and path not in job.checked_ensures
+                and self._composite_ready(job, b.inputs)
+                and self._composite_ready(job, b.outputs)
             ):
-                self._only_job.checked_ensures.add(path)
-                inputs = self._composite_values(b.inputs, b.input_literals)
-                outputs = self._composite_values(b.outputs, b.output_literals)
+                job.checked_ensures.add(path)
+                inputs = self._composite_values(job, b.inputs, b.input_literals)
+                outputs = self._composite_values(job, b.outputs, b.output_literals)
                 if (
                     self._violated_contract(
-                        b.process, "ensures", inputs, outputs, self._fmt_node(path)
+                        job, b.process, "ensures", inputs, outputs,
+                        self._subject(self._fmt_node(path), job),
                     )
                     is not None
                 ):
@@ -899,7 +1047,7 @@ class RollingRunner:
                     self._stopping = True
                     return
 
-    def _requires_gate_open(self, node) -> bool:
+    def _requires_gate_open(self, job: Job, node) -> bool:
         """Whether every ancestor composite of `node` that declares a `requires` has
         had it checked (v0 §9). A composite's precondition gates its whole body: no
         body activity may run until the composite's `requires` is verified. Because the
@@ -918,12 +1066,12 @@ class RollingRunner:
         gated by it), and an unbound input is never tracked as pending readiness, so the
         `requires` always becomes checkable and the gate always eventually opens."""
         node = tuple(node)
-        for path, boundary in self._only_job.composites.items():
+        for path, boundary in job.composites.items():
             if (
                 len(path) < len(node)
                 and node[: len(path)] == path
-                and "requires" in (self._only_job.contract_asts.get(boundary.process) or {})
-                and path not in self._only_job.checked_requires
+                and "requires" in (job.contract_asts.get(boundary.process) or {})
+                and path not in job.checked_requires
             ):
                 return False
         return True
@@ -963,10 +1111,10 @@ class RollingRunner:
         for activity in undispatched:
             if int(activity["start"]) > self.now:
                 continue
-            if activity.get("kind") == "processing" and not self._requires_gate_open(
-                activity["node"]
-            ):
-                continue
+            if activity.get("kind") == "processing":
+                job = self._job_of(activity)
+                if job is not None and not self._requires_gate_open(job, activity["node"]):
+                    continue
             return True
 
         # Nothing left to dispatch and nothing running: ask once more, so the loop's
@@ -1007,11 +1155,17 @@ class RollingRunner:
         status_doc = build_status(
             self.log.records(),
             self.now,
-            self._only_job.interface,
+            # A single unnamed workflow keeps the top-level `interface` it always had;
+            # a run of named jobs carries one per job, in the roster (§6.11).
+            None if self._named else self._only_job.interface,
             inventories=self.inventories or None,
+            jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
+            occupied=self.occupied or None,
         )
         report = replan(
-            self._only_job.workflow,
+            [(job.id, job.workflow) for job in self._jobs]
+            if self._named
+            else self._only_job.workflow,
             environment,
             status_doc,
             running_task_margin=self.margin,
@@ -1024,6 +1178,16 @@ class RollingRunner:
             raise RunnerError(self._failure_message(report))
         plan = report.plan
         self._last_time = plan.get("time")
+        # 🔴 What the scheduler promised each job, taken back so the next tick can hand
+        # it in again. Without this the status is rebuilt from the commit log alone,
+        # every job looks like a new arrival with no promise, and the guarantee that an
+        # earlier job is not disturbed by a later one holds inside one solve and
+        # nowhere else.
+        for entry in plan.get("jobs") or []:
+            job = self._by_id.get(entry.get("id"))
+            if job is not None:
+                job.bound = entry.get("bound")
+                job.fingerprint = entry.get("fingerprint")
 
         # Pending work is what carries no status (relays are scheduler-derived and
         # never dispatched, §7). Remembered so that, if a failure stops the run, the
@@ -1051,8 +1215,10 @@ class RollingRunner:
                 # later tick redispatches it once the `requires` is checked. Only
                 # process invocations are gated; a transport is ordered by the Object it
                 # moves, which a gated producer has not yet created.
-                if act.get("kind") == "processing" and not self._requires_gate_open(act["node"]):
-                    continue
+                if act.get("kind") == "processing":
+                    job = self._job_of(act)
+                    if job is not None and not self._requires_gate_open(job, act["node"]):
+                        continue
                 self._commit_start(act)
         return pending
 
@@ -1062,11 +1228,14 @@ class RollingRunner:
         backend can act on what it moves. Best-effort -- None when the arc endpoint or
         its value is not resolvable; a transport does not change the view (physical
         move preserves identity), so this is read-only context, never written back."""
+        job = self._job_of(activity)
+        if job is None:
+            return None
         arc = activity.get("arc") or {}
         src = arc.get("from") or {}
         node, port = src.get("node"), src.get("port")
-        if node is not None and port is not None and self._only_job.values.has(node, port):
-            return self._only_job.values.get(node, port)
+        if node is not None and port is not None and job.values.has(node, port):
+            return job.values.get(node, port)
         return None
 
     def _record_observation(self, rec: Committed, outputs: dict | None) -> None:
@@ -1153,10 +1322,11 @@ class RollingRunner:
             # planned at `now` while its predecessor is still running. A Pure Data
             # successor holds no spot or device, so nothing else would stop it. Hence
             # the hint: a margin of 0 is not a usable setting for such a backend.
-            job = self._only_job
+            job = self._job_of(activity)
+            assert job is not None  # a processing activity always names its job
             unproduced = unproduced_inputs(job.dataflow, job.values, activity["node"])
             if unproduced:
-                subject = self._fmt_node(tuple(activity["node"]))
+                subject = self._subject(self._fmt_node(tuple(activity["node"])), job)
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
                 self._record_failure(
                     "input_not_produced",
@@ -1174,7 +1344,7 @@ class RollingRunner:
             # typed value for each output port at completion, and the assembled input
             # values (F4; routed from upstream / the seeded boundary). The backend
             # records inputs but does not yet use them (F4b).
-            output_schema = self._only_job.output_schemas.get(activity["process"], {})
+            output_schema = job.output_schemas.get(activity["process"], {})
             inputs = assemble_inputs(
                 job.dataflow, job.contracts, job.values, activity["node"]
             )
@@ -1187,10 +1357,11 @@ class RollingRunner:
             # candidate deferred from run start because it reads a producer-fed input
             # (now available) -- so it is verified here rather than skipped (D37 gap).
             proc = activity["process"]
-            _checkable, deferred = self._split_preflight(activity["node"], proc)
-            requires = (self._only_job.contract_asts.get(proc, {}).get("requires") or []) + deferred
+            _checkable, deferred = self._split_preflight(job, activity["node"], proc)
+            requires = (job.contract_asts.get(proc, {}).get("requires") or []) + deferred
             violated = self._violated_exprs(
-                proc, "requires", requires, inputs, {}, self._fmt_node(tuple(activity["node"]))
+                job, proc, "requires", requires, inputs, {},
+                self._subject(self._fmt_node(tuple(activity["node"])), job),
             )
             if violated is not None:
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
@@ -1203,7 +1374,7 @@ class RollingRunner:
             uuid = self.sim.dispatch_processing(
                 activity["process"], activity["mode"], duration=actual,
                 output_schema=output_schema, inputs=inputs,
-                definition=self._only_job.process_defs.get(activity["process"]),
+                definition=job.process_defs.get(activity["process"]),
                 **provenance,
             )
             # Stash the assembled inputs for the observation record (D38): faithful to
@@ -1268,7 +1439,8 @@ class RollingRunner:
                 # defaults always conform, but a future device model / real backend
                 # (F4b) could emit a non-conformant value, caught here.
                 outputs = observed_state.get("outputs")
-                if outputs is not None:
+                job = self._job_of(rec.activity)
+                if outputs is not None and job is not None:
                     process = rec.activity["process"]
                     # Every declared output port must carry a value. A workflow cannot
                     # give an output port a default, so an unset one has no value at all
@@ -1279,10 +1451,10 @@ class RollingRunner:
                     # consumer to discover a value it can only describe as absent. The
                     # built-in models fill every port, so only an injected
                     # `device_model` / `backend_factory` can trip this.
-                    schema = self._only_job.output_schemas.get(process, {})
+                    schema = job.output_schemas.get(process, {})
                     absent = sorted(set(schema) - set(outputs))
                     if absent:
-                        subject = self._fmt_node(tuple(rec.activity["node"]))
+                        subject = self._subject(self._fmt_node(tuple(rec.activity["node"])), job)
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True
@@ -1296,7 +1468,7 @@ class RollingRunner:
                     normalized: dict = {}
                     nonconformant = None
                     for port, value in outputs.items():
-                        resolved = self._only_job.contracts.output_type(process, port)
+                        resolved = job.contracts.output_type(process, port)
                         if not conforms(value, resolved):
                             nonconformant = port
                             break
@@ -1311,7 +1483,9 @@ class RollingRunner:
                         # Stop gracefully (D25) -- mark the (physically completed)
                         # activity failed and record why -- symmetric with a script's
                         # graceful failure, rather than raising a hard RunnerError.
-                        subject = self._fmt_node(tuple(rec.activity["node"]))
+                        subject = self._subject(
+                            self._fmt_node(tuple(rec.activity["node"])), job
+                        )
                         rec.status = "failed"
                         self.failed = True
                         self._stopping = True
@@ -1322,7 +1496,7 @@ class RollingRunner:
                             subject,
                         )
                         continue
-                    record_outputs(self._only_job.values, tuple(rec.activity["node"]), normalized)
+                    record_outputs(job.values, tuple(rec.activity["node"]), normalized)
                     outputs = normalized
                 # Postcondition contracts (v0 §9 `ensures`, D32): checked once the outputs
                 # exist, over this invocation's assembled inputs and produced outputs. A
@@ -1330,16 +1504,19 @@ class RollingRunner:
                 # completed) activity `failed` and stop the run gracefully (D25). Only
                 # processing activities carry a `process` (a transport leg does not).
                 process = rec.activity.get("process")
-                job = self._only_job
-                if process is not None and job.contract_asts.get(process, {}).get(
-                    "ensures"
+                if (
+                    process is not None
+                    and job is not None
+                    and job.contract_asts.get(process, {}).get("ensures")
                 ):
                     inputs = assemble_inputs(
                         job.dataflow, job.contracts, job.values, rec.activity["node"]
                     )
-                    subject = self._fmt_node(tuple(rec.activity["node"]))
+                    subject = self._subject(self._fmt_node(tuple(rec.activity["node"])), job)
                     if (
-                        self._violated_contract(process, "ensures", inputs, outputs or {}, subject)
+                        self._violated_contract(
+                            job, process, "ensures", inputs, outputs or {}, subject
+                        )
                         is not None
                     ):
                         rec.status = "failed"
@@ -1351,7 +1528,7 @@ class RollingRunner:
                         # workflow output via collect_outputs / the result boundary.
                         node = tuple(rec.activity["node"])
                         for port in outputs or {}:
-                            self._only_job.values.discard(node, port)
+                            job.values.discard(node, port)
                 # Record the completed activity in the observation document (D38) --
                 # only if it survived its `ensures` (a violated postcondition flipped
                 # it to `failed` just above and discarded its outputs).
@@ -1395,8 +1572,13 @@ class RollingRunner:
         was going to complete.
         """
         kind = activity.get("kind")
+        # 🔴 The job is part of the identity, not decoration. Two jobs of one workflow
+        # render the same `node` and the same arc (§6.11), so without it committing
+        # one job's activity would mark the other's committed too -- and
+        # `_undispatched` would never return it again.
+        job = activity.get("job", "")
         if kind == "processing":
-            return ("processing", tuple(activity.get("node") or ()))
+            return ("processing", job, tuple(activity.get("node") or ()))
         if kind == "transport":
             # Identify by the logical arc it serves and its chain position.
             arc = activity.get("arc") or {}
@@ -1407,6 +1589,7 @@ class RollingRunner:
 
             return (
                 "transport",
+                job,
                 endpoint(arc.get("from")),
                 endpoint(arc.get("to")),
                 activity.get("seq"),

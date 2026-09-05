@@ -97,7 +97,7 @@ def test_producer_fed_run_phase_requires_is_deferred_to_dispatch():
         random_seed=0,
     )
     assert "requires_preflight" in runner.jobs[0].contract_asts["check"]
-    checkable, deferred = runner._split_preflight(("Check",), "check")
+    checkable, deferred = runner._split_preflight(runner.jobs[0], ("Check",), "check")
     assert not checkable and len(deferred) == 1
 
 

@@ -66,9 +66,15 @@ def test_provenance_keys_tell_the_two_known_kinds_apart():
                 "to": {"node": ["SampleTarget"], "port": "in"}},
         "seq": 0,
     }
-    assert RollingRunner._provenance_key(processing) == ("processing", ("SampleSource",))
+    assert RollingRunner._provenance_key(processing) == ("processing", "", ("SampleSource",))
+    # 🔴 And the job is part of it: two jobs of one workflow render the same `node`,
+    # so without it committing one would mark the other committed too (§6.11).
+    assert RollingRunner._provenance_key(
+        {**processing, "job": "job2"}
+    ) != RollingRunner._provenance_key(processing)
     assert RollingRunner._provenance_key(transport) == (
-        "transport", (("SampleSource",), "out"), (("SampleTarget",), "in"), 0,
+        "transport",
+        "", (("SampleSource",), "out"), (("SampleTarget",), "in"), 0,
     )
 
 

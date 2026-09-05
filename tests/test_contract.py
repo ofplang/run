@@ -172,7 +172,7 @@ def test_violated_exprs_treats_arithmetic_error_as_violation():
     runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), random_seed=0)
     ast = parse("inputs.a.view / inputs.b.view >= 1")
     violated = runner._violated_exprs(
-        "score", "requires", [("expr", ast)], {"a": 1, "b": 0}, {}, "x"
+        runner.jobs[0], "score", "requires", [("expr", ast)], {"a": 1, "b": 0}, {}, "x"
     )
     assert violated == "expr"
 
@@ -184,7 +184,9 @@ def test_violated_exprs_propagates_internal_lookup_error():
     runner = RollingRunner(CONTRACT_WF, CONTRACT_ENV, _boundary(72), random_seed=0)
     ast = parse("inputs.missing.view >= 0")
     with pytest.raises(KeyError):
-        runner._violated_exprs("score", "requires", [("expr", ast)], {}, {}, "x")
+        runner._violated_exprs(
+            runner.jobs[0], "score", "requires", [("expr", ast)], {}, {}, "x"
+        )
 
 
 @pytest.mark.parametrize("poll_interval", [None, 1])
