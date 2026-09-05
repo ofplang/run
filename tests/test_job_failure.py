@@ -299,3 +299,27 @@ def test_a_spot_a_running_activity_holds_is_not_declared_residue():
     assert saw_a_running_spot
     # And the spot is claimed once that bake has finished, not before.
     assert "oven.tray_2" in {e["spot"] for e in runner._occupied_now()}
+
+
+def test_a_job_that_stops_with_work_still_running_lets_the_others_finish():
+    """The end-to-end shape of the same thing: job1's transport fails while its other
+    branch is still baking. Neither the residue nor the plan may put job2's work
+    behind something that never happened -- job2 runs to completion."""
+    workflow = load_document(FIXTURES / "two_branch.workflow.yaml")
+    runner = RollingRunner(
+        [JobRequest(id=job_id, workflow=workflow) for job_id in ("job1", "job2")],
+        str(FIXTURES / "two_branch.env.yaml"),
+        poll_interval=None,
+        random_seed=0,
+    )
+    for source in ("bench.slot_a", "bench.slot_b"):
+        runner.sim.schedule_transport_failure("arm", source, "oven.tray_1")
+    status = runner.run()
+
+    assert [job.id for job in runner.jobs if job.stopped] == ["job1"]
+    assert {a["status"] for a in _of(status, "job2")} == {"completed"}
+    # job1 really did have work in flight when it stopped: its bake finished after
+    # the transport failed, which is the case that used to take the run down.
+    failed = [a for a in _of(status, "job1") if a["status"] == "failed"]
+    later = [a for a in _of(status, "job1") if a["status"] == "completed"]
+    assert failed and max(a["end"] for a in later) > failed[0]["end"]
