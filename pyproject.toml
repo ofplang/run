@@ -26,7 +26,12 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.2.4` floor is required, not merely tested against:
+# PyPI. The `ofplang-schedule>=0.5` floor is required, not merely tested against:
+# an environment may declare a route that needs no transporter (`transporter: null`,
+# spec §4.6/§5.4) and this runner dispatches such a move, but 0.5 is where the
+# scheduler learned to accept the key at all -- an older one refuses the environment
+# with `wrong_type` before any plan exists to execute.
+# The `>=0.2.4` floor it replaces was required for the same kind of reason:
 # this runner holds only the devices a mode *accesses* (`device_access: false`, spec
 # §4.4.2 -- material resting in a refrigerator occupies a slot, not the machine), and
 # 0.2.4 is where the scheduler learned that key. An older one refuses such an
@@ -52,7 +57,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.4,<0.5", "ofplang-validate>=0.2,<0.3"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.5,<0.6", "ofplang-validate>=0.2,<0.3"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"

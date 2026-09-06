@@ -498,11 +498,56 @@ def test_same_spot_transport_is_noop():
     assert sim.spot_state("station_0.core") == obj  # unchanged
 
 
-def test_real_transport_requires_transporter():
+def test_real_transport_requires_a_declared_route():
+    # No transporter *and* no transporter-less route for this pair: the move has no
+    # route at all, which is the same refusal a made-up transporter would get.
     sim = make_sim()
     sim.place("station_0.core")
-    with pytest.raises(ValueError):
+    with pytest.raises(UnknownReference):
         sim.dispatch_transport(None, "station_0.core", "station_1.core")
+
+
+# A route the environment declares with no transporter (schedule SPEC §5.4): the
+# device moves the material between its own spots. `y -> z` is an ordinary arm move
+# that touches neither of x's spots, so it can run while x moves its own material --
+# which is what shows the internal move holds no transporter.
+NO_TRANSPORTER_ENV = {
+    "time": {"unit": "second"},
+    "devices": [
+        {"id": "x", "spots": ["s1", "s2"]},
+        {"id": "y", "spots": ["core"]},
+        {"id": "z", "spots": ["core"]},
+    ],
+    "transporters": [{"id": "arm"}],
+    "transports": [
+        {"transporter": None, "from": "x.s1", "to": "x.s2", "duration": 5},
+        {"transporter": "arm", "from": "y.core", "to": "z.core", "duration": 2},
+    ],
+    "processes": {"noop": {"modes": [{"id": "on_x", "devices": ["x"], "duration": 1}]}},
+}
+
+
+def test_transporter_less_route_moves_material():
+    sim = VirtualTimeSimulator(NO_TRANSPORTER_ENV)
+    obj = sim.place("x.s1")
+    uid = sim.dispatch_transport(None, "x.s1", "x.s2")
+    sim.advance(5)  # the duration comes from the (None, from, to) table entry
+    assert sim.state(uid) == {"status": "completed"}
+    assert sim.spot_state("x.s2") == obj
+    assert sim.spot_state("x.s1") is None
+
+
+def test_transporter_less_move_holds_its_device_but_no_transporter():
+    sim = VirtualTimeSimulator(NO_TRANSPORTER_ENV)
+    sim.place("x.s1")
+    sim.place("y.core")
+    sim.dispatch_transport(None, "x.s1", "x.s2")
+    # It holds the device that performs it -- x cannot do anything else meanwhile.
+    with pytest.raises(ResourceBusy):
+        sim.dispatch_processing("noop", "on_x")
+    # ...and holds no transporter, so the arm is still free. An environment forced to
+    # invent a transporter for x would have serialised these two against each other.
+    sim.dispatch_transport("arm", "y.core", "z.core")
 
 
 def test_transporter_busy_across_independent_devices():

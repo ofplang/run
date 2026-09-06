@@ -62,8 +62,10 @@ class Environment:
     transporters: frozenset[str]
     # (transporter, from_spot, to_spot) -> duration; a missing key means that
     # transporter cannot make that move (§5.4). Same-spot moves are omitted here
-    # and treated as duration 0 on lookup.
-    transports: dict[tuple[str, str, str], int]
+    # and treated as duration 0 on lookup. The transporter is None for a route that
+    # needs none (§5.4): a device shifting material between its own spots, a chute.
+    # Such a move holds its two endpoint devices like any other, and no transporter.
+    transports: dict[tuple[str | None, str, str], int]
     processes: dict[str, Process]
     # Replenishers (§5.6) and the (replenisher, device) -> duration table (§5.7).
     # A third kind of machine, sharing the one id space with devices and
@@ -103,9 +105,12 @@ def environment_from_dict(raw: dict) -> Environment:
 
     # Transporters and the transport-duration table keyed by (transporter, from, to).
     transporters = {t["id"] for t in raw.get("transporters") or []}
-    transports: dict[tuple[str, str, str], int] = {}
+    transports: dict[tuple[str | None, str, str], int] = {}
     for t in raw.get("transports") or []:
-        transports[(t["transporter"], t["from"], t["to"])] = int(t["duration"])
+        # `transporter` is a required key whose value may be null (§5.4), so `get`
+        # here reads that null rather than an absent key -- an environment that omits
+        # the key entirely has already been refused by the schema validator.
+        transports[(t.get("transporter"), t["from"], t["to"])] = int(t["duration"])
 
     # Replenishers and the refill-duration table keyed by (replenisher, device),
     # exactly as transporters and transports are (§5.6, §5.7).

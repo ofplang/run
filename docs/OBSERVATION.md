@@ -137,7 +137,9 @@ outputs:                                      # value: one entry per output port
 kind: transport
 from_spot: incubator_0.slot_0
 to_spot: reader_0.stage
-transporter: arm_0                            # always present (same-spot no-ops are not recorded — §1)
+transporter: arm_0                            # always present; null where the route needs no
+                                              # transporter (schedule §5.4). Same-spot no-ops
+                                              # are not recorded at all (§1)
 arc:
   from: {node: [heat],  port: plate}
   to:   {node: [assay], port: plate}

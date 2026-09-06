@@ -500,6 +500,11 @@ class Simulator(Backend):
         Occupies the source device, the destination device, and the transporter
         over the move (§4.5). Returns the operation id.
 
+        `transporter` is `None` for a **real** move too, over a route that needs no
+        transporter (§5.4) -- a device shifting material between its own spots, a
+        chute. Such a move is dispatched like any other and holds its two endpoint
+        devices; there is simply no transporter to hold or to find busy.
+
         `view` is the moved Object's view value (D26), recorded on the operation for a
         transport-running backend / tests; the physical simulator does not act on it.
         """
@@ -510,24 +515,22 @@ class Simulator(Backend):
 
         same_spot = from_spot == to_spot
 
-        # Resolve the transporter and duration. A real move needs a transporter and
-        # a route in the table; a same-spot move is a physical no-op (duration 0,
-        # transporter optional).
+        # Resolve the transporter and duration. A real move needs a route in the
+        # table -- under a named transporter, or under None where the environment
+        # declares a route that needs none (§5.4); a same-spot move is a physical
+        # no-op (duration 0, transporter optional).
         if same_spot:
             if transporter is not None and transporter not in self._env.transporters:
                 raise UnknownReference(f"unknown transporter: {transporter}")
             dur = 0 if duration is None else int(duration)
         else:
-            if transporter is None:
-                raise ValueError("a non-same-spot transport requires a transporter")
-            if transporter not in self._env.transporters:
+            if transporter is not None and transporter not in self._env.transporters:
                 raise UnknownReference(f"unknown transporter: {transporter}")
             if duration is None:
                 dur = self._env.transports.get((transporter, from_spot, to_spot))
                 if dur is None:
-                    raise UnknownReference(
-                        f"no route for {transporter}: {from_spot} -> {to_spot}"
-                    )
+                    who = "a transporter-less route" if transporter is None else transporter
+                    raise UnknownReference(f"no route for {who}: {from_spot} -> {to_spot}")
             else:
                 dur = int(duration)
         if dur < 0:
