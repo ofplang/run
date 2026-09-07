@@ -57,7 +57,7 @@ from .failure import Failure
 from .job import Job, JobRequest, build_job
 from .loader import load_document
 from .observation import ObservationRecorder
-from .provenance import CommitLog, Committed
+from .provenance import CommitLog, Committed, arc_key
 from .runner import RunnerError
 from .schedule_client import replan
 from .status import build_status
@@ -1299,9 +1299,13 @@ class RollingRunner:
                 job.bound = entry.get("bound")
                 job.fingerprint = entry.get("fingerprint")
 
-        # Pending work is what carries no status (relays are scheduler-derived and
-        # never dispatched, §7). Remembered so that, if a failure stops the run, the
-        # work that never started can be reported cancelled (D25).
+        # Pending work is what carries no status. A relay is excluded whatever its
+        # status: it is an instantaneous scheduling junction with no physical
+        # operation behind it, so there is nothing to dispatch and nothing to commit.
+        # Saying so in the status is not lost by this -- `build_status` reconstructs
+        # each relay from the committed legs around it, the way §7 does.
+        # Remembered so that, if a failure stops the run, the work that never started
+        # can be reported cancelled (D25).
         pending = [
             a
             for a in plan.get("activities", [])
@@ -1825,20 +1829,11 @@ class RollingRunner:
         if kind == "processing":
             return ("processing", job, tuple(activity.get("node") or ()))
         if kind == "transport":
-            # Identify by the logical arc it serves and its chain position.
-            arc = activity.get("arc") or {}
-
-            def endpoint(e):
-                e = e or {}
-                return (tuple(e.get("node") or ()), e.get("port"))
-
-            return (
-                "transport",
-                job,
-                endpoint(arc.get("from")),
-                endpoint(arc.get("to")),
-                activity.get("seq"),
-            )
+            # Identify by the logical arc it serves and its chain position. The arc
+            # half is the same identity `status.py` groups a multi-leg move by, so
+            # both read it from one place (`arc_key`) rather than each spelling the
+            # endpoint shape out again.
+            return ("transport", job, *arc_key(activity.get("arc")), activity.get("seq"))
         if kind == "replenishment":
             # A refill has no workflow provenance -- it exists because the solver put
             # it there, not because the workflow asked for it -- so its `id` is the

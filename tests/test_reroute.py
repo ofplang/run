@@ -188,6 +188,63 @@ def test_reroute_avoids_down_device_from_start():
     )
 
 
+def test_the_reroute_junction_is_reported_as_a_relay():
+    # The re-route carries one Object in two legs, so the status says so: the two
+    # legs and the relay between them (spec §6.4.1), which is what the scheduler's
+    # own replan document contains and what this status is fed back as. The relay is
+    # never dispatched -- it is reconstructed from the committed legs (§7).
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0, down_scope=DownScope.PROCESSING)
+    runner.sim.schedule_device_down(3, "station_1")
+    status = runner.run()
+
+    moves = [a for a in status["activities"] if a["kind"] in ("transport", "relay")]
+    assert [(a["kind"], a["seq"]) for a in moves] == [
+        ("transport", 0),  # station_0.core -> station_1.core, the delivery
+        ("relay", 1),      # the junction it made when target moved off station_1
+        ("transport", 2),  # station_1.core -> station_2.core, the re-transport
+    ]
+    relay = moves[1]
+    assert relay["spot"] == "station_1.core"
+    assert relay["start"] == relay["end"] == 3  # instantaneous, at the observed arrival
+    assert relay["status"] == "completed"
+    assert relay["arc"] == moves[0]["arc"]
+    # The re-route itself is unchanged by saying so.
+    assert status["now"] == 9
+
+
+def test_the_reroute_status_replans_to_the_same_plan():
+    # The status is fed back to the scheduler every tick, so the relays it now
+    # carries have to be something the scheduler accepts. They are: §7 ignores relay
+    # entries and regenerates them from the committed legs, so the document round
+    # trips and the plan is the one the run ended on.
+    schedule = pytest.importorskip("ofplang.schedule").schedule
+
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0, down_scope=DownScope.PROCESSING)
+    runner.sim.schedule_device_down(3, "station_1")
+    status = runner.run()
+
+    report = schedule(SIMPLE_WF, REROUTE_ENV, document_path=status, random_seed=0)
+    assert report.plan is not None, report.diagnostics
+    replanned = [
+        (a["kind"], a.get("seq"), a["start"], a["end"])
+        for a in report.plan["activities"]
+        if a["kind"] in ("transport", "relay")
+    ]
+    assert replanned == [("transport", 0, 2, 3), ("relay", 1, 3, 3), ("transport", 2, 3, 7)]
+
+
+def test_a_run_that_never_reroutes_reports_no_relay():
+    # Nothing is inserted where nothing was re-routed: a single-leg arc is the whole
+    # move and has no junction, so an ordinary run's status is the document it always
+    # was -- one transport, and no `seq` on it (§6.6).
+    runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0)
+    status = runner.run()
+
+    moves = [a for a in status["activities"] if a["kind"] in ("transport", "relay")]
+    assert [a["kind"] for a in moves] == ["transport"]
+    assert "seq" not in moves[0]
+
+
 def test_no_reroute_when_nothing_goes_down():
     # Without a fault, the run stays on the cheap route (target on station_1).
     runner = RollingRunner(SIMPLE_WF, REROUTE_ENV, random_seed=0)

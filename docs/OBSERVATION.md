@@ -32,8 +32,11 @@ runner's committed history, keyed the same way, but the status document answers
   recorded in v0 — it is an unstable per-spot occupancy token, regenerated on every
   processing step, not a scenario-wide identity, so it would be misleading to expose.
   Object continuity is already expressed structurally by `arc` + `seq` provenance.
-- Relays (schedule spec §6.4.1) produce no entry, mirroring the status document
-  (the scheduler regenerates them from committed transport legs).
+- Relays (schedule spec §6.4.1) produce no entry. A relay is an instantaneous
+  junction between two legs of one move — no ports, no values, nothing observed —
+  so there is nothing this document would be about. (The *status* does carry them,
+  derived from the committed legs; this is a value-layer document, not a copy of
+  the status.)
 - **Replenishments produce no entry.** A refill has no ports and no views, so there
   is nothing this document is about; what it did is a stock *level*, and a level is
   derived from the status (the starting levels plus the history, schedule spec
