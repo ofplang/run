@@ -115,8 +115,9 @@ def test_the_stopped_jobs_material_is_declared_occupied():
     failed = [a for a in status["activities"] if a["status"] == "failed"]
     assert len(failed) == 1
     assert status["occupied"] == [
-        # Dated when the plate was actually left there, not when we noticed.
-        {"spot": "oven.tray_1", "since": failed[0]["end"], "job": "job1"}
+        # Dated when the plate was actually left there, not when we noticed. No `job`:
+        # the section says a spot is held, not by whom (§6.12).
+        {"spot": "oven.tray_1", "since": failed[0]["end"]}
     ]
     # ... and nothing was ever planned onto it after the failure.
     later = [
@@ -143,7 +144,7 @@ def test_a_spot_another_job_now_holds_is_not_claimed_as_this_jobs_residue():
     next job has just made -- which was measured to make that job unplannable and take
     the whole run down with it."""
     status, runner = _oven_run("job1", "job2", "job3")
-    held = {entry["spot"]: entry.get("job") for entry in status["occupied"]}
+    held = {entry["spot"] for entry in status["occupied"]}
     assert "bench.slot_a" not in held  # used by job2 and then job3, held by neither now
     # The run survived, which is the symptom the wrong rule produced.
     assert not [job for job in runner.jobs if job.id != "job1" and job.stopped]
@@ -159,8 +160,9 @@ def test_stop_abandons_every_job_and_says_so():
     # so none is checked for delivery or echoed into the result boundary.
     assert runner.result_boundary == {"jobs": {}}
     assert {a["status"] for a in _of(status, "job3")} == {"completed", "cancelled"}
-    # Every job's material is declared, not just the one that failed.
-    assert {entry["job"] for entry in status["occupied"]} == {"job1", "job2", "job3"}
+    # Every job's material is declared, not just the one that failed -- read as the
+    # spots, the section no longer saying whose each one is (§6.12).
+    assert len(status["occupied"]) == 3
 
 
 def test_stop_ends_sooner_than_continue():

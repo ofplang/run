@@ -1683,6 +1683,10 @@ class RollingRunner:
         """The `occupied` section (§6.12) as of this moment: what the laboratory was
         already holding, plus what each stopped job is still holding.
 
+        Entries say *that* a spot is held, not by whom. Which job left the material is
+        not read by anything -- here, or in the scheduler -- and a spot can be held for
+        reasons no document records, so the section keeps the form that covers both.
+
         🔴 Computed here, every time it is asked, rather than fixed when the job
         stopped -- because **a spot a running activity is holding is not residue.**
         §6.12 is for what the plan "does not otherwise account for", and a running
@@ -1706,10 +1710,11 @@ class RollingRunner:
             if not job.stopped:
                 continue
             for spot in sorted(self._residue_spots(job, owners) - running - seen):
-                entry: dict = {"spot": spot, "since": self._held_since(job, spot)}
-                if job.id:
-                    entry["job"] = job.id
-                entries.append(entry)
+                # No `job`: the section says a spot has something on it, and nothing
+                # reads which job put it there. Naming one also inverted the order the
+                # residue actually moves in -- declared while the job is here, carried
+                # into `occupied` when it leaves (schedule design.md D42).
+                entries.append({"spot": spot, "since": self._held_since(job, spot)})
                 seen.add(spot)
         return entries
 

@@ -77,10 +77,7 @@ def _render(policy: str) -> list[str]:
             f"{activity.get('mode') or '':<7} {what}"
         )
     for entry in status.get("occupied") or []:
-        lines.append(
-            f"  occupied: {entry['spot']} since {entry['since']}"
-            f" (left by {entry.get('job')})"
-        )
+        lines.append(f"  occupied: {entry['spot']} since {entry['since']}")
     done = [job.id for job in runner.jobs if not job.stopped]
     stopped = [job.id for job in runner.jobs if job.stopped]
     lines.append(f"  makespan {status['now']}; finished {done or '-'}; stopped {stopped}")
