@@ -10,6 +10,8 @@ other two. What is pinned here:
     straight onto it;
   - ownership: a spot this job merely *used* earlier, and another job's material now
     sits on, is not claimed as this job's residue;
+  - 🔴 and that the residue is **derived**, not asked: the runner replays what its own
+    operations did rather than reading the backend's occupancy, and the two agree;
   - `--on-job-failure stop` stops everything, and stops it *consistently* -- no job
     is left looking finished while its work was cancelled;
   - and that a single workflow behaves exactly as it always did.
@@ -325,3 +327,64 @@ def test_a_job_that_stops_with_work_still_running_lets_the_others_finish():
     failed = [a for a in _of(status, "job1") if a["status"] == "failed"]
     later = [a for a in _of(status, "job1") if a["status"] == "completed"]
     assert failed and max(a["end"] for a in later) > failed[0]["end"]
+
+
+# -- derived, not asked ------------------------------------------------------
+
+
+def test_the_trajectory_agrees_with_the_backends_occupancy():
+    """🔴 The runner derives where material is; this pins that it derives it right.
+
+    Residue used to be filtered by asking the backend which spots were occupied --
+    a query the runner is not entitled to make (D15) and a real backend could not
+    answer, since a laboratory keeps no spot ledger. It now replays the effect of
+    its own completed operations instead (`_trajectory`).
+
+    The two must agree, and neither is derived from the other: the runner applies
+    the rules SPEC gives (§5.4, §5.5), the simulator applies them to its own
+    bookkeeping, and they match because both follow the specification. Extracting a
+    shared implementation would couple the runner to the simulator, which is the
+    coupling being removed -- so the agreement is measured here instead.
+
+    Read on the spots the derivation actually claims for: those a job touched last.
+    The ledger holds material belonging to other jobs and to the run's opening
+    `occupied` as well, which this job's trajectory says nothing about.
+    """
+    _status, runner = _oven_run("job1", "job2", "job3")
+    owners = runner._spot_owners()
+    compared = 0
+    for job in runner._jobs:
+        candidates = {spot for spot, (_end, owner) in owners.items() if owner is job}
+        if job.placed:
+            candidates |= set((job.interface.get("inputs") or {}).values())
+        held, _seen = runner._trajectory(job)
+        for spot in sorted(candidates):
+            derived = spot in held
+            observed = runner.sim.spot_state(spot) is not None
+            assert derived == observed, (
+                f"{job.id}: derived {'held' if derived else 'free'} for {spot}, "
+                f"backend says {'held' if observed else 'free'}"
+            )
+            compared += 1
+    # The run really did exercise the comparison (a vacuous pass would be worthless).
+    assert compared >= 3
+
+
+def test_a_job_that_collected_its_own_material_holds_nothing_it_emptied():
+    """The case ownership alone gets wrong. A job owns a spot it *emptied* -- it
+    collected its own entry material, or carried a plate away -- and nothing else has
+    touched it since, so it is still the last toucher. Only the trajectory says the
+    spot is free.
+
+    Without it every job would claim its loading bay for the rest of the run."""
+    _status, runner = _oven_run("job1", "job2", "job3")
+    for job in runner._jobs:
+        held, seen = runner._trajectory(job)
+        emptied = seen - held
+        if emptied:
+            # Whatever this job emptied, it does not claim -- even where it is still
+            # the spot's owner.
+            assert not (emptied & runner._residue_spots(job, runner._spot_owners()))
+            break
+    else:  # pragma: no cover - the oven run always moves material off a spot
+        pytest.fail("no job emptied a spot; the fixture no longer exercises this")

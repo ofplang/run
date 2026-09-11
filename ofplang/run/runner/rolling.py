@@ -809,11 +809,9 @@ class RollingRunner:
         for job in self._jobs:
             job.outputs = collect_outputs(job.dataflow, job.values)
 
-        # For each job that got there, verify each pinned Object output actually
-        # reached its declared delivery spot (P3, D28). The §6.8 interface_out node
-        # holds the spot to the makespan, so a job that finished must leave it
-        # occupied; an empty spot means the boundary delivery did not happen -- an
-        # inconsistency, raised.
+        # For each job that got there, verify each pinned Object output was actually
+        # delivered (P3, D28) -- read off this run's own completed moves, not off the
+        # backend: where material is is not something the runner asks (D15).
         for job in self._jobs:
             # A stopped job delivered nothing and promised nothing: its outputs never
             # reached their spots (that is what stopping means) and its postcondition
@@ -886,15 +884,35 @@ class RollingRunner:
         )
 
     def _check_output_spots(self, job: Job) -> None:
-        """Verify every pinned Object output of `job` landed on its declared delivery
-        spot (P3, D28). The runner does not read spot state in normal operation (D15);
-        this is the one end-of-run sanity read. Raises `RunnerError` on a spot the
-        boundary delivery left empty."""
+        """Verify every pinned Object output of `job` was actually delivered (P3, D28).
+
+        The evidence is the delivery itself: a boundary arc (SPEC §6.8) is carried by
+        an ordinary transport, so a bound output reached its spot exactly when some
+        completed move of this job arrived there. Where the move took several legs
+        (§6.4.1) it is the last of them that arrives, which is why the spot rather
+        than the leg is what this matches on.
+
+        🔴 **It asks the records, not the laboratory.** Reading the spot would be
+        asking a backend where material is, which the runner does not do (D15,
+        `..backend`) and a real backend could not answer. So this is a consistency
+        assertion over the runner's own bookkeeping, and it cannot fire in ordinary
+        operation: a job that did not stop completed all of its work, the delivery
+        included. What it would catch is a binding with no delivery behind it -- and
+        it says so in those terms, which "the spot is empty" could not.
+        """
+        delivered = {
+            record.activity.get("to_spot")
+            for record in self.log.records()
+            if record.status == "completed"
+            and record.activity.get("kind") == "transport"
+            and self._job_of(record.activity) is job
+        }
         for port, spot in job.boundary.output_spots.items():
-            if self.sim.spot_state(spot) is None:
+            if spot not in delivered:
                 raise RunnerError(
-                    f"boundary output {self._subject(port, job)!r} did not reach "
-                    f"its declared spot {spot!r}"
+                    f"boundary output {self._subject(port, job)!r} was not delivered "
+                    f"to its declared spot {spot!r}: no completed move of this job "
+                    f"arrived there"
                 )
 
     def _preflight_atomic_requires(self) -> None:
@@ -1728,13 +1746,17 @@ class RollingRunner:
         run down with it. The last activity to touch a spot is the one that decided what
         is on it.
 
+        Ownership alone is not enough, though, because a job can empty a spot it owns:
+        it collects its own entry material, or carries a plate away and back. So each
+        candidate is settled by **what this job's own trajectory did to it**
+        (`_trajectory`), and the two are needed together. Neither suffices: ownership
+        without the trajectory claims a spot this job emptied, and the trajectory
+        without ownership claims one another job has since emptied.
+
         On top of that, and unconditionally, every spot the *failing* activity touched
-        (`job.residue_claim`). The backend's occupancy is not an observation -- even the
-        real out-of-process backend keeps the same in-memory ledger -- and that ledger
-        says a failed operation leaves material exactly where it was, reasoning that
-        "the run stops on failure and nothing follows". Isolating the failure is
-        precisely what removes that premise. So a failed transport claims *both* ends,
-        though the ledger names only the source.
+        (`job.residue_claim`). A failed operation applies no material effect at all, so
+        what it was carrying is at one of the spots it touched and nothing says which.
+        A failed transport therefore claims *both* ends.
 
         🔴 The asymmetry is what decides it, and neither side is free. Under-claiming
         means putting a plate where a plate already is -- a plan nothing can execute.
@@ -1753,8 +1775,70 @@ class RollingRunner:
         # Boundary material that has not moved yet has no activity to have touched it.
         if job.placed:
             candidates |= set((job.interface.get("inputs") or {}).values())
-        held = {spot for spot in candidates if self.sim.spot_state(spot) is not None}
-        return held | job.residue_claim
+        held, seen = self._trajectory(job)
+        # A candidate the trajectory never saw cannot arise -- every one of them comes
+        # from a record of this job or from its placed entry material -- but holding it
+        # is the side to be wrong on if one ever did: over-claiming costs a slower
+        # plan, under-claiming puts a plate where a plate already is.
+        return (candidates & held) | (candidates - seen) | job.residue_claim
+
+    def _trajectory(self, job: Job) -> tuple[set[str], set[str]]:
+        """Which spots this job's own history has left holding something, and which
+        spots it touched at all.
+
+        🔴 **Derived, never asked.** The runner learns what an operation did by
+        dispatching it and being told whether it succeeded (D15, `..backend`); it does
+        not ask where material is, and there is nothing it could usefully ask -- a real
+        laboratory keeps no spot ledger, and the backends that appear to have one are
+        keeping the simulator's own bookkeeping. So the effect of each operation is
+        replayed here from what was dispatched and what came back.
+
+        The effects are the ones SPEC gives, applied only by an operation that
+        **completed**:
+
+        - a processing holds its output spots, and releases an input spot that is not
+          also an output -- an in-place port keeps its spot occupied across the
+          operation (SPEC §5.5);
+        - a transport releases its source and holds its destination, unless the two
+          are the same spot, which is a no-op the material sits through (SPEC §5.4);
+        - a replenishment touches no spot: a stock is not material (SPEC §4.7).
+
+        **`failed` and `cancelled` need no case here**, which is much of the reason to
+        write it this way. A failed operation applied nothing, so the spot keeps
+        whatever the last completed one left -- and the failure's own spots are claimed
+        separately and unconditionally by the caller. Cancelled work never ran, so its
+        material is wherever the last completed activity put it, which is what this
+        replay says: the rule that a cancelled hand-off leaves the material upstream
+        falls out rather than being written down a second time.
+
+        Only this job's own records, which is sound because the caller intersects the
+        result with the spots this job touched *last* -- anything another job has since
+        moved is not among them.
+        """
+        held: set[str] = set()
+        if job.placed:
+            held |= set((job.interface.get("inputs") or {}).values())
+        seen = set(held)
+        records = [
+            rec
+            for rec in self.log.records()
+            if rec.status == "completed" and self._job_of(rec.activity) is job
+        ]
+        for rec in sorted(records, key=lambda r: (r.end, r.start)):
+            activity = rec.activity
+            seen |= self._spots_of(activity)
+            if activity.get("kind") == "transport":
+                source, destination = activity.get("from_spot"), activity.get("to_spot")
+                if source is not None and destination is not None and source != destination:
+                    held.discard(source)
+                if destination is not None:
+                    held.add(destination)
+                continue
+            outputs = set((activity.get("output_spots") or {}).values())
+            inputs = set((activity.get("input_spots") or {}).values())
+            held -= inputs - outputs
+            held |= outputs
+        return held, seen
 
     def _held_since(self, job: Job, spot: str) -> int:
         """When this spot became occupied: the end of the last of the job's finished

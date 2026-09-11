@@ -397,11 +397,12 @@ def test_object_entry_and_object_return_end_to_end():
     assert runner.values.get((), "sample") == {}
 
 
-def test_output_spot_delivery_check_flags_empty_spot():
-    # P3 (D28): a pinned Object output that is not on its declared spot at run end is
-    # an inconsistency, raised. A successful run with a pinned output always delivers
-    # (the §6.8 interface_out node holds the spot), so this exercises the guard
-    # directly: point the check at a valid but unoccupied spot and confirm it fires.
+def test_output_spot_delivery_check_wants_a_delivery_not_an_occupied_spot():
+    # P3 (D28): a pinned Object output with no delivery behind it is an inconsistency,
+    # raised. The evidence is this run's own completed moves, not the backend's
+    # occupancy -- where material is is not something the runner asks (D15). A
+    # successful run with a pinned output always delivers, so this exercises the guard
+    # directly: claim an output for a spot nothing was ever moved to.
     import dataclasses
 
     runner = RollingRunner(
@@ -409,11 +410,10 @@ def test_output_spot_delivery_check_flags_empty_spot():
         str(FIXTURES / "interface_load.env.yaml"),
         random_seed=0,
     )
-    # output.slot is empty before any delivery; claim `result` should be there.
     runner.jobs[0].boundary = dataclasses.replace(
         runner.boundary, output_spots={"result": "output.slot"}
     )
-    with pytest.raises(RunnerError, match="did not reach its declared spot"):
+    with pytest.raises(RunnerError, match="was not delivered to its declared spot"):
         runner._check_output_spots(runner.jobs[0])
 
 

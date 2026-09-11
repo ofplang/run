@@ -7,7 +7,7 @@ lets an alternative backend (e.g. one driving real lab hardware) be injected via
 `RollingRunner(backend_factory=...)` without inheriting from anything: any object
 with these methods is a `Backend`.
 
-Two facts shape the contract, so a single Protocol covers both a simulated and a
+Three facts shape the contract, so a single Protocol covers both a simulated and a
 real-hardware backend:
 
 * **Time is the backend's.** `advance(until)` blocks until the backend's clock has
@@ -22,10 +22,31 @@ real-hardware backend:
   a real backend may ignore it and let the machine take however long it takes. An
   overrun is just an operation still `running` at the next poll, which the rolling
   loop absorbs via replanning and `running_task_margin`.
+* 🔴 **The backend is told, not asked.** Nothing here reports the state of the
+  world back. The runner says what to do and learns whether it worked; **where
+  material is and what a stock holds are derived from that, never queried.** Both
+  halves of that follow from the same fact: a real laboratory keeps no ledger of
+  its spots or its levels, so a query has no truthful implementation and a backend
+  that answered one would be answering from bookkeeping of its own. The two reads
+  that are here are about the backend's own affairs rather than about the world it
+  acts on -- `state(handle)` is the outcome of an operation this runner started,
+  and `down_devices()` is which of the backend's machines are out of service, which
+  only it can know. Where the runner's derivation and the backend's reality
+  disagree, the disagreement surfaces as an operation that **fails**: the runner
+  seeds declared occupancy with `place`, so work aimed at a spot that is really
+  full is refused loudly rather than succeeding against a world the plan does not
+  match.
 
 Only the methods the runner actually calls live here. Simulator-specific surface
--- fault/failure injection, `observe`, `remove`, `dispatch_relay` -- is not part
-of the contract. The contract does grow: `dispatch_replenishment` arrived in 0.3.0,
+-- fault/failure injection, `observe`, `remove`, `dispatch_relay`, and `spot_state`
+-- is not part of the contract. `spot_state` was, until the runner stopped asking:
+it is the simulator's own occupancy ledger, useful to a test that wants to check a
+derivation against it, and not something a backend can be required to have.
+
+The contract does grow -- and, as here, shrink. Growing breaks a backend that
+predates the growth, conformance being structural; shrinking cannot, since an
+implementation that still has the method simply is not asked for it.
+`dispatch_replenishment` arrived in 0.3.0,
 and because conformance here is structural, a backend that predates it stops being
 a `Backend`. That was the deliberate choice over an optional-capability probe --
 a runner that can plan refills but not carry them out is a worse thing to ship than
@@ -137,9 +158,9 @@ class Backend(Protocol):
 
         `amounts` is what the visit puts in, ``{resource: amount}``, derived by the
         scheduler as a fill to capacity. It is passed for a backend that really does
-        put something in; a simulator need not read it. Nothing here reports a level
-        back: a stock's level is never observed, only replayed from what the run
-        started with plus its history, so there is no place for a backend to disagree.
+        put something in; a simulator need not read it. Nothing comes back: a level is
+        replayed from what the run started with plus its history (SPEC §4.7.2), never
+        read off a device -- the contract's third fact, above.
         """
         ...
 
@@ -148,10 +169,4 @@ class Backend(Protocol):
         "completed" | "failed"}`. A completed value-carrying processing also reports
         `"outputs"` ({port: value}); a failed operation may report `"reason"`
         ((code, message)). Errors if the handle is unknown."""
-        ...
-
-    def spot_state(self, spot: str | None = None):
-        """Inspect spot occupancy (the runner reads this only at run end, to confirm
-        a boundary output was delivered). With `spot`, return its object id or
-        `None`; without, return the ``{spot: obj_id}`` map of occupied spots."""
         ...
