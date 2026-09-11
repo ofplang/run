@@ -4,7 +4,8 @@ Thin presentation layer over the library. Subcommands:
 
     ofp-run run <workflow> --env <env>
         [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
-        [--seed N] [--margin M] [--poll-interval D] [--max-ticks N] [-o OUT]
+        [--seed N] [--margin M] [--poll-interval D] [--max-ticks N]
+        [--max-transport-legs N] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run run --jobs <run doc> --env <env> [...]
         the same, for several workflows run together (SPEC §6.11): the run
@@ -108,6 +109,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0,
         metavar="M",
         help="running-task margin for replans",
+    )
+    r.add_argument(
+        "--max-transport-legs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="how many transport activities one Object-bearing arc may be carried in "
+        "(default 1: the single hop), joined by relays. Raise it for a device the "
+        "transporter reaches at one position only, or a plate that has to cross a "
+        "hand-off station; only the fewest possible moves are ever offered",
     )
     r.add_argument(
         "--poll-interval",
@@ -346,6 +357,7 @@ def _cmd_run(args) -> int:
             observation_out=args.observation_out,
             max_ticks=max_ticks,
             ignore_resources=args.ignore_resources,
+            max_transport_legs=args.max_transport_legs,
             inventories=run_doc.inventories if run_doc else None,
             occupied=run_doc.occupied if run_doc else None,
             on_job_failure=args.on_job_failure,

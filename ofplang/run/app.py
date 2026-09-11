@@ -244,6 +244,7 @@ def run_workflow(
     observation_out: str | None = None,
     max_ticks: int | None = DEFAULT_MAX_TICKS,
     ignore_resources: bool = False,
+    max_transport_legs: int = 1,
     inventories: dict | None = None,
     occupied: list[dict] | None = None,
     on_job_failure: str = "continue",
@@ -279,6 +280,10 @@ def run_workflow(
     activities' I/O views) to that path as the run proceeds. `max_ticks` bounds the loop
     iterations before the run is called non-terminating -- one iteration per poll interval,
     so it also bounds the makespan a fixed-interval run can reach; None lifts it.
+    `max_transport_legs` is how many transport activities one Object-bearing arc may be
+    carried in (SPEC §6.4.1), joined by relays; 1 is the single hop this has always
+    planned.
+
     `ignore_resources` switches the consumable model off (SPEC §4.7.3), so an environment
     whose modes consume runs without the boundary saying what its stocks started with.
 
@@ -314,6 +319,7 @@ def run_workflow(
         observation_out=observation_out,
         max_ticks=max_ticks,
         ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
         inventories=inventories,
         occupied=occupied,
         on_job_failure=on_job_failure,

@@ -255,6 +255,7 @@ class RollingRunner:
         observe: bool = False,
         observation_out: str | None = None,
         ignore_resources: bool = False,
+        max_transport_legs: int = 1,
         inventories: dict | None = None,
         occupied: list[dict] | None = None,
         on_job_failure: str = "continue",
@@ -327,6 +328,12 @@ class RollingRunner:
         # them, so a lab that declares stocks runs without the boundary stating what
         # it started with. Off is always a relaxation.
         self._ignore_resources = ignore_resources
+        # How many transport activities one Object-bearing arc may be carried in
+        # (SPEC §6.4.1). The scheduler's to offer rather than the document's, so it
+        # arrives here and is handed to every replan; one is the single hop this has
+        # always planned, and raising it only finds routes a lower setting called
+        # unreachable.
+        self._max_transport_legs = max_transport_legs
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
         # outputs from inputs; without one the built-in `script_device_model` is used
@@ -1445,6 +1452,7 @@ class RollingRunner:
             random_seed=self.seed,
             environment_source=self.environment_path,
             ignore_resources=self._ignore_resources,
+            max_transport_legs=self._max_transport_legs,
         )
         self._collect_warnings(report)
         if not report.ok:

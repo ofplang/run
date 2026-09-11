@@ -26,6 +26,7 @@ def replan(
     max_time_seconds: float | None = None,
     environment_source: str | None = None,
     ignore_resources: bool = False,
+    max_transport_legs: int = 1,
 ):
     """Run the scheduler on `status_document` and return its `ScheduleReport`.
 
@@ -48,6 +49,12 @@ def replan(
     resource declarations are still shape-checked but nothing is applied, so a lab that
     declares stocks can be run without the document stating what it started with. Off is
     always a relaxation, so no schedule is lost by it.
+
+    `max_transport_legs` is how many transport activities one Object-bearing arc may be
+    carried in (SPEC §6.4.1), joined by relays. One -- the single hop this has always
+    planned -- unless the caller raises it, which is what a device the transporter
+    reaches at one position only, or a plate that has to cross a hand-off station,
+    needs. Raising it can only find routes a lower setting reported unreachable.
 
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
@@ -76,6 +83,7 @@ def replan(
             max_time_seconds=max_time_seconds,
             environment_source=environment_source,
             ignore_resources=ignore_resources,
+            max_transport_legs=max_transport_legs,
         )
 
     # A single workflow has no roster to leave, so `withdraw` cannot apply; the
@@ -89,4 +97,5 @@ def replan(
         max_time_seconds=max_time_seconds,
         environment_source=environment_source,
         ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
     )

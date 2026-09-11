@@ -37,8 +37,10 @@ need, and -- critically -- never sends view values to the scheduler:
 
   - ``interface`` (spots only) -> the §6.8 boundary constraint fed to the
     scheduler each replan, keeping the scheduler value-independent (D9/D26). The
-    projection is one-way: view values never round-trip into a replan, so an
-    unpinned output can never silently become a scheduling constraint.
+    projection is one-way: a view value never round-trips into a replan, so nothing
+    about an output's *value* can silently become a scheduling constraint. Where it
+    sits is another matter -- an unpinned Object output is bound to a spot the
+    scheduler chooses (schedule SPEC §6.8) and holds it like any other.
   - ``entry_values`` ({port: view}) -> the entry view values seeded into the store.
   - ``inventories`` -> copied verbatim into the §6.10 section of the status handed
     to the scheduler each replan. Unlike the two above this is *not* a projection:
@@ -259,9 +261,10 @@ def parse_boundary(doc, contracts) -> Boundary:
         if has_view:
             entry_values[port] = view
 
-    # Outputs: a delivery spot is optional (an unpinned Object output stays where it
-    # is produced), but a Pure Data output can carry none. A supplied `view` here is
-    # ignored -- the run produces it.
+    # Outputs: a delivery spot is optional (an unpinned Object output comes to rest
+    # wherever the schedule finds room for it, schedule SPEC §6.8 -- which is not
+    # necessarily where it was produced), but a Pure Data output can carry none. A
+    # supplied `view` here is ignored -- the run produces it.
     interface_outputs: dict = {}
     for port, desc in outputs_doc.items():
         if port not in entry_outputs:

@@ -151,7 +151,8 @@ pip install -e ".[test]"
 ```sh
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
-    [--poll-interval D] [--margin M] [--seed N] [--no-validate] [-o OUT]
+    [--poll-interval D] [--margin M] [--seed N] [--max-transport-legs N]
+    [--no-validate] [-o OUT]
 ofp-run run --jobs <run doc> --env <env> [--on-job-failure continue|stop] [...]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
@@ -207,7 +208,26 @@ is already holding (`occupied`, §6.12). The jobs are planned *together*, so the
 compete for the same machines and draw on the same stocks: a refill neither job needs
 alone can appear because the pair of them does. Each job's activities carry its `id`
 in the status, and the plan's roster reports the completion the scheduler promised
-each one. See `examples/shared_refill.run.yaml`. `--no-validate`
+each one. See `examples/shared_refill.run.yaml`.
+
+**A job can also leave a `--jobs` run while it is going.** The roster is the set of
+jobs something of which is still in the laboratory — unfinished work, or material
+nobody has collected — so `RollingRunner.withdraw(job_id)` is how a program driving
+the run says that a finished job's material has been collected and its entry may go.
+It takes effect on the next replan, and what makes it more than dropping an entry is
+the arithmetic: a job's history is part of what the current stock levels are made of,
+so the levels are carried forward to that moment (`inventories.at`, §6.10) rather than
+handing the stock back everything that job drew. A final output the job's boundary
+**bound** to a spot is taken as collected from there; one it left unbound is not — the
+schedule chose where that came to rest and nobody was told — so that spot is declared
+`occupied` instead, dated when the plate was actually left there.
+
+`--max-transport-legs N` is how many transport activities one Object-bearing arc may
+be carried in (schedule SPEC §6.4.1), joined by **relay** activities. It is 1 by
+default — the single hop this has always planned. Raise it for a device the
+transporter reaches at one position only, or a plate that has to cross a hand-off
+station; only the fewest possible moves are offered, so an arc one move apart is never
+sent round by way of somewhere else. `--no-validate`
 skips the one-shot `ofplang-validate` front-door check of the workflow — use it
 when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
 `$import` is still resolved and the capability gate still runs, since both are

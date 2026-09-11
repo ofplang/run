@@ -83,8 +83,10 @@ def test_output_view_on_input_is_ignored():
 
 
 def test_unpinned_object_output_is_allowed():
-    """An Object output need not be pinned (it stays where produced); no interface,
-    no P3 check for it."""
+    """An Object output need not be pinned; no interface entry, and so no P3 check for
+    it. Where it ends up is then the schedule's choice (schedule SPEC §6.8) rather
+    than this projection's business -- which is why there is nothing to assert here
+    beyond the absence."""
     doc = {"boundary": {"outputs": {"result": {}}}}
     b = parse_boundary(doc, _contracts(LOAD))
     assert b.interface == {}
