@@ -74,6 +74,16 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   run started with plus its history, never observed. A refill that fails stops the
 >   run like any activity failure. `Backend` gained `dispatch_replenishment` for this,
 >   which is why 0.3.0 is a breaking release for a custom backend.
+> - **The backend is told, not asked** — nothing in the contract reports the state of
+>   the world back. The runner says what to do and learns whether it worked; where
+>   material is and what a stock holds are **derived** from that. Both follow from the
+>   same fact: a real laboratory keeps no ledger of its spots or its levels, so such a
+>   query has no truthful implementation. 0.7.0 made that true of material as it had
+>   always been of stock — `spot_state` left the contract when the runner stopped
+>   asking, and `clear` joined it as the counterpart of `place`, for saying that the
+>   material on a spot has been taken away. Shrinking a structural contract breaks
+>   nobody; `clear` costs the backends here nothing, all of them deriving from
+>   `Simulator`.
 > - **Python script processes** (spec §22, `python_script_processes`) — an atomic
 >   Pure-Data process may carry a `script: {language: python, code: …}` section.
 >   The built-in device model runs it: the input port values are bound as locals,
