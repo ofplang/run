@@ -35,7 +35,8 @@ real-hardware backend:
   disagree, the disagreement surfaces as an operation that **fails**: the runner
   seeds declared occupancy with `place`, so work aimed at a spot that is really
   full is refused loudly rather than succeeding against a world the plan does not
-  match.
+  match. `place` and `clear` are that channel in both directions, and both are
+  commands: they say what has happened to a spot, and nothing comes back.
 
 Only the methods the runner actually calls live here. Simulator-specific surface
 -- fault/failure injection, `observe`, `remove`, `dispatch_relay`, and `spot_state`
@@ -43,9 +44,11 @@ Only the methods the runner actually calls live here. Simulator-specific surface
 it is the simulator's own occupancy ledger, useful to a test that wants to check a
 derivation against it, and not something a backend can be required to have.
 
-The contract does grow -- and, as here, shrink. Growing breaks a backend that
-predates the growth, conformance being structural; shrinking cannot, since an
-implementation that still has the method simply is not asked for it.
+The contract does grow -- and shrink. Growing breaks a backend that predates the
+growth, conformance being structural; shrinking cannot, since an implementation that
+still has the method simply is not asked for it. `spot_state` left when the runner
+stopped asking; `clear` arrived with job withdrawal, and costs the backends in this
+ecosystem nothing because all of them derive from `Simulator`, which has it.
 `dispatch_replenishment` arrived in 0.3.0,
 and because conformance here is structural, a backend that predates it stops being
 a `Backend`. That was the deliberate choice over an optional-capability probe --
@@ -100,6 +103,23 @@ class Backend(Protocol):
         """Put material on a spot (e.g. seed the interface inputs before a run).
         `obj_id` is optional; when omitted the backend assigns an opaque id. Returns
         the id now held."""
+        ...
+
+    def clear(self, spot: str) -> None:
+        """The material on `spot` has been taken away; stop accounting for it.
+
+        The counterpart of `place`, and a command like it -- the runner is saying what
+        happened, not asking what is there. It is used where a job **leaves** the plan
+        (SPEC §6.11): leaving a *bound* final output behind is the caller's assertion
+        that they collected it from the spot they named, so a backend still holding it
+        would refuse the next delivery to that spot for material nobody has.
+
+        **Tolerant**: a spot that holds nothing is not an error. The runner derives
+        what a job was holding rather than asking (see the third fact above), so this
+        is told on the strength of a derivation, and a backend that disagrees should
+        not turn a disagreement into a crash. A real backend may do nothing at all --
+        the plate is already gone from the bench.
+        """
         ...
 
     def dispatch_processing(

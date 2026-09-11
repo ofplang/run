@@ -20,6 +20,7 @@ def replan(
     environment,
     status_document: dict,
     *,
+    withdraw=(),
     running_task_margin: int = 0,
     random_seed: int | None = None,
     max_time_seconds: float | None = None,
@@ -36,6 +37,12 @@ def replan(
     is not the file it came from, `environment_source` names the file for the plan's
     `meta.environment` provenance -- normalization and reduction happen in memory, and
     the file is still where the environment came from.
+
+    `withdraw` names jobs **leaving** the plan (SPEC §6.11): their roster entry and
+    their history go, and the stock levels are carried forward to `now` so that what
+    their work drew is not given back (`inventories.at`, §6.10). They must still be in
+    `status_document` -- the scheduler reads a departing job's draws from the
+    `consumption` echoes there -- and no workflow is passed for them.
 
     `ignore_resources` switches the consumable model off (SPEC §4.7.3): the environment's
     resource declarations are still shape-checked but nothing is applied, so a lab that
@@ -63,6 +70,7 @@ def replan(
             [JobInput(job_id, doc) for job_id, doc in workflow],
             environment,
             document_path=status_document,
+            withdraw=tuple(withdraw),
             running_task_margin=running_task_margin,
             random_seed=random_seed,
             max_time_seconds=max_time_seconds,
@@ -70,6 +78,8 @@ def replan(
             ignore_resources=ignore_resources,
         )
 
+    # A single workflow has no roster to leave, so `withdraw` cannot apply; the
+    # runner refuses the call before it reaches here.
     return _schedule(
         workflow,
         environment,

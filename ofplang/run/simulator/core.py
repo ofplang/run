@@ -388,6 +388,17 @@ class Simulator(Backend):
         self._spot_holds[spot] = obj_id if obj_id is not None else self._new_obj_id()
         return self._spot_holds[spot]
 
+    def clear(self, spot: str) -> None:
+        """Stop holding whatever is on `spot` -- somebody took it (`Backend.clear`).
+
+        Tolerant where `remove` is strict: the runner calls this on the strength of a
+        derivation about what a leaving job was holding, so an empty spot means the
+        two agree that nothing is there, not that something went wrong.
+        """
+        if spot not in self._env.spots:
+            raise UnknownReference(f"unknown spot: {spot}")
+        self._spot_holds.pop(spot, None)
+
     def remove(self, spot: str) -> str:
         """Take material off a spot and return its id. Errors if unknown or empty."""
         if spot not in self._env.spots:
