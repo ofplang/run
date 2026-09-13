@@ -232,6 +232,17 @@ handing the stock back everything that job drew. A final output the job's bounda
 schedule chose where that came to rest and nobody was told — so that spot is declared
 `occupied` instead, dated when the plate was actually left there.
 
+**And a job can arrive into one.** `RollingRunner.admit(request)` takes a job into a
+run already under way — the same `JobRequest` the run document describes, handed over
+later. It joins the end of the roster, which is the end of the priority order: an
+arrival owes the jobs already being planned the completions they were promised, so it
+is fitted around them rather than the other way round, and is promised a completion of
+its own by the first plan that includes it. Its entry material appears on its spots
+when its release comes, which for an arrival is the moment it arrives unless it says
+otherwise — a job that did not exist cannot have been released earlier. A job that
+cannot run is refused rather than admitted and then stopped: its own preconditions are
+checked before it joins, so a refused call leaves the run exactly as it was.
+
 `--max-transport-legs N` is how many transport activities one Object-bearing arc may
 be carried in (schedule SPEC §6.4.1), joined by **relay** activities. It is 1 by
 default — the single hop this has always planned. Raise it for a device the

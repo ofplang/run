@@ -228,6 +228,30 @@ def _reduce_environment(
     return reduced
 
 
+def _load_request(request: JobRequest) -> dict:
+    """The workflow document one job request names, however it was given.
+
+    A request carries either a path to a workflow YAML file or an already-loaded
+    mapping (a caller that rewrote one in memory need not round-trip it through a temp
+    file). Everything downstream -- dataflow, contracts, process defs, and the
+    scheduler on each replan -- takes the document directly, so it is read at most once
+    and never re-serialized.
+
+    A function rather than a step of `__init__` because the jobs a run *begins* with are
+    not the only ones it may have: `admit` reads a job's workflow exactly the same way,
+    mid-run, and the two must agree on what a request may hold and what it may not.
+    """
+    if isinstance(request.workflow, dict):
+        doc = request.workflow
+    elif isinstance(request.workflow, (str, Path)):
+        doc = load_document(request.workflow)
+    else:
+        raise RunnerError("workflow must be a mapping or a path")
+    if not isinstance(doc, dict):
+        raise RunnerError("workflow must be a mapping")
+    return doc
+
+
 class RollingRunner:
     """Drives workflow + environment (+ boundary) to completion by replanning.
 
@@ -282,23 +306,7 @@ class RollingRunner:
             requests = list(workflow)
         else:
             requests = [JobRequest(id="", workflow=workflow, boundary=boundary)]
-        for request in requests:
-            if not isinstance(request.workflow, dict) and not isinstance(
-                request.workflow, (str, Path)
-            ):
-                raise RunnerError("workflow must be a mapping or a path")
-        loaded = [
-            (
-                request,
-                request.workflow
-                if isinstance(request.workflow, dict)
-                else load_document(request.workflow),
-            )
-            for request in requests
-        ]
-        for _request, doc in loaded:
-            if not isinstance(doc, dict):
-                raise RunnerError("workflow must be a mapping")
+        loaded = [(request, _load_request(request)) for request in requests]
         # `environment_path` is likewise a path or an already-loaded environment document
         # (a caller that reads it for its own reasons -- a dialect front door inspecting
         # `x-` keys -- need not have it read a second time here). The document is copied
@@ -368,9 +376,10 @@ class RollingRunner:
         # One job -- one workflow being run, with its dataflow, resolved contracts,
         # boundary and values (`job.py`). A rolling run is a run of a *laboratory*
         # rather than of a workflow, so everything derived from a workflow lives on
-        # the job and the runner holds a list of them. There is exactly one today:
-        # what makes several possible is that `build_job` reads nothing but its
-        # arguments, so admitting one is appending to this list.
+        # the job and the runner holds a list of them. These are the jobs the run
+        # *begins* with, and not necessarily the ones it ends with: `build_job` reads
+        # nothing but its arguments, so a job arriving mid-run (`admit`) is the same
+        # call made later and an append to this list.
         self._jobs: list[Job] = [
             build_job(doc, request.boundary, id=request.id, release=request.release)
             for request, doc in loaded
@@ -413,6 +422,12 @@ class RollingRunner:
         # of, and the runner's job is to ask for it and then adopt the answer.
         self._withdrawing: set[str] = set()
         self._withdrawn: set[str] = set()
+        # The job an `admit` call is currently checking, while it is still a *candidate*
+        # rather than one of this run's jobs. Its run-start checks reach for `_stop_job`
+        # and `_record_failure` like any others, and both consult this to tell a
+        # candidate from a job: a violation refuses the call and leaves the run exactly
+        # as it was, rather than recording a failure of a run nothing has happened to.
+        self._admitting: Job | None = None
         # Work abandoned when a job stopped, captured as it stopped (see `_stop_job`).
         self._cancelled: list[dict] = []
         # What every stock held when this run began (§6.10). One per run however many
@@ -527,9 +542,15 @@ class RollingRunner:
         moment the clock reaches it is the moment the Objects appear. Called every
         tick, and idempotent: a job is placed once.
 
-        🔴 This is the seam a job arriving mid-run slots into. Arriving *is* this:
-        entering the roster and having your material appear. Nothing else about the
-        loop assumes the job set was known at the start.
+        🔴 This is the seam a job arriving mid-run (`admit`) slots into. Arriving *is*
+        this: entering the roster and having your material appear. Nothing else about
+        the loop assumes the job set was known at the start.
+
+        A backend that refuses a placement -- something is already on the spot -- is
+        left to raise, as a backend refusing a dispatch is: it is saying the world is
+        not as the plan believed, and that is not a disagreement this runner can
+        resolve on the job's behalf. `admit` refuses up front the case the runner can
+        see for itself (a spot it is already accounting for as occupied).
         """
         for job in self._jobs:
             if job.placed or job.stopped or job.release > self.now:
@@ -537,6 +558,143 @@ class RollingRunner:
             for _port, spot in (job.interface.get("inputs") or {}).items():
                 self.sim.place(spot)
             job.placed = True
+
+    def admit(self, request: JobRequest) -> None:
+        """Take a new job **into** a run that is already under way (SPEC §6.11).
+
+        The mirror of `withdraw`. A job is everything derived from one workflow, and
+        `build_job` derives it from its arguments alone -- not from this runner, the
+        clock, or the other jobs -- so admitting one is appending to the list and
+        letting the tick find it there. What makes it *arrive* rather than merely exist
+        is what the tick then does with it: `_place_released` puts its entry material
+        on its spots, and the next status hands the scheduler a roster with one more
+        entry in it.
+
+        It joins at the **end** of the roster, which is the end of the priority order
+        (§6.11): priority is what a later arrival owes the jobs already being planned,
+        so the newcomer is fitted around their promises rather than the other way
+        round. It is promised a completion of its own by the first plan that includes
+        it, and from then on is as undisturbable as they are.
+
+        🔴 **The release is this runner's to set, not the scheduler's.** The scheduler
+        does default an arriving job to `now` -- but it recognises an arrival as a job
+        *absent from the roster* the document carries (§6.11), and by the time this
+        runner replans, the newcomer is in the roster it builds from its own job list.
+        So that default never fires here, and a job admitted with none stated would be
+        released at 0: free, as far as the document says, to have started before it
+        existed. Nothing infeasible follows (pending work cannot start before `now`
+        anyway), but two jobs admitted at different moments would carry the same
+        `release` -- one of the five conditions under which the scheduler may call two
+        jobs interchangeable and fix their order for itself. A release stated earlier
+        than `now` is raised to it for the same reason, which also makes the unstated
+        case (a request's default 0) fall out of the same expression.
+
+        Refused here rather than by the scheduler, exactly as withdrawal is: a replan
+        that fails stops every job of a run of named jobs, so a mistaken call left to
+        be caught there would take the whole run down with it. The job's own
+        preconditions are part of that -- an arrival that cannot run is refused, not
+        admitted and then stopped -- so a refused call leaves the run as it was, with
+        nothing recorded against it.
+        """
+        if not self._named:
+            raise RunnerError(
+                "admit needs a run of named jobs: a single workflow is the whole run, "
+                "and it carries no job identity for an arrival to be told apart by"
+            )
+        if not request.id:
+            raise RunnerError(
+                "an admitted job needs an id: it is how the roster, the plan's "
+                "activities and every commit name it"
+            )
+        if request.id in self._by_id:
+            raise RunnerError(f"cannot admit {request.id!r}: this run already plans it")
+        if request.id in self._withdrawn:
+            raise RunnerError(
+                f"cannot admit {request.id!r}: a job of that id has already left this "
+                f"run. Every status filters that id's records out of the history "
+                f"(`_history`), so the newcomer's would be dropped along with them"
+            )
+        if self._stopping:
+            raise RunnerError(
+                f"cannot admit {request.id!r}: every job of this run has stopped, and "
+                f"it is only waiting out what is still running. Nothing more is "
+                f"dispatched, so an arriving job would never run"
+            )
+        # A release earlier than `now` is raised to it, and a request that states none
+        # carries 0, which is that case (see above).
+        job = build_job(
+            _load_request(request),
+            request.boundary,
+            id=request.id,
+            release=max(request.release, self.now),
+        )
+        if job.boundary.inventories:
+            # The stock is the laboratory's and the levels are the ones the run *began*
+            # with (§6.10): by now they have been drawn on and refilled, and the
+            # scheduler replays them from the opening baseline this runner states once.
+            # A newcomer restating them would be describing a moment that has passed.
+            raise RunnerError(
+                f"cannot admit {request.id!r}: its boundary states starting "
+                f"inventories, and the stock a run started with is not a job's to "
+                f"state -- least of all a job arriving after the run began"
+            )
+        # 🔴 The one placement conflict this runner can see for itself. It never asks
+        # the backend what is on a spot (the backend is told, not asked), so what it
+        # can check is what it accounts for: the spots it declares occupied (§6.12) --
+        # what the laboratory was already holding, and what a stopped job left behind.
+        # A spot two jobs' *interfaces* share is deliberately not refused here: whether
+        # the first job's material is still on it is what the history says and not what
+        # the bindings say, which is why the scheduler states that as a warning
+        # (`interface_shared_input_spot`, §6.11) rather than a refusal.
+        held = {entry.get("spot") for entry in self._occupied_now()}
+        clash = sorted(
+            spot for spot in (job.interface.get("inputs") or {}).values() if spot in held
+        )
+        if clash:
+            raise RunnerError(
+                f"cannot admit {request.id!r}: its entry material would be placed on "
+                f"{clash}, which this run is already holding something on (§6.12)"
+            )
+
+        # The value layer is information -- known from the moment the job is described,
+        # read by nobody before the job runs -- so all of it is seeded now, exactly as
+        # run start does for the jobs the run began with. Where the Objects physically
+        # sit is the tick's business, not this call's.
+        seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
+        # The three checks run start makes, for this job alone and in run start's
+        # order: the whole-workflow envelope (D33), the atomic preconditions knowable
+        # before any dispatch (D37), and any nested composite whose values are already
+        # available (D34).
+        #
+        # 🔴 A violation **refuses the admission** rather than stopping a newly stopped
+        # job, which is why they are run while the job is still a candidate
+        # (`_admitting`, read by `_stop_job` and `_record_failure`). Refusing is both
+        # the more useful answer -- the caller hears why, and can fix the boundary and
+        # offer the job again -- and the only one that leaves the run untouched: a job
+        # stopped before it has any history has no terminal activity to tell the
+        # scheduler it stopped, so its work stays pending in every later plan while
+        # this runner declines to dispatch it.
+        self._admitting = job
+        try:
+            self._check_entry_requires(job)
+            if not job.stopped:
+                self._preflight_job(job)
+            if not job.stopped:
+                self._check_job_composites(job)
+        finally:
+            self._admitting = None
+        if job.stopped:
+            reason = job.failure.detail if job.failure is not None else "a precondition"
+            raise RunnerError(
+                f"cannot admit {request.id!r}: it does not satisfy its own "
+                f"preconditions ({reason})"
+            )
+
+        self._jobs.append(job)
+        self._by_id[job.id] = job
+        # There is a job more to plan, so the scheduler's answer differs and the plan
+        # from the last replan must not be carried into the next tick (D41).
+        self._observed_change = True
 
     def withdraw(self, job_id: str) -> None:
         """Ask for `job_id` to be taken **out** of the plan (SPEC §6.11).
@@ -771,6 +929,14 @@ class RollingRunner:
         failure that belongs to no job -- a refill's.
         """
         failure = Failure(kind=kind, detail=detail, subject=subject, now=self.now)
+        if job is not None and job is self._admitting:
+            # A candidate for admission (`admit`), not a job of this run. The caller is
+            # told why their call was refused -- through this record, which is where
+            # `admit` reads the reason from -- and the run, which nothing has happened
+            # to, keeps its own failure record empty.
+            if job.failure is None:
+                job.failure = failure
+            return
         if job is not None and job.failure is None:
             job.failure = failure
         if self.failure is None:
@@ -797,6 +963,14 @@ class RollingRunner:
         single-workflow run behaves identically. What changes is only that a run with
         other jobs left, and the policy to use them, carries on.
         """
+        if job is not None and job is self._admitting:
+            # A candidate for admission (`admit`) failing its own run-start checks. It
+            # is not one of this run's jobs: nothing of it has run, nothing of it is
+            # planned, and `on_job_failure` has no business deciding what a *refused*
+            # call does to the others. Marked so `admit` sees the violation, and
+            # nothing else told.
+            job.stopped = True
+            return
         self.failed = True
         if job is None or self._on_job_failure == "stop":
             targets: list[Job] = list(self._jobs)
@@ -856,7 +1030,7 @@ class RollingRunner:
         # from the job's release (§6.8), and putting it on a spot before then would have
         # the scheduler plan around a place it believes free while it is full.
         # `_place_released` does that, each tick, and it is exactly what a job arriving
-        # mid-run will do.
+        # mid-run (`admit`) does.
         for job in self._jobs:
             seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
         # Spots the laboratory was already holding (§6.12) are occupied in the backend
@@ -874,18 +1048,7 @@ class RollingRunner:
         # activity runs, `self.failed`/`_stopping` are set, and the loop below breaks
         # immediately (nothing is running), so the final status is emptily terminal.
         for job in self._jobs:
-            entry = job.contracts.entry
-            if (
-                job.entry_is_composite
-                and entry is not None
-                and job.contract_asts.get(entry, {}).get("requires")
-                and self._violated_contract(
-                    job, entry, "requires", self._main_contract_inputs(job), {},
-                    self._subject("main", job),
-                )
-                is not None
-            ):
-                self._stop_job(job)
+            self._check_entry_requires(job)
 
         # Atomic preconditions that are knowable at run start -- `requires` referencing
         # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
@@ -901,8 +1064,7 @@ class RollingRunner:
             self.ticks += 1
             # A job whose release has come now has its material on its spots. At run
             # start this placed everything released at 0; from here on it is what makes
-            # a later release real, and -- once a job may arrive mid-run -- what makes
-            # an arrival real.
+            # a later release real, and what makes an arrival real (`admit`).
             self._place_released()
             if self.max_ticks is not None and self.ticks > self.max_ticks:
                 # One iteration per poll interval, so this is reached either because the run
@@ -1067,6 +1229,30 @@ class RollingRunner:
                     f"to its declared spot {spot!r}: no completed move of this job "
                     f"arrived there"
                 )
+
+    def _check_entry_requires(self, job: Job) -> None:
+        """One job's whole-workflow precondition (v0 §9 `requires` on the entry
+        composite, D32 Phase 1 / D33), checked once its boundary inputs are seeded and
+        before any of its work is dispatched.
+
+        A violation stops the job gracefully (D25) at the workflow boundary: no
+        activity is marked failed, because none ran. Per job rather than per run
+        because that is what the check is about -- one workflow's envelope -- and
+        because a job that arrives mid-run (`admit`) has to be held to it too, at the
+        moment it is admitted rather than at a run start it missed.
+        """
+        entry = job.contracts.entry
+        if (
+            job.entry_is_composite
+            and entry is not None
+            and job.contract_asts.get(entry, {}).get("requires")
+            and self._violated_contract(
+                job, entry, "requires", self._main_contract_inputs(job), {},
+                self._subject("main", job),
+            )
+            is not None
+        ):
+            self._stop_job(job)
 
     def _preflight_atomic_requires(self) -> None:
         """Run-start preflight (D37): check each atomic invocation's phase-hoisted
