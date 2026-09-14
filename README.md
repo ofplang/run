@@ -84,6 +84,17 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   material on a spot has been taken away. Shrinking a structural contract breaks
 >   nobody; `clear` costs the backends here nothing, all of them deriving from
 >   `Simulator`.
+> - **A refusal is a failure, not a crash** (`BackendRefused`, 0.9.0) — when the
+>   runner's derivation and the backend's reality disagree, the backend refuses the
+>   dispatch (or the placement): the destination spot is really full, the source
+>   really empty, the machine really busy or really down. That is now recorded as the
+>   activity having **failed** — which stops its job, leaves the rest of the
+>   laboratory running, and makes what it was holding derivable — instead of escaping
+>   `run()` and taking every other job's status with it. A backend raises
+>   `ofplang.run.backend.BackendRefused` to say it, and **only before it has started
+>   the operation**: there is no handle for a refused one, so trouble discovered once
+>   something is under way belongs in `state(handle)` instead. Nothing structural is
+>   required, so a backend that raises something else is exactly as fatal as before.
 > - **Python script processes** (spec §22, `python_script_processes`) — an atomic
 >   Pure-Data process may carry a `script: {language: python, code: …}` section.
 >   The built-in device model runs it: the input port values are bound as locals,
@@ -209,7 +220,10 @@ reported `cancelled`, and the spots its material is still sitting on are **held*
 rest of the run is planned around them rather than onto them — worked out from the
 history the document carries rather than written into it, since every input to the
 working-out is already there (`ofplang.schedule.derived_holds` is how to ask what it
-comes to). A single workflow is a single job, so this makes no difference to it.
+comes to). A backend **refusing** a dispatch or a placement is one such failure
+(`BackendRefused`, above) rather than an exception out of `run()`, so one job meeting a
+world the plan disagrees with no longer costs the others their status. A single
+workflow is a single job, so this makes no difference to it.
 `--jobs` runs
 **several workflows together** in one laboratory (schedule SPEC §6.11) in place of
 the single `<workflow>` argument. Its run document names each job — an `id`, the

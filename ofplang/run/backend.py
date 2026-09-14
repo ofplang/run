@@ -38,6 +38,12 @@ real-hardware backend:
   match. `place` and `clear` are that channel in both directions, and both are
   commands: they say what has happened to a spot, and nothing comes back.
 
+  🔴 A refusal is `BackendRefused` (below), and "fails" is meant literally: the
+  runner records that activity `failed` and stops the job it belongs to, exactly as
+  it does for an operation the backend reports failed once it is running. The two
+  ways of learning that something did not work therefore land in the same place,
+  and a laboratory of several jobs loses one of them rather than all of them.
+
 Only the methods the runner actually calls live here. Simulator-specific surface
 -- fault/failure injection, `observe`, `remove`, `dispatch_relay`, and `spot_state`
 -- is not part of the contract. `spot_state` was, until the runner stopped asking:
@@ -66,6 +72,35 @@ inheritance -- to be injectable.
 from __future__ import annotations
 
 from typing import Protocol
+
+
+class BackendRefused(Exception):
+    """A dispatch or a placement the backend would not accept, because the world is
+    not as the plan believed: the destination spot is really full, the source is
+    really empty, the machine is really busy or really down.
+
+    🔴 **It means nothing was started.** The runner has no handle for a refused
+    operation, so it can never poll one -- an operation this was raised *after*
+    starting would run on in the laboratory while the runner recorded it as failed
+    and planned around a machine it believes free. A backend that has begun an
+    operation must report the trouble the other way, through `state(handle)`, which
+    is the channel for everything discovered once something is under way.
+
+    Raising this is how a backend says "your derivation and my reality disagree",
+    and the runner translates it into the planning layer's only word for that: the
+    activity **failed**, which stops its job (and, by the run's policy, possibly the
+    rest) and makes what it was holding derivable (SPEC §6.12). Before this existed
+    the exception escaped `run()` and took every other job's status with it.
+
+    Optional, in the sense that a backend which raises something else is exactly as
+    fatal as it always was: nothing structural is required of an implementation, so
+    this grows the contract without breaking one that predates it (see the module
+    docstring on growing and shrinking). The built-in simulator's world-disagreement
+    errors -- `SpotConflict`, `MissingObject`, `ResourceBusy`, `DeviceDown` -- all
+    derive from this. Its other errors deliberately do **not**: an unknown reference,
+    a dispatched relay or a clock run backwards are a broken plan or a broken runner,
+    and translating those into a failed activity would file a bug as a lab mishap.
+    """
 
 
 class Backend(Protocol):

@@ -49,7 +49,7 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
-from ..backend import Backend
+from ..backend import Backend, BackendRefused
 from ..simulator import VirtualTimeSimulator
 from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
@@ -556,17 +556,46 @@ class RollingRunner:
         this: entering the roster and having your material appear. Nothing else about
         the loop assumes the job set was known at the start.
 
-        A backend that refuses a placement -- something is already on the spot -- is
-        left to raise, as a backend refusing a dispatch is: it is saying the world is
-        not as the plan believed, and that is not a disagreement this runner can
-        resolve on the job's behalf. `admit` refuses up front the case the runner can
-        see for itself (a spot it is already accounting for as occupied).
+        A backend that refuses a placement -- something is already on the spot -- stops
+        **that job**, here and at run start alike. It is saying the world is not as the
+        plan believed, which is not a disagreement this runner can resolve on the job's
+        behalf; but recording it is not resolving it, and a job whose material has
+        nowhere to go is one job's misfortune, not the laboratory's. No activity is
+        marked failed because none ran -- the same shape as a job whose whole-workflow
+        `requires` is violated (`_check_entry_requires`), and the same at run start,
+        where that check already stops a job gracefully rather than raising.
+
+        The spots already placed for that job are left placed: entry material is
+        *there*, given, from the job's release (§6.8), so the ones that succeeded are
+        telling the truth. What the stopped job is holding is derived from its being
+        stopped (§6.12), which over-claims here rather than under-claiming -- the safe
+        direction.
+
+        `admit` refuses up front the case the runner can see for itself (a spot it is
+        already accounting for as occupied), which is the better answer while the job
+        is still only a candidate.
         """
         for job in self._jobs:
             if job.placed or job.stopped or job.release > self.now:
                 continue
             for _port, spot in (job.interface.get("inputs") or {}).items():
-                self.sim.place(spot)
+                try:
+                    self.sim.place(spot)
+                except BackendRefused as exc:
+                    subject = self._subject("main", job)
+                    self._record_failure(
+                        job,
+                        "backend_refused_placement",
+                        f"{subject}: the backend refused to put this job's entry "
+                        f"material on {spot!r} ({type(exc).__name__}: {exc}). "
+                        f"Something the plan does not account for is already there",
+                        subject,
+                    )
+                    self._stop_job(job)
+                    break
+            # Marked placed even where a refusal broke out of the loop: what did go on
+            # its spot is there and must not be placed a second time. The job is
+            # stopped either way, so the next tick passes over it regardless.
             job.placed = True
 
     def admit(self, request: JobRequest) -> None:
@@ -967,10 +996,17 @@ class RollingRunner:
     @staticmethod
     def _activity_subject(activity: dict) -> str:
         """A readable subject label for a failed activity (D36): a processing's node
-        path, or a transport's `from_spot -> to_spot`."""
+        path, a transport's `from_spot -> to_spot`, or a refill's
+        `replenisher -> device`."""
         node = activity.get("node")
         if node is not None:
             return "/".join(node) if node else "main"
+        # A refill has no node and no spots -- it is a visit, and what identifies it is
+        # who filled what. Named here because a refill's failure stops every job of the
+        # run, so its reason is the one a reader most needs to be able to act on; it
+        # used to render as `None -> None`, the two spots a refill does not have.
+        if activity.get("kind") == "replenishment":
+            return f"{activity.get('replenisher')} -> {activity.get('device')}"
         return f"{activity.get('from_spot')} -> {activity.get('to_spot')}"
 
     def _record_failure(
@@ -1062,12 +1098,20 @@ class RollingRunner:
     def _run_impl(self) -> dict:
         """Drive to completion and return the final execution status (§6/§7). Raises
         `RunnerError` if a replan produces no plan (infeasible) or the run cannot
-        progress; `SimulatorError` propagates if the backend rejects a dispatch.
+        progress.
 
         On an activity failure the run stops rather than raising: it dispatches no
         more work, waits for what is still running to finish, and returns a final
         status with the failed activity `failed` and the abandoned work `cancelled`
-        (D25). `self.failed` records that this happened (the CLI maps it to exit 1)."""
+        (D25). `self.failed` records that this happened (the CLI maps it to exit 1).
+
+        A backend that **refuses** a dispatch or a placement (`BackendRefused`) is one
+        such failure and no longer propagates: the world is not as the plan believed,
+        which is a fact about the laboratory rather than a fault in this program, so it
+        is recorded and the job it belongs to stops (`_refused_dispatch`). What still
+        propagates is a backend error that says the *plan* or this runner is wrong -- an
+        unknown reference, a dispatched relay, a clock run backwards -- which no status
+        document should be made to look like an ordinary mishap."""
         # Seed every job's boundary inputs: each entry input port gets its view value
         # from the boundary (contract-checked) or a typed default (D27 F4).
         #
@@ -1751,7 +1795,17 @@ class RollingRunner:
                     job = self._job_of(act)
                     if job is not None and not self._requires_gate_open(job, act["node"]):
                         continue
-                self._commit_start(act)
+                # A backend that refuses the dispatch is saying the laboratory is not
+                # in the state the plan believed (`..backend.BackendRefused`), and
+                # nothing was started. Caught here rather than around each
+                # `dispatch_*` because this is the only place a dispatch begins, and
+                # because `_commit_start` leaves nothing half-done when one raises:
+                # the committed record and the observation capture are both written
+                # only once the backend has taken the operation.
+                try:
+                    self._commit_start(act)
+                except BackendRefused as exc:
+                    self._refused_dispatch(act, exc)
         return pending
 
     def _transported_view(self, activity: dict):
@@ -1938,6 +1992,49 @@ class RollingRunner:
         else:  # pragma: no cover - schema guarantees the kinds above, or relay
             raise RunnerError(f"unknown activity kind: {kind!r}")
         self.log.add(Committed(activity, kind, "running", start, end, uuid=uuid))
+
+    def _refused_dispatch(self, activity: dict, exc: BackendRefused) -> None:
+        """The backend would not start `activity`: record it `failed` and stop its job.
+
+        The translation of a physical fact into the planning layer's words, which is
+        the runner's job and not the scheduler's: the backend has said the laboratory
+        is not in the state the plan believed -- a spot really full, a source really
+        empty, a machine really busy or really down -- and the only word the plan has
+        for that is an activity that **failed**. So that is what is written, exactly as
+        for an operation observed to fail once running (`_poll`) and for one refused by
+        its own preconditions (`input_not_produced`, above): zero-length at `now`, with
+        no handle, because nothing ran.
+
+        🔴 **Nothing else has to be said.** What the refusal leaves stranded follows
+        from the record: a failed activity claims every spot it touched, the scheduler
+        derives that from this document on its next solve (SPEC §6.12), and a failed
+        transport claims *both* ends because no one can say which one still holds the
+        Object. Declaring it here as well would be the second derivation that §6.12
+        exists to remove.
+
+        Before this, the exception escaped `run()`. In a run of one job that lost only
+        the reason; in a run of a laboratory it threw away the status of every *other*
+        job -- work that had completed perfectly well -- which is the opposite of what
+        planning them together is for.
+
+        A refill belongs to no job (`_job_of` answers None), so its refusal stops the
+        run, as a refill's failure always has: it cannot be attributed, and the stock
+        it was topping up is still short.
+        """
+        kind = activity["kind"]
+        job = self._job_of(activity)
+        subject = self._activity_subject(activity)
+        self.log.add(Committed(activity, kind, "failed", self.now, self.now, uuid=None))
+        self._record_failure(
+            job,
+            "backend_refused_dispatch",
+            f"{subject}: the backend refused to start this {kind} "
+            f"({type(exc).__name__}: {exc}). The laboratory is not in the state the "
+            f"plan was built on; nothing was started, and the spots this activity "
+            f"touches are held until someone clears them",
+            subject,
+        )
+        self._stop_job(job)
 
     def _poll(self) -> None:
         """Mark running operations the backend reports as finished (status-only, D18).
