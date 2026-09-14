@@ -26,13 +26,16 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.8` floor is required, not merely tested against:
-# `withdraw` is where a job leaves a plan (spec §6.11), and 0.8 is where the
-# scheduler grew the argument -- against an older one `RollingRunner.withdraw` has
-# nothing to ask. It also carries the stock levels forward past the departing
-# history (`inventories.at`, spec §6.10), which is the half that cannot be worked
-# around here: this runner states what the run started with and has no way to
-# replay a level of its own.
+# PyPI. The `ofplang-schedule>=0.9` floor is required, not merely tested against:
+# this runner carries the plan itself from one replan to the next rather than
+# rebuilding a status, and three things only 0.9 does make that possible. It derives
+# what a stopped job is still holding instead of being told (spec §6.12) and
+# publishes that derivation, which `admit` has to ask before it lets a job onto a
+# spot; it takes `carry_levels_to_now`, without which a departing job's draws are
+# handed back (`inventories.at`, §6.10); and it replans a pending replenishment
+# rather than refusing the document that carries one, which every plan of a job
+# needing a refill does. Against an older one the first replan is refused, and a
+# refused replan stops every job of the run.
 # The `>=0.5` floor it replaces was required for the same kind of reason:
 # an environment may declare a route that needs no transporter (`transporter: null`,
 # spec §4.6/§5.4) and this runner dispatches such a move, but 0.5 is where the
@@ -64,7 +67,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.8,<0.9", "ofplang-validate>=0.2,<0.3"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.9,<0.10", "ofplang-validate>=0.2,<0.3"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
