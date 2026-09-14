@@ -270,7 +270,8 @@ not part of the file format, but they constrain step 1.
 
 - **Enablement / overhead.** Observation is off by default and pays nothing when off.
   Two knobs: `observe: bool` turns on in-memory accumulation (the render scripts set
-  this without a file to use `build_entries`/`format_text`); `observation_out: <path>`
+  this without a file, reading `RollingRunner.observations` and rendering it with
+  `format_text`); `observation_out: <path>`
   additionally writes the stream file and implies `observe`. When off, no inputs are
   stashed, no entries are built, no file is opened. When on, the accumulated entries
   are also exposed on the runner as `RollingRunner.observations` for programmatic use.
@@ -285,17 +286,20 @@ not part of the file format, but they constrain step 1.
   dispatched) or same-spot no-op (not emitted) activities.
 - **Snapshot on capture.** Assembled inputs and recorded outputs are the same value
   objects held in the `ValueStore` (shared references). The stream file is safe (an
-  entry is serialized to YAML immediately on append), but the in-memory entries that
-  `build_entries` returns must hold **deep copies** taken at emit, so a later in-place
-  mutation by a device model cannot rewrite an already-recorded value.
+  entry is serialized to YAML immediately on append), but the in-memory entries
+  `RollingRunner.observations` hands back must hold **deep copies** taken at emit, so
+  a later in-place mutation by a device model cannot rewrite an already-recorded
+  value.
 - **Emit point and idempotency.** Append exactly once, on the running→completed
   transition, **after** the `ensures` postcondition check passes (a tentatively
   completed op can still flip to `failed` and have its output discarded). Two
   completion sites: `_poll` for real ops, and `_commit_start` for the same-spot no-op
   (which is filtered out, so in practice only `_poll` emits). Never re-emit on a
-  replan re-render (unlike `build_status`, which re-renders every committed record
-  each round). Replanning does not duplicate committed records (completed/running are
-  fixed and never re-dispatched), so one completion is one entry.
+  replan: the runner carries its plan from one round to the next and stamps each
+  record's status onto it again every time (`Echo.stamp`), so a completion the
+  document restates is not a completion that happened twice. Replanning does not
+  duplicate committed records either (completed/running are fixed and never
+  re-dispatched), so one completion is one entry.
 - **File handling.** Open once at run start, write the header, flush. Append one
   document per emit and flush (so the stream is tail-able and survives a process
   crash; fsync is not required). Append the trailer and close at run end; close in a
