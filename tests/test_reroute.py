@@ -242,7 +242,11 @@ def test_a_run_that_never_reroutes_reports_no_relay():
 
     moves = [a for a in status["activities"] if a["kind"] in ("transport", "relay")]
     assert [a["kind"] for a in moves] == ["transport"]
-    assert "seq" not in moves[0]
+    # Its position is 0 and the document says so. A *pending* lone leg still omits it
+    # (§6.6) -- the position it would hold is not decided while the arc may still grow
+    # -- but once the leg has run there is nothing left to decide, and the plan this
+    # run carries has said `seq: 0` all along.
+    assert moves[0].get("seq") == 0
 
 
 def test_no_reroute_when_nothing_goes_down():

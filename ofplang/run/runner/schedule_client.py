@@ -15,12 +15,56 @@ from __future__ import annotations
 from .runner import RunnerError
 
 
+def _scheduler():
+    """The scheduler package, or the error that says how to get it."""
+    try:
+        import ofplang.schedule as mod
+    except ImportError as exc:  # pragma: no cover - depends on install state
+        raise RunnerError(
+            "ofplang.schedule is required for rolling-horizon `run`; install the "
+            "sibling repo (e.g. `pip install -e ../ofplang-schedule`)"
+        ) from exc
+    return mod
+
+
+def default_objective(job_count: int) -> tuple[str, ...]:
+    """What a run of `job_count` jobs is optimised for when nobody says otherwise.
+
+    Asked rather than reproduced. The default is the scheduler's rule (SPEC §4.8) and
+    depends on nothing but the count -- but it is a *rule*, and a second copy of it
+    here would drift the day it changed, in the quiet way a differing objective drifts:
+    the same plan, optimised for something else.
+
+    The runner has to ask because it is the one that states it. With nothing declared
+    the objective is a function of the roster, and the roster is the runner's; a
+    document that echoed a defaulted objective would keep the count it was opened with
+    after a job arrived or left (`echo.Echo.declare_objective`).
+    """
+    from ofplang.schedule.core.objective import default
+
+    _scheduler()  # the install check, and the error that explains it
+    return default(job_count)
+
+
+def derived_holds(document: dict) -> list[dict]:
+    """The spots `document` implies are held, beyond the ones it states (§6.12).
+
+    What a stopped job's own history leaves behind is derived by the scheduler on every
+    solve rather than declared, so this is how the runner asks what it will conclude --
+    which it needs before admitting a job, since entry material cannot be placed on a
+    spot something is already sitting on and a replan that fails stops every job in the
+    run.
+    """
+    return _scheduler().derived_holds(document)
+
+
 def replan(
     workflow,
     environment,
     status_document: dict,
     *,
     withdraw=(),
+    carry_levels_to_now: bool = False,
     running_task_margin: int = 0,
     random_seed: int | None = None,
     max_time_seconds: float | None = None,
@@ -44,6 +88,13 @@ def replan(
     their work drew is not given back (`inventories.at`, §6.10). They must still be in
     `status_document` -- the scheduler reads a departing job's draws from the
     `consumption` echoes there -- and no workflow is passed for them.
+
+    `carry_levels_to_now` restates `inventories` as of `now` instead of echoing the
+    moment it was given (SPEC §6.10). The scheduler never moves that moment by itself:
+    working the levels out is the half it can do and the caller cannot, and deciding
+    whether the history before the moment may be let go of is the half only the caller
+    can. A withdrawal whose job drew on a stock after that moment needs it, or leaving
+    would hand those draws back.
 
     `ignore_resources` switches the consumable model off (SPEC §4.7.3): the environment's
     resource declarations are still shape-checked but nothing is applied, so a lab that
@@ -78,6 +129,7 @@ def replan(
             environment,
             document_path=status_document,
             withdraw=tuple(withdraw),
+            carry_levels_to_now=carry_levels_to_now,
             running_task_margin=running_task_margin,
             random_seed=random_seed,
             max_time_seconds=max_time_seconds,
@@ -87,11 +139,13 @@ def replan(
         )
 
     # A single workflow has no roster to leave, so `withdraw` cannot apply; the
-    # runner refuses the call before it reaches here.
+    # runner refuses the call before it reaches here. The levels flag is not about
+    # leaving, though, so it is passed either way.
     return _schedule(
         workflow,
         environment,
         document_path=status_document,
+        carry_levels_to_now=carry_levels_to_now,
         running_task_margin=running_task_margin,
         random_seed=random_seed,
         max_time_seconds=max_time_seconds,

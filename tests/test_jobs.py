@@ -143,7 +143,9 @@ def test_a_release_keeps_a_job_from_starting_early():
     status = runner.run()
     assert min(a["start"] for a in _of(status, "later")) >= 6
     assert min(a["start"] for a in _of(status, "now")) == 0
-    assert [e.get("release") for e in status["jobs"]] == [None, 6]
+    # Both releases are stated, 0 included: an absent release means 0 for a job the
+    # roster names and `now` for one it does not, so the document says which.
+    assert [e.get("release") for e in status["jobs"]] == [0, 6]
 
 
 # -- the laboratory's own state ----------------------------------------------

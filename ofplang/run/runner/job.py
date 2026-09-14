@@ -54,17 +54,13 @@ class Job:
     boundary: Boundary
     release: int = 0
 
-    # 🔴 What the scheduler promised this job, read back from each plan's roster
-    # (§6.11) and handed straight back on the next replan. It has to live here: the
-    # status is rebuilt from the commit log every tick, so a bound the runner did not
-    # hold would be gone by the second one -- and every job would look like a new
-    # arrival with no promise, re-derived each tick. The guarantee that an earlier job
-    # is not disturbed by a later one would hold inside one solve and nowhere else.
-    bound: int | None = None
-    # Likewise the digest of the workflow this job runs. Carrying it back is what lets
-    # the scheduler check that the workflows handed over are the ones it planned for;
-    # dropping it is safe (the check is skipped) but costs the check for nothing.
-    fingerprint: str | None = None
+    # 🔴 What the scheduler promised this job (`bound`) and the digest of the workflow
+    # it was planned for (`fingerprint`) are deliberately NOT here. They used to be:
+    # the runner rebuilt the roster from its own job list every tick, so a promise it
+    # did not hold on to was gone by the second one, and every job looked like a new
+    # arrival. The runner now carries the plan itself (`echo.Echo`), and the roster in
+    # it is the scheduler's own -- so the promise is never rewritten, and cannot be
+    # lost by failing to copy it.
 
     # Whether this job's boundary material has been placed. Entry material is *there*,
     # given, from the job's release (§6.8) -- so the runner places it when the clock
@@ -89,13 +85,11 @@ class Job:
     # records the one that stopped this job, so a run where two jobs failed for
     # different reasons can say both.
     failure: Failure | None = None
-    # Spots the failing activity touched, claimed as occupied whatever the backend
-    # says about them. A failed transport claims both ends though the backend's
-    # ledger names only the source: that ledger holds material where it was on the
-    # reasoning that nothing follows a failure, and isolating the failure is what
-    # removes that reasoning. Remembered here because it is a fact about the moment
-    # this job stopped, while the rest of its residue is re-read from the world.
-    residue_claim: set = field(default_factory=set)
+    # 🔴 What the failing activity was holding is not recorded here either. The spots a
+    # failed activity touched are claimed whatever the backend says -- a failed
+    # transport claims both ends, since nothing says which one its plate is at -- but
+    # that is read off the `failed` activity in the document, by the scheduler, on every
+    # solve (§6.12). The runner stamps the failure and the claim follows from it.
 
     # Derived from the workflow, all read on the dispatch path.
     output_schemas: dict = field(default_factory=dict)
@@ -113,24 +107,25 @@ class Job:
     outputs: dict = field(default_factory=dict)
 
     def roster_entry(self) -> dict:
-        """This job as a `jobs` entry of the execution document (§6.11).
+        """This job as a `jobs` entry of the execution document (§6.11), *as the
+        runner states it* -- when the run opens, and when the job arrives.
 
-        Everything the scheduler needs to recognise it again: who it is, when it may
-        start, what it was promised, which workflow it runs, and where its boundary
-        material sits.
+        Three fields, and they are the three the runner knows: who the job is, the
+        earliest it may start, and where its boundary material sits.
+
+        🔴 What the **scheduler** decides is not here. A job's promise (`bound`) and the
+        digest of the workflow it was planned for (`fingerprint`) are written by the
+        plan and carried back to it untouched, because the document the runner hands
+        over *is* the last plan (`echo.Echo`). This entry is only ever the opening
+        statement about a job the plan does not know yet; everything after that is the
+        plan's own words.
+
+        `release` is always written, 0 included. An absent release means 0 for a job the
+        roster names and `now` for one it does not, so stating it is what makes the
+        entry say what it means -- and for an arriving job the difference is real: the
+        moment it arrived, not the moment of the next replan.
         """
-        entry: dict = {"id": self.id}
-        if self.release:
-            entry["release"] = self.release
-        # 🔴 A stopped job carries no `bound`. The scheduler already drops a stopped
-        # job's deadline constraint (it can never be met), so keeping it would change
-        # no plan -- but it would leave the document reporting a completion this job
-        # was promised and will not reach, which is a lie a reader has no way to
-        # detect. A promise that cannot be kept is withdrawn, not restated.
-        if self.bound is not None and not self.stopped:
-            entry["bound"] = self.bound
-        if self.fingerprint is not None:
-            entry["fingerprint"] = self.fingerprint
+        entry: dict = {"id": self.id, "release": self.release}
         if self.interface:
             entry["interface"] = self.interface
         return entry

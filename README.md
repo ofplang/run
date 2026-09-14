@@ -205,9 +205,11 @@ computing on a typed default. `--on-job-failure`
 decides what one job's failure does to the rest of a `--jobs` run: `continue` (the
 default) stops that job alone and lets the others finish — which is why they were
 planned together — while `stop` stops the whole run. A stopped job's remaining work is
-reported `cancelled`, and the spots its material is still sitting on are declared in
-the status (`occupied`, §6.12) so the rest of the run is planned around them rather
-than onto them. A single workflow is a single job, so this makes no difference to it.
+reported `cancelled`, and the spots its material is still sitting on are **held** so the
+rest of the run is planned around them rather than onto them — worked out from the
+history the document carries rather than written into it, since every input to the
+working-out is already there (`ofplang.schedule.derived_holds` is how to ask what it
+comes to). A single workflow is a single job, so this makes no difference to it.
 `--jobs` runs
 **several workflows together** in one laboratory (schedule SPEC §6.11) in place of
 the single `<workflow>` argument. Its run document names each job — an `id`, the
@@ -229,8 +231,20 @@ the arithmetic: a job's history is part of what the current stock levels are mad
 so the levels are carried forward to that moment (`inventories.at`, §6.10) rather than
 handing the stock back everything that job drew. A final output the job's boundary
 **bound** to a spot is taken as collected from there; one it left unbound is not — the
-schedule chose where that came to rest and nobody was told — so that spot is declared
-`occupied` instead, dated when the plate was actually left there.
+schedule chose where that came to rest and nobody was told — so that spot is written
+into `occupied` as the job goes, dated when the plate was actually left there. That is
+the one moment an occupancy is written down: everything else a job holds follows from
+its history, and stops following from anything the instant that history leaves with it.
+
+**A freeze can be lifted.** `RollingRunner.free_spot(spot)` says a spot this run was
+keeping frozen may be used again. `occupied` says a spot is *not to be used*, not that
+something is on it — a failed transport freezes both of its ends, though its plate is
+at one of them — so lifting one is a declaration rather than a report, and why (it was
+collected, it was never there, it was looked at and found fine) is not the document's
+business. Only a freeze the document **states** can be lifted: what a stopped job is
+holding is derived afresh on every solve, so there is no entry to remove and removing
+one would not stop the next solve deriving it again. What ends that hold is the job
+leaving the plan.
 
 **And a job can arrive into one.** `RollingRunner.admit(request)` takes a job into a
 run already under way — the same `JobRequest` the run document describes, handed over

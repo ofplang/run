@@ -36,8 +36,18 @@ def _env_document() -> dict:
 
 
 def test_an_environment_document_runs_exactly_as_its_file():
+    """The same laboratory, described two ways, runs the same -- and says where it was
+    described from.
+
+    `meta` is the one thing that differs, and it should: it records what the plan was
+    built from, and one of these was built from a file and the other from a document
+    nobody can name. That the runner reports it at all is new -- the document it
+    carries is the plan itself now -- and it is worth having rather than dropping.
+    """
     from_path = RollingRunner(SIMPLE_WF, SIMPLE_ENV, random_seed=0).run()
     from_document = RollingRunner(SIMPLE_WF, _env_document(), random_seed=0).run()
+    assert from_document.pop("meta")["environment"] == "<in-memory>"
+    assert from_path.pop("meta")["environment"] == SIMPLE_ENV
     assert from_document == from_path
 
 

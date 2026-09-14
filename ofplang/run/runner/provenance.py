@@ -35,6 +35,62 @@ def arc_key(arc: dict | None) -> ArcKey:
     return (endpoint(arc.get("from")), endpoint(arc.get("to")))
 
 
+def activity_key(activity: dict):
+    """A stable identity for an activity across replans: its workflow provenance
+    (a processing's `node` path, a transport's `arc` endpoints + chain position).
+
+    Pending identities are regenerated on every replan, but provenance is not, so
+    this is what lines a plan's entry up against the committed record that started
+    it -- and, once the runner carries the plan itself from one replan to the next,
+    what says which entry a piece of history belongs to.
+
+    🔴 The job is part of the identity, not decoration. Two jobs of one workflow
+    render the same `node` and the same arc (§6.11), so without it committing one
+    job's activity would mark the other's committed too.
+
+    🔴 A transport's `seq` is read with `None` meaning 0. A leg dispatched while its
+    arc still had only one carries no position -- that is the form a single-hop arc
+    is written in (§6.6) -- and if the arc later grows a second leg, the plan gives
+    the first one the 0 it held all along. Measured: a re-route commits its first leg
+    with `seq: None` and the next plan calls the same leg `seq: 0`. Treating them as
+    two identities would leave that leg looking as if it had never run.
+
+    A kind this function does not know is **refused**, not given a key. The tempting
+    alternative -- let anything that is not a processing fall through to the transport
+    shape -- is silent and wrong: an activity with no `arc` and no `seq` yields the
+    *same* key for every such activity, so two of them would collapse into one.
+    """
+    kind = activity.get("kind")
+    job = activity.get("job", "")
+    if kind == "processing":
+        return ("processing", job, tuple(activity.get("node") or ()))
+    if kind == "transport":
+        seq = activity.get("seq")
+        return ("transport", job, *arc_key(activity.get("arc")), 0 if seq is None else int(seq))
+    if kind == "replenishment":
+        # A refill has no workflow provenance -- it exists because the solver put it
+        # there, not because the workflow asked for it -- so its `id` is the identity.
+        # That is stable exactly where it has to be: the scheduler numbers new
+        # candidates around the ids the document already uses, so a refill that has
+        # *started* keeps its id across replans, while a pending one may be renumbered
+        # and does not need to survive.
+        return ("replenishment", activity.get("id"))
+    raise UnknownActivityKind(kind)
+
+
+class UnknownActivityKind(Exception):
+    """An activity whose kind carries no provenance this runner can identify.
+
+    Raised rather than guessed: a kind that cannot be identified cannot be dispatched
+    either, so failing loudly costs a run nothing it was going to complete. The
+    runner translates it into its own error.
+    """
+
+    def __init__(self, kind) -> None:
+        super().__init__(f"cannot identify an activity of kind {kind!r} across replans")
+        self.kind = kind
+
+
 @dataclass
 class Committed:
     """One activity the runner has started (and possibly finished).

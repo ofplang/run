@@ -53,14 +53,14 @@ from ..backend import Backend
 from ..simulator import VirtualTimeSimulator
 from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
+from .echo import Echo
 from .failure import Failure
 from .job import Job, JobRequest, build_job
 from .loader import load_document
 from .observation import ObservationRecorder
-from .provenance import CommitLog, Committed, arc_key
+from .provenance import CommitLog, Committed, UnknownActivityKind, activity_key
 from .runner import RunnerError
-from .schedule_client import replan
-from .status import build_status
+from .schedule_client import default_objective, derived_holds, replan
 from .values import (
     assemble_inputs,
     collect_outputs,
@@ -414,7 +414,7 @@ class RollingRunner:
         # began the answer is 0. Defaulted rather than demanded: "occupied from the
         # beginning" is the only thing a run's opening state can mean, and a caller
         # writing it out would be answering a question that has one answer.
-        self.occupied: list[dict] = [{"since": 0, **entry} for entry in occupied or []]
+        declared_occupied: list[dict] = [{"since": 0, **entry} for entry in occupied or []]
         # Jobs the caller has asked to take out of the plan (SPEC §6.11), and the ids
         # of those already taken out. Requested between ticks and enacted by the next
         # replan, because leaving is something the *scheduler* does: it is the one that
@@ -428,8 +428,6 @@ class RollingRunner:
         # candidate from a job: a violation refuses the call and leaves the run exactly
         # as it was, rather than recording a failure of a run nothing has happened to.
         self._admitting: Job | None = None
-        # Work abandoned when a job stopped, captured as it stopped (see `_stop_job`).
-        self._cancelled: list[dict] = []
         # What every stock held when this run began (§6.10). One per run however many
         # jobs draw on it, which is why it is here and not on the job. Carried into
         # the status unchanged on every tick -- the level at `now` is the scheduler's
@@ -439,7 +437,7 @@ class RollingRunner:
         # §6.11), and otherwise read off the single job's boundary, where it has always
         # lived. Both are kept: the boundary form is what every existing run uses.
         if inventories is not None:
-            self.inventories = inventories
+            declared_inventories = inventories
         else:
             declared = [job.boundary.inventories for job in self._jobs if job.boundary.inventories]
             if any(other != declared[0] for other in declared[1:]):
@@ -447,7 +445,19 @@ class RollingRunner:
                     "jobs declare conflicting starting inventories; the stock is the "
                     "laboratory's, so state it once for the run"
                 )
-            self.inventories = declared[0] if declared else {}
+            declared_inventories = declared[0] if declared else {}
+
+        # 🔴 The document this run carries (D48/D49). Opened from what the caller asked
+        # for and replaced by every plan the scheduler answers with, so the roster's
+        # promises, the moment the levels are stated for and the shape of every
+        # multi-leg move are the scheduler's own words from here on -- never rewritten
+        # here, and so never lost by failing to rewrite them.
+        self._echo = Echo(
+            interface=None if self._named else (self._only_job.interface or None),
+            inventories=declared_inventories or None,
+            occupied=declared_occupied or None,
+            jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
+        )
         # The result boundary (D28): the same-schema document echoing the produced
         # output views, assembled at the end of a run (the CLI writes it to
         # `--boundary-out`). Empty until `run()` completes.
@@ -611,8 +621,8 @@ class RollingRunner:
         if request.id in self._withdrawn:
             raise RunnerError(
                 f"cannot admit {request.id!r}: a job of that id has already left this "
-                f"run. Every status filters that id's records out of the history "
-                f"(`_history`), so the newcomer's would be dropped along with them"
+                f"run, taking its history with it. A second job of the same name would "
+                f"be a different job wearing the name of one the plan has finished with"
             )
         if self._stopping:
             raise RunnerError(
@@ -639,14 +649,30 @@ class RollingRunner:
                 f"state -- least of all a job arriving after the run began"
             )
         # 🔴 The one placement conflict this runner can see for itself. It never asks
-        # the backend what is on a spot (the backend is told, not asked), so what it
-        # can check is what it accounts for: the spots it declares occupied (§6.12) --
-        # what the laboratory was already holding, and what a stopped job left behind.
-        # A spot two jobs' *interfaces* share is deliberately not refused here: whether
-        # the first job's material is still on it is what the history says and not what
-        # the bindings say, which is why the scheduler states that as a warning
+        # the backend what is on a spot (the backend is told, not asked), so what it can
+        # check is what the document accounts for: the freezes it states (§6.12) and the
+        # ones it implies. The implied half is **asked of the scheduler**
+        # (`derived_holds`) rather than worked out here -- what a stopped job is still
+        # holding is derived on every solve, and a second derivation living in the
+        # runner is how the two came to disagree before.
+        #
+        # Checked here at all because a replan that fails stops every job of the run, so
+        # an admission the scheduler would refuse has to be refused while refusing is
+        # still just an error to the caller.
+        #
+        # A spot two jobs' *interfaces* share is deliberately not refused: whether the
+        # first job's material is still on it is what the history says and not what the
+        # bindings say, which is why the scheduler states that as a warning
         # (`interface_shared_input_spot`, §6.11) rather than a refusal.
-        held = {entry.get("spot") for entry in self._occupied_now()}
+        #
+        # Stamped first so the question is about the laboratory as it is now, not as it
+        # was at the last replan -- a job may have stopped since. Writing history down
+        # is not a change to the run, so it is no less true if this call then refuses.
+        self._echo.stamp(
+            self.log.records(), self.now, {j.id for j in self._jobs if j.stopped}
+        )
+        held = {entry.get("spot") for entry in self._echo.occupied}
+        held |= {entry["spot"] for entry in derived_holds(self._echo.document)}
         clash = sorted(
             spot for spot in (job.interface.get("inputs") or {}).values() if spot in held
         )
@@ -692,8 +718,55 @@ class RollingRunner:
 
         self._jobs.append(job)
         self._by_id[job.id] = job
+        # 🔴 And on the roster of the document this run carries. This is the one place
+        # the runner adds to a roster the scheduler otherwise owns, and the release goes
+        # with it: the scheduler's default for an arrival recognises a job the roster
+        # does not name, but a job with boundary material has to be named, since its
+        # `interface` is read from its entry. Leaving the release out was measured to
+        # release a job admitted at 23 at 24 -- the moment of the next replan, which is
+        # not when it arrived.
+        self._echo.admit(job.roster_entry())
         # There is a job more to plan, so the scheduler's answer differs and the plan
         # from the last replan must not be carried into the next tick (D41).
+        self._observed_change = True
+
+    def free_spot(self, spot: str) -> None:
+        """Say that a spot this run was keeping frozen may be used again (SPEC §6.12).
+
+        The mirror of the `occupied` a run opens with. A freeze says a spot is **not to
+        be used**, not that something is on it -- a failed transport freezes both of its
+        ends, though its plate is at one of them -- so lifting one is a declaration
+        rather than a report, and why (it was collected, it was never there, it was
+        looked at and found fine) is not the document's business. That is also why this
+        is named for what it does instead of for what happened to the material.
+
+        🔴 **Only a freeze the document states can be lifted, and a stopped job's
+        residue is not one of them.** What such a job is holding follows from its own
+        history, which the document carries, so the scheduler derives it afresh on every
+        solve; there is no entry to remove, and removing one would not stop the next
+        solve deriving it again. What ends that hold is the job leaving the plan
+        (`withdraw`), which is the moment the history goes and the hold is written down
+        for the first time.
+
+        The backend is told too, because this is a statement about the world and the
+        world is what the backend models: a spot left holding something the plan
+        believes free is how a later delivery comes to be refused for a place that is
+        full. `clear` is tolerant of a spot that holds nothing, which is the same
+        tolerance this call needs -- the freeze may never have had material under it.
+
+        Takes effect on the next replan. Raises if no such freeze is stated, because a
+        caller freeing a spot that is not frozen has something else in mind.
+        """
+        if not self._echo.free_spot(spot):
+            stated = sorted(entry["spot"] for entry in self._echo.occupied)
+            raise RunnerError(
+                f"cannot free {spot!r}: this run states no freeze on it (frozen: "
+                f"{stated}). What a stopped job is holding is derived from its history "
+                f"rather than stated, and is released by the job leaving the plan"
+            )
+        self.sim.clear(spot)
+        # The scheduler's answer differs now, so the plan from the last replan must not
+        # be carried into the next tick (D41).
         self._observed_change = True
 
     def withdraw(self, job_id: str) -> None:
@@ -762,78 +835,38 @@ class RollingRunner:
         # tick finds (D41) -- without this the request could sit unenacted.
         self._observed_change = True
 
-    def _enact_withdrawals(self, plan: dict, owners: dict) -> None:
+    def _enact_withdrawals(self) -> None:
         """Take the jobs that have just left out of this runner's own accounting.
 
-        Called after a replan that carried the request, because the status that carries
-        it must still describe them: the scheduler reads a departing job's draws from
-        the `consumption` echoes of its activities (SPEC §4.7.2), so dropping them any
-        earlier would give the stock back everything that job drew.
+        Called after a replan that carried the request, because the document that
+        carries it must still describe them: the scheduler reads a departing job's draws
+        from the `consumption` echoes of its activities (SPEC §4.7.2), so dropping them
+        any earlier would give the stock back everything that job drew.
 
-        Four things move, and the order matters only in that the levels come from the
-        plan rather than from anything here:
+        🔴 **Almost nothing is left to do here, and that is the point.** What the job was
+        holding, what the stocks hold now and the moment they are stated for are all in
+        the plan just adopted -- the scheduler derived them, wrote them and handed them
+        over, and the runner carries that document rather than copying pieces out of it.
+        Each of those copies was a round trip that could be dropped; two of them were
+        dropped, at different times, and the stock quietly gained back everything the
+        departing job had drawn.
 
-        1. what the job is still holding becomes an occupancy (§6.12) -- except what
-           the caller **bound**, which is the half they have just said they collected;
-        2. the stock levels are adopted from the plan. 🔴 **This is the point of the
-           exercise.** This runner states what the run *started* with and has no way
-           to work out a level -- the replay is the scheduler's (§4.7.2) -- so without
-           adopting the baseline it carried forward, the next replan would replay a
-           history the departing job is no longer in and hand the stock back;
-        3. whatever the plan holds occupied that this runner cannot account for is
-           adopted too: the scheduler freezes an **unbound** final output's resting
-           spot, which it chose and this runner may not have attributed to anyone;
-        4. the spots the caller collected from are cleared in the backend, or the next
-           delivery to one of them is refused for material nobody has.
+        The two things that remain are the two the document cannot do:
+
+        1. the spots the caller **bound** are cleared in the backend. They said where
+           the material would be and leaving says they collected it, so the world has to
+           be told -- otherwise the next delivery to one of them is refused for material
+           nobody has. What was *not* bound stays put: the schedule chose where it came
+           to rest, so nobody was told, and the plan freezes it instead (§6.12);
+        2. the job stops being one of this run's jobs.
         """
-        leaving = [job for job in self._jobs if job.id in self._withdrawing]
-        accounted = {entry.get("spot") for entry in self._occupied_now()}
-        for job in leaving:
-            held = self._held_by(job, owners)
-            # What the caller named is what the caller collected (SPEC §6.11): the
-            # rest was put wherever the schedule found room, so nobody was told.
-            bound = set((job.boundary.output_spots or {}).values())
-            for spot in sorted(held - bound):
-                if spot not in accounted:
-                    self.occupied.append(
-                        {"spot": spot, "since": self._held_since(job, spot)}
-                    )
-                    accounted.add(spot)
-            for spot in sorted(held & bound):
+        for job in [job for job in self._jobs if job.id in self._withdrawing]:
+            for spot in sorted((job.boundary.output_spots or {}).values()):
                 self.sim.clear(spot)
-
-        carried = plan.get("inventories")
-        if carried:
-            self.inventories = carried
-        for entry in plan.get("occupied") or []:
-            if entry.get("spot") not in accounted:
-                self.occupied.append(dict(entry))
-                accounted.add(entry.get("spot"))
-
-        for job in leaving:
             self._jobs.remove(job)
             self._by_id.pop(job.id, None)
             self._withdrawn.add(job.id)
         self._withdrawing.clear()
-
-    def _history(self):
-        """The committed records a status is built from: everything but the work of a
-        job that has **left** the plan (SPEC §6.11).
-
-        Filtered on the way out rather than forgotten: the log is this runner's own
-        memory of what it did, and `_spot_owners` reads it to decide which job touched
-        a spot last. Dropping the records would move that attribution onto whichever
-        job touched the spot earlier, and claim its material for them.
-
-        Matched on the raw `job` the activity carries, not through `_job_of`, which
-        resolves against a roster the job is no longer in.
-        """
-        if not self._withdrawn:
-            return self.log.records()
-        return [
-            rec for rec in self.log.records()
-            if rec.activity.get("job") not in self._withdrawn
-        ]
 
     def _subject(self, name: str, job: Job) -> str:
         """How a diagnostic names something. In a run of several jobs the same node
@@ -871,6 +904,30 @@ class RollingRunner:
     @property
     def jobs(self) -> list[Job]:
         return list(self._jobs)
+
+    @property
+    def inventories(self) -> dict:
+        """What the stocks hold, as of the moment the carried document states (§6.10).
+
+        Read out of that document rather than held here. The levels at `now` are the
+        scheduler's to replay (§4.7.2) and the moment they are stated for is the
+        scheduler's to move when asked, so a copy kept here would be a second answer to
+        a question that has one -- which is exactly what a departing job's draws used to
+        get lost in.
+        """
+        return self._echo.inventories
+
+    @property
+    def occupied(self) -> list[dict]:
+        """The spots this document *states* are frozen (§6.12).
+
+        Not the ones it implies. What a stopped job is still holding follows from its
+        own history and is derived by the scheduler on every solve; this section is for
+        a hold nothing can derive -- what the laboratory was already holding when the
+        run began, and what a person has put somewhere since. Ask `derived_holds` for
+        the other half.
+        """
+        return self._echo.occupied
 
     @property
     def dataflow(self):
@@ -942,11 +999,9 @@ class RollingRunner:
         if self.failure is None:
             self.failure = failure
 
-    def _stop_job(self, job: Job | None, activity: dict | None = None) -> None:
-        """Stop `job`: dispatch no more of its work, record what it left behind, and
-        decide whether that stops the run (D25, per job since SPEC §6.11).
-
-        `activity` is the one that failed, where there was one.
+    def _stop_job(self, job: Job | None) -> None:
+        """Stop `job`: dispatch no more of its work, and decide whether that stops
+        the run (D25, per job since SPEC §6.11).
 
         Everything stops when `job` is None -- a refill's failure, or a replan nothing
         can be planned from: neither can be attributed, and a refill that failed leaves
@@ -980,23 +1035,15 @@ class RollingRunner:
             if target.stopped:
                 continue
             target.stopped = True
-            # What this job never got to do. It has to be captured *now*: the next plan
-            # answers with this work `cancelled`, which is not a status the runner
-            # commits and not something `_last_pending` keeps -- so by the end of the
-            # run there would be nothing left to say what was abandoned.
-            self._cancelled += [
-                a for a in self._undispatched() if self._job_of(a) is target
-            ]
-            # The failing activity is only *this* job's extra claim on a spot; the
-            # others stopped because it did, and are holding whatever they were
-            # holding. What each job is holding is re-read every tick
-            # (`_occupied_now`); only this claim has to be remembered.
-            if target is job and activity is not None:
-                target.residue_claim |= self._spots_of(activity)
-        # The scheduler learns a job stopped from the terminal status in the history,
-        # and answers the next replan with its remaining work `cancelled`. But the
-        # answer has to be *asked for*: without this a tick may decide it need not
-        # replan, and the stale plan still lists that job's work as dispatchable.
+        # 🔴 Nothing about what was abandoned, or about what the job is left holding, is
+        # recorded here any more. The work it never got to is in the document this run
+        # carries, still pending, and the next stamp marks it `cancelled` in place --
+        # which is also what tells the scheduler the job stopped, and therefore what
+        # makes its residue derivable (§6.12). The spots the failing activity touched
+        # come from that activity's own `failed` status, read on every solve.
+        #
+        # But the stamp has to be *asked for*: without this a tick may decide it need
+        # not replan, and the plan still lists that job's work as dispatchable.
         self._observed_change = True
         self._stopping = all(target.stopped for target in self._jobs)
 
@@ -1186,17 +1233,14 @@ class RollingRunner:
                 time_section=self._last_time,
             )
 
-        cancelled = self._cancelled_activities()
-        return build_status(
-            self._history(),
-            self.now,
-            None if self._named else self._only_job.interface,
-            self._last_time,
-            cancelled,
-            inventories=self.inventories or None,
-            jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
-            occupied=self._occupied_now() or None,
+        # One last stamp, for the history made since the final replan -- and, when the
+        # run stopped, for the work that never started: a stopped job's pending entries
+        # become `cancelled` here exactly as they would have on the next replan there
+        # was not going to be (D25).
+        self._echo.stamp(
+            self.log.records(), self.now, {job.id for job in self._jobs if job.stopped}
         )
+        return self._echo.result()
 
     def _check_output_spots(self, job: Job) -> None:
         """Verify every pinned Object output of `job` was actually delivered (P3, D28).
@@ -1604,36 +1648,45 @@ class RollingRunner:
             if down
             else self._environment
         )
-        # 🔴 A job on its way out is still in this status, roster entry and activities
-        # both. The scheduler needs them: it reads what the job drew from its
-        # `consumption` echoes so the stock is not given back (SPEC §4.7.2), and it is
-        # the entry it removes. Only once it has answered are they dropped here.
-        status_doc = build_status(
-            self._history(),
-            self.now,
-            # A single unnamed workflow keeps the top-level `interface` it always had;
-            # a run of named jobs carries one per job, in the roster (§6.11).
-            None if self._named else self._only_job.interface,
-            inventories=self.inventories or None,
-            jobs=[job.roster_entry() for job in self._jobs] if self._named else None,
-            occupied=self._occupied_now() or None,
+        # 🔴 The document handed over is the last plan, with this run's history stamped
+        # onto it and nothing else changed (D48/D49). A job on its way out is still in
+        # it, roster entry and activities both: the scheduler reads what the job drew
+        # from its `consumption` echoes so the stock is not given back (SPEC §4.7.2),
+        # and it is the entry the scheduler removes. Only once it has answered are they
+        # dropped here.
+        #
+        # The work of a job that has **stopped** is stamped `cancelled` by the same
+        # call, which is how the scheduler learns it stopped at all -- and therefore how
+        # what it left behind becomes derivable (§6.12).
+        self._echo.stamp(
+            self.log.records(), self.now, {job.id for job in self._jobs if job.stopped}
         )
-        # Computed before the replan, so it describes the laboratory the request was
-        # made about; `_enact_withdrawals` reads it after.
-        owners = self._spot_owners() if self._withdrawing else {}
+        # ... and the objective, which is the one planning input restated rather than
+        # echoed: with nothing declared it is a function of how many jobs there are
+        # (§4.8), and the roster is this runner's. The count is the one the scheduler
+        # will see -- the workflows handed over below, which is 0 for a single unnamed
+        # workflow, since such a plan has no roster at all.
+        planned = [job for job in self._jobs if job.id not in self._withdrawing]
+        self._echo.declare_objective(default_objective(len(planned) if self._named else 0))
+        status_doc = self._echo.document
         # 🔴 And a job on its way out is **not** among the workflows. The two are
         # deliberately asymmetric: the status describes what has happened, so it keeps
         # the departing job; the workflows are what there is left to plan, and there is
         # nothing left to plan for a job that is leaving -- handing one over as well is
         # refused as a contradiction (`unknown_withdrawal`, SPEC §6.11).
         report = replan(
-            [(job.id, job.workflow) for job in self._jobs
-             if job.id not in self._withdrawing]
+            [(job.id, job.workflow) for job in planned]
             if self._named
             else self._only_job.workflow,
             environment,
             status_doc,
             withdraw=sorted(self._withdrawing),
+            # 🔴 Leaving no longer moves the moment the levels are stated for by itself
+            # (SPEC §6.10): the scheduler works the levels out, and whether the history
+            # before that moment may be let go of is the caller's call. A departing job
+            # drew on stocks since, so the answer here is yes -- and saying so is what
+            # keeps its draws from being handed back.
+            carry_levels_to_now=bool(self._withdrawing),
             running_task_margin=self.margin,
             random_seed=self.seed,
             environment_source=self.environment_path,
@@ -1659,32 +1712,19 @@ class RollingRunner:
             self._stop_job(None)
             return []
         plan = report.plan
+        # 🔴 The answer becomes the question. Everything the runner used to copy back
+        # out of the plan -- each job's promise and fingerprint, the stock baseline a
+        # withdrawal moved, the occupancies it wrote, the shape of every grown transport
+        # chain -- is simply carried, because the document carried *is* the plan.
+        self._echo.adopt(plan)
         if self._withdrawing:
-            self._enact_withdrawals(plan, owners)
+            self._enact_withdrawals()
         self._last_time = plan.get("time")
-        # 🔴 What the scheduler promised each job, taken back so the next tick can hand
-        # it in again. Without this the status is rebuilt from the commit log alone,
-        # every job looks like a new arrival with no promise, and the guarantee that an
-        # earlier job is not disturbed by a later one holds inside one solve and
-        # nowhere else.
-        for entry in plan.get("jobs") or []:
-            job = self._by_id.get(entry.get("id"))
-            if job is not None:
-                job.bound = entry.get("bound")
-                job.fingerprint = entry.get("fingerprint")
 
         # Pending work is what carries no status. A relay is excluded whatever its
-        # status: it is an instantaneous scheduling junction with no physical
-        # operation behind it, so there is nothing to dispatch and nothing to commit.
-        # Saying so in the status is not lost by this -- `build_status` reconstructs
-        # each relay from the committed legs around it, the way §7 does.
-        # Remembered so that, if a failure stops the run, the work that never started
-        # can be reported cancelled (D25).
-        pending = [
-            a
-            for a in plan.get("activities", [])
-            if a.get("status") in (None, "pending") and a.get("kind") != "relay"
-        ]
+        # status: it is an instantaneous scheduling junction with no physical operation
+        # behind it, so there is nothing to dispatch and nothing to commit.
+        pending = self._echo.pending()
         self._last_pending = pending
 
         # Dispatch everything that can start now. Pending is optimised at/after
@@ -1830,7 +1870,7 @@ class RollingRunner:
                     f"defers its successors.",
                     subject,
                 )
-                self._stop_job(job, activity)
+                self._stop_job(job)
                 return
             # Pass the output value signature (D26/D27) so the backend generates a
             # typed value for each output port at completion, and the assembled input
@@ -1857,7 +1897,7 @@ class RollingRunner:
             )
             if violated is not None:
                 self.log.add(Committed(activity, kind, "failed", start, start, uuid=None))
-                self._stop_job(job, activity)
+                self._stop_job(job)
                 return
             # Pass the workflow provenance (`node`) only to a backend that opts in, so a
             # backend predating this extension is driven unchanged (backward compatible).
@@ -1947,7 +1987,7 @@ class RollingRunner:
                     if absent:
                         subject = self._subject(self._fmt_node(tuple(rec.activity["node"])), job)
                         rec.status = "failed"
-                        self._stop_job(job, rec.activity)
+                        self._stop_job(job)
                         self._record_failure(
                             job,
                             "backend_output_missing",
@@ -1978,7 +2018,7 @@ class RollingRunner:
                             self._fmt_node(tuple(rec.activity["node"])), job
                         )
                         rec.status = "failed"
-                        self._stop_job(job, rec.activity)
+                        self._stop_job(job)
                         self._record_failure(
                             job,
                             "backend_output_type",
@@ -2011,7 +2051,7 @@ class RollingRunner:
                         is not None
                     ):
                         rec.status = "failed"
-                        self._stop_job(job, rec.activity)
+                        self._stop_job(job)
                         # Withdraw this invocation's outputs (review #5): they were
                         # recorded above so `ensures` could read them, but a value that
                         # failed its postcondition must not surface as a produced
@@ -2042,7 +2082,7 @@ class RollingRunner:
                     self._record_failure(
                         failed_job, "activity_failed", f"activity {subject} failed", subject
                     )
-                self._stop_job(failed_job, rec.activity)
+                self._stop_job(failed_job)
 
     @staticmethod
     def _spots_of(activity: dict) -> set[str]:
@@ -2053,254 +2093,19 @@ class RollingRunner:
         spots |= {activity[k] for k in ("from_spot", "to_spot") if activity.get(k)}
         return spots
 
-    def _occupied_now(self) -> list[dict]:
-        """The `occupied` section (§6.12) as of this moment: what the laboratory was
-        already holding, plus what each stopped job is still holding.
-
-        Entries say *that* a spot is held, not by whom. Which job left the material is
-        not read by anything -- here, or in the scheduler -- and a spot can be held for
-        reasons no document records, so the section keeps the form that covers both.
-
-        🔴 Computed here, every time it is asked, rather than fixed when the job
-        stopped -- because **a spot a running activity is holding is not residue.**
-        §6.12 is for what the plan "does not otherwise account for", and a running
-        activity accounts for its spots perfectly well: the model holds them over its
-        interval. Declaring them here as well describes the same material twice, and the
-        two descriptions overlap -- which was measured to make the replan infeasible and
-        stop every other job in the run, the exact opposite of what isolating a failure
-        is for.
-
-        Asking each tick also makes it self-healing: while a stopped job's last
-        operation is still finishing, its spot is accounted for by that operation; the
-        moment it completes, the spot becomes residue and is declared from then on.
-        """
-        entries = list(self.occupied)
-        seen = {entry.get("spot") for entry in entries}
-        running = {
-            spot for rec in self.log.running() for spot in self._spots_of(rec.activity)
-        }
-        owners = self._spot_owners()
-        for job in self._jobs:
-            if not job.stopped:
-                continue
-            for spot in sorted(self._residue_spots(job, owners) - running - seen):
-                # No `job`: the section says a spot has something on it, and nothing
-                # reads which job put it there. Naming one also inverted the order the
-                # residue actually moves in -- declared while the job is here, carried
-                # into `occupied` when it leaves (schedule design.md D42).
-                entries.append({"spot": spot, "since": self._held_since(job, spot)})
-                seen.add(spot)
-        return entries
-
-    def _residue_spots(self, job: Job, owners: dict) -> set[str]:
-        """The spots a stopped `job` may still be holding -- `_held_by`, restricted to
-        a run of named jobs.
-
-        A single workflow's failure ends the run, so there is nothing left to plan
-        around and its document stays what it was.
-        """
-        if not self._named:
-            return set()
-        return self._held_by(job, owners)
-
-    def _held_by(self, job: Job, owners: dict) -> set[str]:
-        """The spots `job`'s history has left holding something.
-
-        A spot is *this job's* only if this job touched it last. 🔴 Ownership, not
-        acquaintance: two jobs of one workflow use the same bench slot one after the
-        other, so "every spot this job ever touched" claims the plate the next job has
-        just made -- which was measured to make that job unplannable and take the whole
-        run down with it. The last activity to touch a spot is the one that decided what
-        is on it.
-
-        Ownership alone is not enough, though, because a job can empty a spot it owns:
-        it collects its own entry material, or carries a plate away and back. So each
-        candidate is settled by **what this job's own trajectory did to it**
-        (`_trajectory`), and the two are needed together. Neither suffices: ownership
-        without the trajectory claims a spot this job emptied, and the trajectory
-        without ownership claims one another job has since emptied.
-
-        On top of that, and unconditionally, every spot the *failing* activity touched
-        (`job.residue_claim`). A failed operation applies no material effect at all, so
-        what it was carrying is at one of the spots it touched and nothing says which.
-        A failed transport therefore claims *both* ends.
-
-        🔴 The asymmetry is what decides it, and neither side is free. Under-claiming
-        means putting a plate where a plate already is -- a plan nothing can execute.
-        Over-claiming costs a slower plan, and where the spot is scarce it can cost
-        more than that: measured, a job's residue plus this claim took both trays of a
-        two-tray oven and left the surviving jobs with nowhere to work. That is
-        reported for what it is (`jobs_not_plannable_together`) rather than run into,
-        and it is the price of not colliding in the laboratory.
-
-        Asked of a job that **stopped**, to declare its residue (`_occupied_now`), and
-        of one that is **leaving** the plan, to decide what becomes an occupancy and
-        what the caller has collected (`_enact_withdrawals`). The question is the same
-        either way -- what is this job still holding -- so the answer is computed once
-        here and read for both.
-        """
-        candidates = {spot for spot, (_end, owner) in owners.items() if owner is job}
-        # Boundary material that has not moved yet has no activity to have touched it.
-        if job.placed:
-            candidates |= set((job.interface.get("inputs") or {}).values())
-        held, seen = self._trajectory(job)
-        # A candidate the trajectory never saw cannot arise -- every one of them comes
-        # from a record of this job or from its placed entry material -- but holding it
-        # is the side to be wrong on if one ever did: over-claiming costs a slower
-        # plan, under-claiming puts a plate where a plate already is.
-        return (candidates & held) | (candidates - seen) | job.residue_claim
-
-    def _trajectory(self, job: Job) -> tuple[set[str], set[str]]:
-        """Which spots this job's own history has left holding something, and which
-        spots it touched at all.
-
-        🔴 **Derived, never asked.** The runner learns what an operation did by
-        dispatching it and being told whether it succeeded (D15, `..backend`); it does
-        not ask where material is, and there is nothing it could usefully ask -- a real
-        laboratory keeps no spot ledger, and the backends that appear to have one are
-        keeping the simulator's own bookkeeping. So the effect of each operation is
-        replayed here from what was dispatched and what came back.
-
-        The effects are the ones SPEC gives, applied only by an operation that
-        **completed**:
-
-        - a processing holds its output spots, and releases an input spot that is not
-          also an output -- an in-place port keeps its spot occupied across the
-          operation (SPEC §5.5);
-        - a transport releases its source and holds its destination, unless the two
-          are the same spot, which is a no-op the material sits through (SPEC §5.4);
-        - a replenishment touches no spot: a stock is not material (SPEC §4.7).
-
-        **`failed` and `cancelled` need no case here**, which is much of the reason to
-        write it this way. A failed operation applied nothing, so the spot keeps
-        whatever the last completed one left -- and the failure's own spots are claimed
-        separately and unconditionally by the caller. Cancelled work never ran, so its
-        material is wherever the last completed activity put it, which is what this
-        replay says: the rule that a cancelled hand-off leaves the material upstream
-        falls out rather than being written down a second time.
-
-        Only this job's own records, which is sound because the caller intersects the
-        result with the spots this job touched *last* -- anything another job has since
-        moved is not among them.
-        """
-        held: set[str] = set()
-        if job.placed:
-            held |= set((job.interface.get("inputs") or {}).values())
-        seen = set(held)
-        records = [
-            rec
-            for rec in self.log.records()
-            if rec.status == "completed" and self._job_of(rec.activity) is job
-        ]
-        for rec in sorted(records, key=lambda r: (r.end, r.start)):
-            activity = rec.activity
-            seen |= self._spots_of(activity)
-            if activity.get("kind") == "transport":
-                source, destination = activity.get("from_spot"), activity.get("to_spot")
-                if source is not None and destination is not None and source != destination:
-                    held.discard(source)
-                if destination is not None:
-                    held.add(destination)
-                continue
-            outputs = set((activity.get("output_spots") or {}).values())
-            inputs = set((activity.get("input_spots") or {}).values())
-            held -= inputs - outputs
-            held |= outputs
-        return held, seen
-
-    def _held_since(self, job: Job, spot: str) -> int:
-        """When this spot became occupied: the end of the last of the job's finished
-        activities to touch it, or -- for boundary material that never moved -- the
-        release at which it appeared (§6.8). `now` is the floor for anything the history
-        cannot date.
-
-        The truthful moment, not the moment we noticed. A plan holds the spot from
-        `max(since, now)` whatever this says (schedule SPEC §6.12), so the date is free
-        to record what actually happened -- and this section is the only place it is
-        recorded.
-        """
-        ends = [
-            rec.end
-            for rec in self.log.records()
-            if rec.status != "running"
-            and self._job_of(rec.activity) is job
-            and spot in self._spots_of(rec.activity)
-        ]
-        if ends:
-            return min(max(ends), self.now)
-        if spot in set((job.interface.get("inputs") or {}).values()):
-            return job.release
-        return self.now
-
-    def _spot_owners(self) -> dict[str, tuple[int, Job | None]]:
-        """For each spot the committed history touched, `(when, whose)` for the last
-        activity to touch it -- the one that decided what is on it now."""
-        owners: dict[str, tuple[int, Job | None]] = {}
-        for rec in self.log.records():
-            owner = self._job_of(rec.activity)
-            for spot in self._spots_of(rec.activity):
-                previous = owners.get(spot)
-                if previous is None or rec.end >= previous[0]:
-                    owners[spot] = (rec.end, owner)
-        return owners
-
-    def _cancelled_activities(self) -> list[dict] | None:
-        """The work that never started because a job -- or the run -- stopped (D25).
-
-        Two sources, in this order: what each stopped job left behind, captured as it
-        stopped, and (when the run itself is stopping) whatever is still undispatched.
-        A run of one workflow reaches both with the same set, so it reports exactly
-        what it always did.
-        """
-        cancelled = list(self._cancelled)
-        if self._stopping:
-            seen = {self._provenance_key(a) for a in cancelled}
-            cancelled += [
-                a for a in self._undispatched() if self._provenance_key(a) not in seen
-            ]
-        return cancelled or None
-
     @staticmethod
     def _provenance_key(activity: dict):
-        """A stable identity for an activity across replans: its workflow provenance
-        (a processing's `node` path, a transport's `arc` endpoints + `seq`). Pending
-        identities are regenerated each replan, but provenance is not, so this lines
-        a committed activity up against a pending one (D9).
+        """This activity's identity across replans (`provenance.activity_key`).
 
-        A kind this function does not know is **refused**, not given a key. The
-        tempting alternative -- let anything that is not a processing fall through to
-        the transport shape -- is silent and wrong: an activity with no `arc` and no
-        `seq` yields `("transport", ((), None), ((), None), None)`, the *same* key for
-        every such activity. Two of them would collapse into one, so committing the
-        first would mark the rest committed too and `_undispatched` would never
-        return them again. A kind that cannot be identified here cannot be dispatched
-        either (`_commit_start` refuses it), so failing loudly costs a run nothing it
-        was going to complete.
+        🔴 Lives next to `arc_key` rather than here, because the runner is no longer the
+        only thing asking: the document it carries is the last plan, and stamping this
+        run's history onto it is the same question -- which entry did this record come
+        from? One answer, one place.
         """
-        kind = activity.get("kind")
-        # 🔴 The job is part of the identity, not decoration. Two jobs of one workflow
-        # render the same `node` and the same arc (§6.11), so without it committing
-        # one job's activity would mark the other's committed too -- and
-        # `_undispatched` would never return it again.
-        job = activity.get("job", "")
-        if kind == "processing":
-            return ("processing", job, tuple(activity.get("node") or ()))
-        if kind == "transport":
-            # Identify by the logical arc it serves and its chain position. The arc
-            # half is the same identity `status.py` groups a multi-leg move by, so
-            # both read it from one place (`arc_key`) rather than each spelling the
-            # endpoint shape out again.
-            return ("transport", job, *arc_key(activity.get("arc")), activity.get("seq"))
-        if kind == "replenishment":
-            # A refill has no workflow provenance -- it exists because the solver put
-            # it there, not because the workflow asked for it -- so its `id` is the
-            # identity. That is stable exactly where it has to be: the scheduler
-            # numbers new candidates around the ids the status already uses, so a
-            # refill that has *started* keeps its id across replans, while a pending
-            # one may be renumbered and does not need to survive (each replan
-            # replaces the pending set wholesale).
-            return ("replenishment", activity.get("id"))
-        raise RunnerError(f"cannot identify an activity of kind {kind!r} across replans")
+        try:
+            return activity_key(activity)
+        except UnknownActivityKind as exc:
+            raise RunnerError(str(exc)) from exc
 
     def _collect_warnings(self, report) -> None:
         """Keep the scheduler's warnings, one line per distinct code.

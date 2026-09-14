@@ -9,7 +9,7 @@ job leaves behind cost the others something measurable.
 The scenario: every assay on `tray_1` fails. That is injected from Python, like the
 device fault in render_reroute.py -- it is a property of the laboratory that day, not
 of the workflow, and there is no CLI flag for it. It is also self-limiting: the first
-job to reach tray_1 fails there and its plate stays, so tray_1 is declared occupied
+job to reach tray_1 fails there and its plate stays, so tray_1 is held from then on
 and no later job is ever sent to it.
 
 Two runs, differing only in `--on-job-failure`:
@@ -19,9 +19,10 @@ Two runs, differing only in `--on-job-failure`:
   stop                the first failure ends the run: job2 and job3 are abandoned
                       wherever they had got to.
 
-🔴 The `occupied` section in the `continue` status is what makes it *runnable*. The
-scheduler models occupancy through activity intervals, and the failed assay's interval
-has ended -- so without that section the model believes tray_1 free and would carry
+🔴 tray_1 being held is what makes the `continue` run *runnable*, and nothing declares
+it. The scheduler models occupancy through activity intervals, and the failed assay's
+interval has ended -- so unless that hold is worked out the model believes tray_1 free
+and would carry
 job3's plate onto the tray job1's plate is still sitting on. Serialising job2 and job3
 onto one tray is the true price of the crack, and a plan that did not pay it could not
 be executed.
@@ -37,6 +38,8 @@ It prints both runs and writes examples/outputs/stopped_job.txt. Requires the si
 from __future__ import annotations
 
 from pathlib import Path
+
+from ofplang.schedule import derived_holds
 
 from ofplang.run.runner import JobRequest, RollingRunner, load_document
 from ofplang.run.simulator import Simulator
@@ -76,8 +79,12 @@ def _render(policy: str) -> list[str]:
             f"{activity.get('job') or '':<6} {activity['status']:<10} "
             f"{activity.get('mode') or '':<7} {what}"
         )
-    for entry in status.get("occupied") or []:
-        lines.append(f"  occupied: {entry['spot']} since {entry['since']}")
+    # 🔴 Derived, not declared. Every input to the working-out is in the document --
+    # which activity failed, what it touched, which jobs a terminal status stopped --
+    # so the scheduler settles it on every solve and the document says nothing. Asked
+    # here so the example can show what the plan is actually working around.
+    for entry in derived_holds(status):
+        lines.append(f"  held (derived): {entry['spot']} since {entry['since']}")
     done = [job.id for job in runner.jobs if not job.stopped]
     stopped = [job.id for job in runner.jobs if job.stopped]
     lines.append(f"  makespan {status['now']}; finished {done or '-'}; stopped {stopped}")

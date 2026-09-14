@@ -27,6 +27,8 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
+from ofplang.schedule import derived_holds  # noqa: E402
+
 from ofplang.run.cli import EXIT_FAILED, main  # noqa: E402
 from ofplang.run.runner import (  # noqa: E402
     JobRequest,
@@ -64,6 +66,15 @@ def _oven_run(*ids: str, fail_tray: str | None = "tray_1", **kwargs):
 
 def _of(status: dict, job: str) -> list[dict]:
     return [a for a in status["activities"] if a.get("job") == job]
+
+
+def _spots(activity: dict) -> set[str]:
+    """Every spot an activity touches: a processing's inputs and outputs, a transport's
+    two ends. What it could be holding, in other words."""
+    spots = set((activity.get("input_spots") or {}).values())
+    spots |= set((activity.get("output_spots") or {}).values())
+    spots |= {activity[k] for k in ("from_spot", "to_spot") if activity.get(k)}
+    return spots
 
 
 # -- the isolation -----------------------------------------------------------
@@ -109,14 +120,24 @@ def test_a_stopped_job_promises_nothing():
 # -- what it left behind ------------------------------------------------------
 
 
-def test_the_stopped_jobs_material_is_declared_occupied():
+def test_the_stopped_jobs_material_is_held_though_nothing_declares_it():
     """🔴 Not bookkeeping: the scheduler models occupancy through activity intervals,
-    and the failed assay's interval has ended, so without this section it believes the
-    tray free and carries the next job's plate onto the cracked plate."""
+    and the failed assay's interval has ended, so unless that tray is held the next
+    job's plate is carried onto the cracked one.
+
+    It is **derived, not declared**. Every input to the derivation is in the document
+    -- which activity failed, what it touched, which jobs a terminal status stopped --
+    so the scheduler works it out on every solve and the document says nothing. Stating
+    it as well would say the same hold twice, which is refused
+    (`occupied_already_derived`), and would leave the run's own report unable to be
+    planned from again.
+    """
     status, _runner = _oven_run("job1", "job2", "job3")
     failed = [a for a in status["activities"] if a["status"] == "failed"]
     assert len(failed) == 1
-    assert status["occupied"] == [
+    # Nothing declared -- and the tray is held all the same.
+    assert "occupied" not in status
+    assert derived_holds(status) == [
         # Dated when the plate was actually left there, not when we noticed. No `job`:
         # the section says a spot is held, not by whom (§6.12).
         {"spot": "oven.tray_1", "since": failed[0]["end"]}
@@ -132,9 +153,10 @@ def test_the_stopped_jobs_material_is_declared_occupied():
 def test_the_residue_is_dated_when_the_plate_was_left_there():
     """The truthful moment, not the moment we noticed. A plan holds the spot from
     `max(since, now)` whatever this says (schedule SPEC §6.12), so the date is free to
-    record what actually happened -- and this section is the only place it is."""
+    record what actually happened -- and it is what a withdrawal writes down, by which
+    time the history that would have said so is gone."""
     status, runner = _oven_run("job1", "job2", "job3")
-    entry = status["occupied"][0]
+    entry = derived_holds(status)[0]
     failed = [a for a in status["activities"] if a["status"] == "failed"]
     assert entry["since"] == failed[0]["end"]
     assert entry["since"] < status["now"] == runner.now  # long before the run ended
@@ -146,10 +168,28 @@ def test_a_spot_another_job_now_holds_is_not_claimed_as_this_jobs_residue():
     next job has just made -- which was measured to make that job unplannable and take
     the whole run down with it."""
     status, runner = _oven_run("job1", "job2", "job3")
-    held = {entry["spot"] for entry in status["occupied"]}
+    held = {entry["spot"] for entry in derived_holds(status)}
     assert "bench.slot_a" not in held  # used by job2 and then job3, held by neither now
     # The run survived, which is the symptom the wrong rule produced.
     assert not [job for job in runner.jobs if job.id != "job1" and job.stopped]
+
+
+def test_a_spot_the_job_itself_emptied_is_not_claimed():
+    """The case ownership alone gets wrong. A job owns a spot it *emptied* -- it carried
+    its own plate away, or collected its own entry material -- and nothing has touched it
+    since, so it is still the last toucher. Only replaying what its own operations did
+    says the spot is free; without that every job would claim its bench slot for the rest
+    of the run."""
+    status, _runner = _oven_run("job1", "job2", "job3")
+    held = {entry["spot"] for entry in derived_holds(status)}
+    moved = [
+        a for a in status["activities"]
+        if a.get("job") == "job1" and a["kind"] == "transport" and a["status"] == "completed"
+    ]
+    assert moved, "the fixture no longer has job1 move its own plate"
+    # It left where it departed from, and is at where it arrived.
+    assert all(a["from_spot"] not in held for a in moved)
+    assert any(a["to_spot"] in held for a in moved)
 
 
 # -- the policy ---------------------------------------------------------------
@@ -162,9 +202,9 @@ def test_stop_abandons_every_job_and_says_so():
     # so none is checked for delivery or echoed into the result boundary.
     assert runner.result_boundary == {"jobs": {}}
     assert {a["status"] for a in _of(status, "job3")} == {"completed", "cancelled"}
-    # Every job's material is declared, not just the one that failed -- read as the
-    # spots, the section no longer saying whose each one is (§6.12).
-    assert len(status["occupied"]) == 3
+    # Every job's material is held, not just the one that failed -- read as the spots,
+    # since neither the section nor the derivation says whose each one is (§6.12).
+    assert len(derived_holds(status)) == 3
 
 
 def test_stop_ends_sooner_than_continue():
@@ -262,16 +302,19 @@ def test_cli_reports_the_single_workflow_failure_as_it_always_did(capsys):
 # -- a spot a running activity holds is not residue ---------------------------
 
 
-def test_a_spot_a_running_activity_holds_is_not_declared_residue():
+def test_a_spot_a_running_activity_holds_is_not_derived_as_residue():
     """🔴 §6.12 is for what the plan "does not otherwise account for", and a running
     activity accounts for its spots perfectly well -- the model holds them over its
-    interval. Declaring them here as well describes the same material twice, and the
-    two descriptions overlap: measured to make the replan infeasible and stop every
-    other job in the run, the exact opposite of what isolating a failure is for.
+    interval. Holding them a second time describes the same material twice, and the two
+    descriptions overlap: measured to make the replan infeasible and stop every other
+    job in the run, the exact opposite of what isolating a failure is for.
 
     Here one job has two branches: A is still baking on tray_2 when B's transport into
-    tray_1 fails. The invariant is checked on every document the run builds.
+    tray_1 fails. Checked on every document the run hands the scheduler, because that is
+    where getting it wrong would land.
     """
+    import ofplang.run.runner.rolling as rolling
+
     workflow = load_document(FIXTURES / "two_branch.workflow.yaml")
     runner = RollingRunner(
         [JobRequest(id=job_id, workflow=workflow) for job_id in ("job1", "job2")],
@@ -282,27 +325,31 @@ def test_a_spot_a_running_activity_holds_is_not_declared_residue():
     for source in ("bench.slot_a", "bench.slot_b"):
         runner.sim.schedule_transport_failure("arm", source, "oven.tray_1")
 
-    original = runner._occupied_now
+    original = rolling.replan
     saw_a_running_spot = False
 
-    def watch():
+    def watching(workflows, environment, status_document, **kwargs):
         nonlocal saw_a_running_spot
-        entries = original()
         running = {
             spot
-            for rec in runner.log.running()
-            for spot in runner._spots_of(rec.activity)
+            for activity in status_document["activities"]
+            if activity.get("status") == "running"
+            for spot in _spots(activity)
         }
         saw_a_running_spot = saw_a_running_spot or bool(running)
-        assert not ({e["spot"] for e in entries} & running), (entries, running)
-        return entries
+        held = {entry["spot"] for entry in derived_holds(status_document)}
+        assert not (held & running), (held, running)
+        return original(workflows, environment, status_document, **kwargs)
 
-    runner._occupied_now = watch  # type: ignore[method-assign]
-    runner.run()
+    rolling.replan = watching
+    try:
+        status = runner.run()
+    finally:
+        rolling.replan = original
     # The check is only worth anything if something really was running at the time.
     assert saw_a_running_spot
-    # And the spot is claimed once that bake has finished, not before.
-    assert "oven.tray_2" in {e["spot"] for e in runner._occupied_now()}
+    # And the spot is held once that bake has finished, not before.
+    assert "oven.tray_2" in {entry["spot"] for entry in derived_holds(status)}
 
 
 def test_a_job_that_stops_with_work_still_running_lets_the_others_finish():
@@ -332,59 +379,34 @@ def test_a_job_that_stops_with_work_still_running_lets_the_others_finish():
 # -- derived, not asked ------------------------------------------------------
 
 
-def test_the_trajectory_agrees_with_the_backends_occupancy():
-    """🔴 The runner derives where material is; this pins that it derives it right.
+def test_what_is_derived_to_be_held_is_what_the_backend_is_holding():
+    """🔴 The derivation is of the world, and this pins that it describes the real one.
 
-    Residue used to be filtered by asking the backend which spots were occupied --
-    a query the runner is not entitled to make (D15) and a real backend could not
-    answer, since a laboratory keeps no spot ledger. It now replays the effect of
-    its own completed operations instead (`_trajectory`).
+    Where material is used to be settled by asking the backend which spots were
+    occupied -- a query the runner is not entitled to make (D15) and a real backend
+    could not answer, since a laboratory keeps no spot ledger. It is now replayed from
+    what the operations did, in the scheduler, from the document alone.
 
-    The two must agree, and neither is derived from the other: the runner applies
+    The two must agree, and neither is derived from the other: the derivation applies
     the rules SPEC gives (§5.4, §5.5), the simulator applies them to its own
     bookkeeping, and they match because both follow the specification. Extracting a
-    shared implementation would couple the runner to the simulator, which is the
-    coupling being removed -- so the agreement is measured here instead.
-
-    Read on the spots the derivation actually claims for: those a job touched last.
-    The ledger holds material belonging to other jobs and to the run's opening
-    `occupied` as well, which this job's trajectory says nothing about.
+    shared implementation would couple them, which is the coupling being removed -- so
+    the agreement is measured here instead.
     """
-    _status, runner = _oven_run("job1", "job2", "job3")
-    owners = runner._spot_owners()
-    compared = 0
-    for job in runner._jobs:
-        candidates = {spot for spot, (_end, owner) in owners.items() if owner is job}
-        if job.placed:
-            candidates |= set((job.interface.get("inputs") or {}).values())
-        held, _seen = runner._trajectory(job)
-        for spot in sorted(candidates):
-            derived = spot in held
-            observed = runner.sim.spot_state(spot) is not None
-            assert derived == observed, (
-                f"{job.id}: derived {'held' if derived else 'free'} for {spot}, "
-                f"backend says {'held' if observed else 'free'}"
-            )
-            compared += 1
-    # The run really did exercise the comparison (a vacuous pass would be worthless).
-    assert compared >= 3
-
-
-def test_a_job_that_collected_its_own_material_holds_nothing_it_emptied():
-    """The case ownership alone gets wrong. A job owns a spot it *emptied* -- it
-    collected its own entry material, or carried a plate away -- and nothing else has
-    touched it since, so it is still the last toucher. Only the trajectory says the
-    spot is free.
-
-    Without it every job would claim its loading bay for the rest of the run."""
-    _status, runner = _oven_run("job1", "job2", "job3")
-    for job in runner._jobs:
-        held, seen = runner._trajectory(job)
-        emptied = seen - held
-        if emptied:
-            # Whatever this job emptied, it does not claim -- even where it is still
-            # the spot's owner.
-            assert not (emptied & runner._residue_spots(job, runner._spot_owners()))
-            break
-    else:  # pragma: no cover - the oven run always moves material off a spot
-        pytest.fail("no job emptied a spot; the fixture no longer exercises this")
+    status, runner = _oven_run("job1", "job2", "job3")
+    held = {entry["spot"] for entry in derived_holds(status)}
+    assert held, "nothing was derived; the fixture no longer strands anything"
+    for spot in sorted(held):
+        assert runner.sim.spot_state(spot) is not None, f"derived held, backend says free: {spot}"
+    # And the other way, for the spots this run's own history is the only account of:
+    # a spot the backend holds and nothing derives is one a *running* job is using, or
+    # one a job that is still going will come back to.
+    stopped = {job.id for job in runner.jobs if job.stopped}
+    touched = {
+        spot
+        for activity in status["activities"]
+        if activity.get("job") in stopped
+        for spot in _spots(activity)
+    }
+    for spot in sorted(touched - held):
+        assert runner.sim.spot_state(spot) is None, f"derived free, backend holds: {spot}"
