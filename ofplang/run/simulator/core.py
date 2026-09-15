@@ -82,23 +82,26 @@ from .script import DeviceComputationError, script_device_model
 # schema-conformant value from a value-shape descriptor.
 _PRIMITIVE_DEFAULTS = {"Bool": False, "Int": 0, "Float": 0.0, "String": ""}
 
-# Cache of "does this device model accept a `node` argument?" keyed by the model
-# callable. Answered once (signature introspection) then reused: the model is called
-# on every completion, but a run has only a handful of distinct models.
-_MODEL_ACCEPTS_NODE: dict = {}
+# Cache of "does this device model accept this provenance argument?", keyed by
+# (model callable, keyword). Answered once (signature introspection) then reused: the
+# model is called on every completion, but a run has only a handful of distinct models.
+_MODEL_ACCEPTS: dict = {}
 
 
-def _model_accepts_node(model) -> bool:
-    """Whether `model` opts in to the workflow provenance argument -- i.e. its
-    signature has a parameter named ``node`` or accepts ``**kwargs``.
+def _model_accepts(model, keyword: str) -> bool:
+    """Whether `model` opts in to a provenance argument -- i.e. its signature has a
+    parameter of that name, or accepts ``**kwargs``.
 
     The historical device-model protocol is 5-positional (`process, mode, inputs,
-    output_schema, definition`); such a model is called unchanged (no `node`). A model
-    that wants provenance simply adds a ``node`` parameter (typically ``node=None``).
-    Uncached-introspectable callables (a rare C builtin) are treated as not accepting
-    it, which is the safe, backward-compatible default."""
+    output_schema, definition`); such a model is called unchanged. A model that wants
+    provenance adds the parameter (typically ``node=None`` / ``job=None``), and is
+    offered **one keyword at a time**: a model written when only `node` existed goes on
+    being called with only `node`, since passing an argument it never declared would be
+    a `TypeError` rather than an extension. Uncached-introspectable callables (a rare C
+    builtin) are treated as not accepting it, which is the safe, backward-compatible
+    default."""
     try:
-        cached = _MODEL_ACCEPTS_NODE.get(model)
+        cached = _MODEL_ACCEPTS.get((model, keyword))
     except TypeError:  # unhashable callable -- introspect each time
         cached = None
     else:
@@ -110,10 +113,10 @@ def _model_accepts_node(model) -> bool:
         accepts = False
     else:
         accepts = any(
-            p.name == "node" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+            p.name == keyword or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
         )
     with contextlib.suppress(TypeError):  # unhashable callable -- skip caching
-        _MODEL_ACCEPTS_NODE[model] = accepts
+        _MODEL_ACCEPTS[(model, keyword)] = accepts
     return accepts
 
 
@@ -258,6 +261,12 @@ class _Op:
     # model that opts in (a ``node`` parameter), so a model can key on the node instance
     # -- e.g. mint a stable per-object id. Best-effort: None when not supplied.
     node: tuple | None = None
+    # Which job of a joint run this operation belongs to (schedule SPEC §6.11), or None
+    # -- a single-workflow run names no job, and a refill belongs to none. Carried for
+    # the same reason as `node` and passed to a model the same way: two jobs of one
+    # workflow render the *same* node path, so a model that mints identities from
+    # provenance would give one job's material the other's name with the node alone.
+    job: str | None = None
     status: str = "running"  # "running" | "completed" | "failed"
     # A machine-readable (code, message) reason for a *model-driven* failure (D36),
     # set when a device model raises `DeviceComputationError` at completion (e.g. a
@@ -418,7 +427,7 @@ class Simulator(Backend):
         inputs=None,
         definition=None,
         node=None,
-        job=None,  # noqa: ARG002 - provenance accepted and ignored; see the docstring
+        job=None,
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -438,12 +447,12 @@ class Simulator(Backend):
         and passed through to a device model that opts in (a ``node`` parameter), so a
         model can key on the node instance.
 
-        `job` (which job of a joint run this is, §6.11) is **accepted and ignored**, as
-        `view` is on a transport. Nothing physical depends on it, and the simulator has
-        no record to attribute; what it buys is that a backend *wrapping* this one can
-        declare ``**kwargs`` and forward whatever provenance the runner offers without
-        having to know which extensions this version has. A backend that wants the job
-        declares the parameter itself (`..backend`).
+        `job` (which job of a joint run this is, §6.11) is carried and passed the same
+        way, to a model declaring a ``job`` parameter. 🔴 **Both halves are needed by a
+        model that mints identities**: two jobs of one workflow render the same node
+        path, so keying on the node alone gives one job's material the other's name.
+        The provenance a *dispatch* is told and the provenance a *model* is told are the
+        same pair, offered one keyword at a time in both places.
         """
         # Resolve the capability. Workflow provenance (the node) is not needed by the
         # physical core (D14) -- the environment mode alone gives devices, spots, and
@@ -503,6 +512,7 @@ class Simulator(Backend):
             mode=str(mode),
             definition=definition,
             node=None if node is None else tuple(node),
+            job=job,
         )
 
     def dispatch_transport(
@@ -527,8 +537,11 @@ class Simulator(Backend):
 
         `view` is the moved Object's view value (D26), recorded on the operation for a
         transport-running backend / tests; the physical simulator does not act on it.
-        `job` (§6.11) is accepted and ignored for the same reason it is on
-        `dispatch_processing`.
+        `job` (§6.11) is accepted and ignored here: a move mints nothing -- a physical
+        move preserves identity -- so there is no model to pass it to. It is accepted so
+        that a backend which *does* attribute its moves (one keeping a record) can
+        declare the parameter and be told, and so that a wrapper forwarding provenance
+        does not have to know which dispatches use it.
         """
         if from_spot not in self._env.spots:
             raise UnknownReference(f"unknown spot: {from_spot}")
@@ -679,6 +692,7 @@ class Simulator(Backend):
         definition=None,
         view=None,
         node=None,
+        job=None,
         replenisher=None,
         amounts=None,
     ) -> str:
@@ -704,6 +718,7 @@ class Simulator(Backend):
             definition=definition,
             view=view,
             node=node,
+            job=job,
             replenisher=replenisher,
             amounts=amounts,
         )
@@ -967,7 +982,11 @@ class Simulator(Backend):
                 # one declaring a `node` parameter (or `**kwargs`). A plain 5-argument
                 # model (the historical protocol, e.g. `default_device_model` or a user
                 # model) is called unchanged, so this is fully backward compatible.
-                extra = {"node": op.node} if _model_accepts_node(model) else {}
+                extra: dict[str, object] = (
+                    {"node": op.node} if _model_accepts(model, "node") else {}
+                )
+                if _model_accepts(model, "job"):
+                    extra["job"] = op.job
                 op.outputs = model(
                     op.process, op.mode, op.inputs or {}, op.output_schema, op.definition, **extra
                 )

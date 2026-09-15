@@ -93,8 +93,11 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   nothing about jobs — which matters because two jobs of one workflow render the same
 >   node paths and can move between the same pair of spots: a backend that keeps a
 >   record or mints identities from provenance cannot tell them apart without it. The
->   built-in simulator accepts both and ignores the job, so a backend *wrapping* it can
->   declare `**kwargs` and forward whatever is offered.
+>   same pair reaches the **device model** too, by the same rule: a record is made when
+>   an operation is dispatched, but an identity is minted when it *completes*, so a
+>   model declaring `node` / `job` is told there as well and the historical
+>   5-positional model is called unchanged. A backend *wrapping* the built-in simulator
+>   can declare `**kwargs` and forward whatever is offered.
 > - **A refusal is a failure, not a crash** (`BackendRefused`, 0.9.0) — when the
 >   runner's derivation and the backend's reality disagree, the backend refuses the
 >   dispatch (or the placement): the destination spot is really full, the source

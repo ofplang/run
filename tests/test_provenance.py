@@ -1,4 +1,5 @@
-"""What the runner tells a backend about where an activity came from.
+"""What the runner tells a backend -- and a device model -- about where an activity
+came from.
 
 Provenance is an optional extension of the `Backend` protocol, asked for **one
 keyword at a time**: a backend is offered `node` (which workflow node this is) and
@@ -9,6 +10,12 @@ The job half exists because the node half is not enough. Two jobs of one workflo
 render the *same* node paths and can move between the same pair of spots, so a
 backend that keeps a record or mints identities from provenance -- labcode's `_id`
 and its trace -- would give one job's plate the other's name.
+
+🔴 **Both halves reach both seams.** A record is made when an operation is
+*dispatched*, but an identity is minted when it *completes* -- inside the device model
+the simulator calls. So the same pair is offered there too, by the same one-keyword-
+at-a-time rule: a model declaring `node` and/or `job` is told, and the historical
+5-positional model is called unchanged.
 
 🔴 And it is offered only where there *is* a job: a single-workflow run calls its one
 job by the empty string internally, and passing that would tell a backend about a
@@ -27,7 +34,10 @@ import pytest
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
 from ofplang.run.runner import JobRequest, RollingRunner, load_document  # noqa: E402
-from ofplang.run.simulator import VirtualTimeSimulator  # noqa: E402
+from ofplang.run.simulator import (  # noqa: E402
+    VirtualTimeSimulator,
+    default_device_model,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = FIXTURES / "simple.workflow.yaml"
@@ -179,3 +189,63 @@ def test_a_backend_that_asks_for_neither_is_driven_unchanged():
     runner.run()
     assert not runner.failed
     assert built["backend"].dispatched > 0
+
+
+# -- the other seam: what a device model is told ---------------------------------
+
+
+def _model(calls: list):
+    """A device model that records the provenance it was handed. Declared with both
+    keywords, so the simulator offers both."""
+
+    def model(process, mode, inputs, output_schema, definition, node=None, job=None):
+        calls.append((tuple(node) if node is not None else None, job))
+        return default_device_model(process, mode, inputs, output_schema, definition)
+
+    return model
+
+
+def test_a_device_model_is_told_the_job_of_the_operation_it_computes():
+    """🔴 Where an identity is minted. A record is made at dispatch, but an `_id` is
+    minted at *completion*, from what the model returns -- so a model that keys on
+    provenance needs the job there, not only at dispatch."""
+    calls: list = []
+    runner = RollingRunner(
+        _jobs("job1", "job2"), SIMPLE_ENV, device_model=_model(calls), random_seed=0
+    )
+    runner.run()
+    assert not runner.failed
+
+    assert calls, "the model should have been called at every completion"
+    assert {job for _node, job in calls} == {"job1", "job2"}
+    by_node: dict = {}
+    for node, job in calls:
+        by_node.setdefault(node, set()).add(job)
+    assert any(jobs == {"job1", "job2"} for jobs in by_node.values())
+
+
+def test_a_device_model_of_a_single_workflow_run_is_told_no_job():
+    calls: list = []
+    runner = RollingRunner(
+        str(SIMPLE_WF), SIMPLE_ENV, device_model=_model(calls), random_seed=0
+    )
+    runner.run()
+
+    assert calls
+    assert {job for _node, job in calls} == {None}
+    assert all(node is not None for node, _job in calls)
+
+
+def test_a_device_model_that_asks_for_neither_is_called_unchanged():
+    """The historical 5-positional protocol."""
+    calls: list = []
+
+    def model(process, mode, inputs, output_schema, definition):
+        calls.append(process)
+        return default_device_model(process, mode, inputs, output_schema, definition)
+
+    runner = RollingRunner(_jobs("job1", "job2"), SIMPLE_ENV, device_model=model,
+                           random_seed=0)
+    runner.run()
+    assert not runner.failed
+    assert calls
