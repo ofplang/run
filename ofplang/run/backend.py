@@ -174,6 +174,17 @@ class Backend(Protocol):
         for the typed value the backend produces per output port at completion,
         revealed via `state`. `inputs` are the assembled input view values, and
         `definition` the workflow process definition, for a value-computing backend.
+
+        🔴 **Provenance is optional, and asked for one keyword at a time.** Declare a
+        `node` parameter to be told which workflow node this activity is, and a `job`
+        parameter to be told which job of a joint run it belongs to (§6.11); the runner
+        passes each only to a backend whose signature accepts it, so one that predates
+        an extension is driven exactly as before, and one that wants only the node gets
+        only the node. `job` is passed only where there *is* one -- a single-workflow
+        run has no roster, and its one job goes unnamed rather than named by an empty
+        string. Both matter to a backend that keeps a record or mints identities: two
+        jobs of one workflow render the same node path, so the node alone cannot say
+        whose plate an operation was.
         """
         ...
 
@@ -193,7 +204,11 @@ class Backend(Protocol):
         output, resolved by the runner), passed so a backend that *runs* a transport
         (e.g. a real-hardware one) can act on what it is carrying. It is advisory and
         best-effort: `None` when the runner cannot resolve it, and the built-in
-        simulator ignores it entirely (a physical move needs no view)."""
+        simulator ignores it entirely (a physical move needs no view).
+
+        A `job` parameter opts into the same provenance `dispatch_processing` offers,
+        and for the same reason: two jobs of one workflow can move between the same
+        pair of spots, so the move alone does not say whose plate it was."""
         ...
 
     def dispatch_replenishment(

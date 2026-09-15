@@ -70,17 +70,20 @@ from .values import (
 )
 
 
-def _accepts_node(func) -> bool:
-    """Whether `func` (a backend's ``dispatch_processing``) accepts a ``node`` keyword
-    -- a parameter named ``node`` or ``**kwargs``. Passing the workflow provenance is an
-    optional extension of the `Backend` protocol; a backend that predates it is called
-    unchanged. An un-introspectable callable is treated as not accepting it (safe)."""
+def _accepts(func, keyword: str) -> bool:
+    """Whether `func` (a backend's ``dispatch_*``) accepts `keyword` -- a parameter of
+    that name, or ``**kwargs``.
+
+    Provenance is an optional extension of the `Backend` protocol, asked for one
+    keyword at a time: a backend that predates an extension is called exactly as it
+    was, and one that wants only part of it gets only that part. An un-introspectable
+    callable is treated as accepting nothing (safe)."""
     try:
         params = inspect.signature(func).parameters.values()
     except (TypeError, ValueError):
         return False
     return any(
-        p.name == "node" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+        p.name == keyword or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
     )
 
 
@@ -371,7 +374,14 @@ class RollingRunner:
         # (`node`). It is an optional extension of the `Backend` protocol, so a backend
         # that predates it (or a minimal one) is driven exactly as before -- the runner
         # passes `node` only when the backend opts in (a `node` parameter or `**kwargs`).
-        self._sim_accepts_node = _accepts_node(self.sim.dispatch_processing)
+        self._sim_accepts_node = _accepts(self.sim.dispatch_processing, "node")
+        # ... and which job of a joint run it belongs to (§6.11). Asked for separately
+        # because it is a separate extension: a backend that wanted the node before this
+        # existed goes on getting the node and nothing else. A transport is asked too --
+        # two jobs of one workflow can move between the same pair of spots, so a record
+        # of the moves alone cannot say whose plate went where.
+        self._processing_accepts_job = _accepts(self.sim.dispatch_processing, "job")
+        self._transport_accepts_job = _accepts(self.sim.dispatch_transport, "job")
 
         # One job -- one workflow being run, with its dataflow, resolved contracts,
         # boundary and values (`job.py`). A rolling run is a run of a *laboratory*
@@ -1808,6 +1818,18 @@ class RollingRunner:
                     self._refused_dispatch(act, exc)
         return pending
 
+    def _job_provenance(self, activity: dict) -> dict:
+        """`{"job": id}` for an activity that belongs to one, and `{}` otherwise.
+
+        🔴 **Only where there is a job to name.** A single-workflow run calls its one
+        job by the empty string (`_job_of`), and a run of one workflow is not a run of a
+        laboratory: passing that would tell a backend about a distinction this run does
+        not have, and would change what a backend keyed on provenance produces for every
+        run that has always been a single workflow. A refill belongs to no job at all.
+        """
+        job = self._job_of(activity)
+        return {"job": job.id} if job is not None and job.id else {}
+
     def _transported_view(self, activity: dict):
         """The view value of the Object a transport leg carries: the producing arc
         endpoint's stored output (D26), passed to the backend so a transport-running
@@ -1956,6 +1978,8 @@ class RollingRunner:
             # Pass the workflow provenance (`node`) only to a backend that opts in, so a
             # backend predating this extension is driven unchanged (backward compatible).
             provenance = {"node": activity["node"]} if self._sim_accepts_node else {}
+            if self._processing_accepts_job:
+                provenance.update(self._job_provenance(activity))
             uuid = self.sim.dispatch_processing(
                 activity["process"], activity["mode"], duration=actual,
                 output_schema=output_schema, inputs=inputs,
@@ -1974,6 +1998,7 @@ class RollingRunner:
                 activity["to_spot"],
                 duration=actual,
                 view=view,
+                **(self._job_provenance(activity) if self._transport_accepts_job else {}),
             )
             if self._obs is not None:
                 self._pending_capture[uuid] = {"moved": view}

@@ -210,13 +210,18 @@ class SubprocessBackend(Simulator):
 
     def dispatch_processing(
         self, process, mode, duration=None, output_schema=None, inputs=None,
-        definition=None, node=None,
+        definition=None, node=None, job=None,
     ) -> str:
+        # Provenance is passed straight through: this backend runs code rather than
+        # keeping a record, so it has nothing to attribute, but the parameters have to
+        # be here for the runner to offer them (it asks the signature) and for this
+        # override to stay a substitute for what it overrides.
+        #
         # The inherited dispatch runs all preconditions, occupies the devices, and
         # registers the running op (its virtual `end` is advisory for a coded op).
         uuid = super().dispatch_processing(
             process, mode, duration=duration, output_schema=output_schema,
-            inputs=inputs, definition=definition, node=node,
+            inputs=inputs, definition=definition, node=node, job=job,
         )
         code = self._resolver(process, str(mode), inputs, definition)
         if code is not None:

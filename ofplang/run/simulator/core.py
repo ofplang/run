@@ -418,6 +418,7 @@ class Simulator(Backend):
         inputs=None,
         definition=None,
         node=None,
+        job=None,  # noqa: ARG002 - provenance accepted and ignored; see the docstring
     ) -> str:
         """Dispatch a processing operation, resolving its physical detail from the
         environment via (`process`, `mode`) (D14). Runs over ``[now, now + duration]``;
@@ -436,6 +437,13 @@ class Simulator(Backend):
         this dispatch) is likewise not used by the physical simulator; it is recorded
         and passed through to a device model that opts in (a ``node`` parameter), so a
         model can key on the node instance.
+
+        `job` (which job of a joint run this is, §6.11) is **accepted and ignored**, as
+        `view` is on a transport. Nothing physical depends on it, and the simulator has
+        no record to attribute; what it buys is that a backend *wrapping* this one can
+        declare ``**kwargs`` and forward whatever provenance the runner offers without
+        having to know which extensions this version has. A backend that wants the job
+        declares the parameter itself (`..backend`).
         """
         # Resolve the capability. Workflow provenance (the node) is not needed by the
         # physical core (D14) -- the environment mode alone gives devices, spots, and
@@ -504,6 +512,7 @@ class Simulator(Backend):
         to_spot: str,
         duration: int | None = None,
         view=None,
+        job=None,  # noqa: ARG002 - provenance accepted and ignored; see the docstring
     ) -> str:
         """Dispatch a transport operation moving material `from_spot` -> `to_spot`
         (D14). `duration` defaults to the environment's transport table; a same-spot
@@ -518,6 +527,8 @@ class Simulator(Backend):
 
         `view` is the moved Object's view value (D26), recorded on the operation for a
         transport-running backend / tests; the physical simulator does not act on it.
+        `job` (§6.11) is accepted and ignored for the same reason it is on
+        `dispatch_processing`.
         """
         if from_spot not in self._env.spots:
             raise UnknownReference(f"unknown spot: {from_spot}")

@@ -84,6 +84,17 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   material on a spot has been taken away. Shrinking a structural contract breaks
 >   nobody; `clear` costs the backends here nothing, all of them deriving from
 >   `Simulator`.
+> - **Provenance is optional, one keyword at a time** (0.10.0) — a backend is told
+>   where an activity came from only if its signature asks: declare a `node` parameter
+>   to be told which workflow node it is, and a `job` parameter to be told which job of
+>   a joint run (`--jobs`) it belongs to. A backend that predates an extension is driven
+>   exactly as before, and one that wants only the node gets only the node. `job` is
+>   passed only where there is one — a single-workflow run has no roster and says
+>   nothing about jobs — which matters because two jobs of one workflow render the same
+>   node paths and can move between the same pair of spots: a backend that keeps a
+>   record or mints identities from provenance cannot tell them apart without it. The
+>   built-in simulator accepts both and ignores the job, so a backend *wrapping* it can
+>   declare `**kwargs` and forward whatever is offered.
 > - **A refusal is a failure, not a crash** (`BackendRefused`, 0.9.0) — when the
 >   runner's derivation and the backend's reality disagree, the backend refuses the
 >   dispatch (or the placement): the destination spot is really full, the source
