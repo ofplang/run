@@ -238,8 +238,11 @@ def _emit(status: dict, output) -> int | None:
 
 def _print_front_door(fd: FrontDoorResult) -> None:
     """Print a failed front-door check to stderr: each validate diagnostic (in the
-    `file:line:col: error code path message` form) and, if present, the
-    capability-gate reason."""
+    `file:line:col: <severity> code path message` form) and, if present, the
+    capability-gate reason.
+
+    A rejected workflow may carry a warning alongside the error that rejected it,
+    so the severity is read from the diagnostic rather than assumed."""
     for diag in fd.diagnostics:
         if diag.file and diag.line:
             locator = f"{diag.file}:{diag.line}:{diag.col}"
@@ -247,7 +250,8 @@ def _print_front_door(fd: FrontDoorResult) -> None:
             locator = diag.path or "<root>"
         detail = f"  {diag.path}" if diag.file and diag.path else ""
         message = f"  {diag.message}" if diag.message else ""
-        print(f"{locator}: error {diag.code}{detail}{message}", file=sys.stderr)
+        severity = getattr(diag, "severity", "error")
+        print(f"{locator}: {severity} {diag.code}{detail}{message}", file=sys.stderr)
     if fd.unsupported is not None:
         print(f"ofp-run: unsupported: {fd.unsupported}", file=sys.stderr)
 

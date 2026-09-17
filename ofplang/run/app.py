@@ -155,6 +155,12 @@ def front_door_check(
     document left None."""
     diagnostics: list = []
     document: dict | None = None
+    # Whether a diagnostic *rejects* the workflow, which is not the same as whether
+    # one was reported: from ofplang-validate 0.2.1 a document may draw a warning
+    # (spec 1.1's resource condition) and still be valid v0. The verdict therefore
+    # comes from the validator rather than from the length of the list, and each
+    # branch below says what it decided.
+    rejected = False
     if isinstance(workflow_path, dict) and _import_key_present(workflow_path):
         # Short-circuited because validate *raises* on an unexpanded in-memory
         # document (it has no base directory to resolve against), while this
@@ -167,6 +173,7 @@ def front_door_check(
         result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT, expand=True)
         diagnostics = list(result.diagnostics)
         document = result.document
+        rejected = not result.ok
     elif isinstance(workflow_path, dict):
         # Nothing to expand: an in-memory document is already expanded (checked just
         # above). Handed on as given rather than copied -- the runner treats the
@@ -180,6 +187,7 @@ def front_door_check(
             document = expand(workflow_path)
         except YamlError as exc:
             pos = exc.pos
+            rejected = True
             diagnostics = [
                 Diagnostic(
                     code=exc.code,
@@ -190,7 +198,7 @@ def front_door_check(
                 )
             ]
     unsupported = capability_gate(document)
-    ok = not diagnostics and unsupported is None
+    ok = not rejected and unsupported is None
     return FrontDoorResult(
         ok=ok, diagnostics=diagnostics, unsupported=unsupported, document=document
     )

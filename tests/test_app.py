@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from ofplang.validate import EXTENSION_TOLERANT, validate
 
 from ofplang.run.app import (
     FrontDoorError,
@@ -45,6 +46,39 @@ processes:
 entry: gen
 """
 
+# Valid v0 that draws a warning rather than an error: nothing in the document
+# relates the length of `cups` to anything (spec 1.1).
+UNBOUNDED_WF = """\
+spec_version: "0.2"
+types:
+  Cup: {domain: object}
+processes:
+  make:
+    kind: atomic
+    inputs: {}
+    outputs: {cups: {type: Array<Cup>, phase: data}}
+    objects:
+      create: [outputs.cups]
+  wash:
+    kind: atomic
+    inputs: {cups: {type: Array<Cup>, phase: data}}
+    outputs: {}
+    objects:
+      consume: [inputs.cups]
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: m
+          process: make
+        - id: w
+          process: wash
+          state: {cups: {from: m.cups}}
+entry: main
+"""
+
 
 class FakeClock:
     """A clock where only `sleep` makes time pass, so a real-time backend can be
@@ -69,6 +103,23 @@ def test_front_door_accepts_valid_workflow():
     assert fd.diagnostics == []
     assert fd.unsupported is None
     assert isinstance(fd.document, dict)  # the expanded document is returned
+
+
+def test_front_door_accepts_a_workflow_that_only_draws_a_warning(tmp_path):
+    # A diagnostic is not by itself a rejection. From ofplang-validate 0.2.1 an
+    # `Array` output port whose length is derivable from nothing in the document
+    # draws a warning (spec 1.1) and the document stays valid v0. This front door
+    # read the length of the diagnostic list, so it refused twelve of this
+    # organization's workflows, all of them LabOP case studies.
+    wf = tmp_path / "unbounded.workflow.yaml"
+    wf.write_text(UNBOUNDED_WF, encoding="utf-8")
+    result = validate(str(wf), mode=EXTENSION_TOLERANT)
+    if not getattr(result, "warning_codes", []):
+        pytest.skip("the installed ofplang-validate reports no warnings (< 0.2.1)")
+    fd = front_door_check(str(wf))
+    assert fd.ok
+    assert fd.unsupported is None
+    assert [d.code for d in fd.diagnostics] == result.warning_codes
 
 
 def test_front_door_rejects_generics(tmp_path):
