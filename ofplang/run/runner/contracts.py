@@ -23,6 +23,7 @@ projection too; their linear identity is tracked separately by the simulator.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TypeAlias
@@ -34,6 +35,11 @@ from .runner import RunnerError
 # v0 built-in primitive Data types (v0 §7.1). They have no view fields; a primitive
 # value is its own contract-visible projection.
 PRIMITIVES = frozenset({"Bool", "Int", "Float", "String"})
+
+#: A unit suffix on a numeric primitive (v0 §28.2). Only `Int` and `Float` carry
+#: one, so anything else with a suffix is not valid v0 and still fails to
+#: resolve below rather than being quietly accepted.
+_UNIT_SUFFIX = re.compile(r"(Int|Float)\[[^\[\]]*\]")
 
 # The default value per primitive, used to synthesise a runner-side typed value
 # (an unsupplied entry input, an unconnected input). Mirrors the backend's own
@@ -182,8 +188,14 @@ def _parse(expr: str, registry: dict) -> ResolvedType:
 
     Concrete types only (D27): a primitive, `Array<...>` (possibly nested), or a
     known nominal. Anything else -- a generic type parameter, an unknown name --
-    raises, since the runner assumes valid, concrete v0 input."""
-    expr = expr.strip()
+    raises, since the runner assumes valid, concrete v0 input.
+
+    A unit suffix is dropped (v0 §28). A unit has no runtime representation:
+    two values whose types differ only in their unit are represented
+    identically and no operation reads a unit, so `Float[s]` resolves to the
+    same `Float` the execution layer would have been handed had no unit been
+    written. Every unit condition was decided at graph phase, by validate."""
+    expr = _UNIT_SUFFIX.sub(r"\1", expr.strip())
     if expr.startswith("Array<") and expr.endswith(">"):
         return ArrayType(_parse(expr[len("Array<"):-1], registry))
     if expr in PRIMITIVES:

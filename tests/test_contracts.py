@@ -239,3 +239,55 @@ def test_nonexistent_entry_is_a_clean_error(tmp_path):
     )
     with pytest.raises(RunnerError, match="entry process 'typo' is not defined"):
         Contracts.from_workflow(str(wf))
+
+
+# --- unit annotations (v0 §28) ----------------------------------------------
+
+_UNIT_WORKFLOW = """\
+spec_version: "0.3"
+units:
+  s: {}
+  uL: {}
+  mg: {}
+types:
+  Vial: {domain: object, view: {capacity: {type: "Float[uL]"}}}
+processes:
+  p:
+    kind: atomic
+    inputs:
+      duration: {type: "Float[s]"}
+      volumes:  {type: "Array<Float[uL]>"}
+      count:    {type: "Int[1]"}
+      vial:     {type: Vial}
+    outputs:
+      mass: {type: "Float[mg]"}
+"""
+
+
+def test_a_unit_suffix_resolves_to_the_plain_numeric_type(tmp_path):
+    # A unit has no runtime representation (v0 §28): two values whose types
+    # differ only in their unit are represented identically and no operation
+    # reads a unit, so the execution layer is handed the type it would have
+    # been handed had no unit been written. Before this, every one of these
+    # raised, and one unit-annotated port anywhere failed the whole workflow.
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_UNIT_WORKFLOW, encoding="utf-8")
+    c = Contracts.from_workflow(doc)
+
+    assert c.input_type("p", "duration") == Primitive("Float")
+    assert c.input_type("p", "volumes") == ArrayType(Primitive("Float"))
+    assert c.input_type("p", "count") == Primitive("Int")
+    assert c.output_type("p", "mass") == Primitive("Float")
+    # A view field carries one too (v0 §28.9), and resolves the same way.
+    vial = c.input_type("p", "vial")
+    assert isinstance(vial, Nominal)
+    assert vial.view["capacity"] == Primitive("Float")
+
+
+def test_only_a_numeric_primitive_carries_a_unit(tmp_path):
+    # `Cup[s]` is not valid v0 (a suffix sits only on Int or Float, §28.2), so
+    # it still fails to resolve rather than being quietly read as `Cup`.
+    from ofplang.run.runner.contracts import RunnerError, _parse
+
+    with pytest.raises(RunnerError):
+        _parse("Cup[s]", {})
