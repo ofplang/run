@@ -312,13 +312,17 @@ def test_a_spot_a_running_activity_holds_is_not_derived_as_residue():
     Here one job has two branches: A is still baking on tray_2 when B's transport into
     tray_1 fails. Checked on every document the run hands the scheduler, because that is
     where getting it wrong would land.
+
+    The laboratory pins both halves of that sentence rather than leaving them to the
+    scheduler: B's plate fits only tray_1, and A's is the longer bake, so it is under
+    way by the time B moves. See the fixtures for why that had to be nailed down.
     """
     import ofplang.run.runner.rolling as rolling
 
     workflow = load_document(FIXTURES / "two_branch.workflow.yaml")
     runner = RollingRunner(
         [JobRequest(id=job_id, workflow=workflow) for job_id in ("job1", "job2")],
-        OVEN_ENV,
+        str(FIXTURES / "two_branch_narrow.env.yaml"),
         poll_interval=None,
         random_seed=0,
     )

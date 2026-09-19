@@ -342,12 +342,17 @@ def test_a_refusal_the_others_cannot_be_planned_around_stops_the_run():
     them, and a replan nothing can be planned from stops every job (it cannot be
     attributed to one).
 
+    The oven has **one** tray, so that is a property of the laboratory. With two, the
+    other job takes the tray that is free, and whether the run corners itself comes
+    down to which of two interchangeable bays each job was handed -- the scheduler's
+    choice to make, and not one a test may read.
+
     What matters is that this still ends in a *status* rather than an exception -- the
     run says what happened to everyone, which is what was lost before.
     """
     runner = RollingRunner(
         [JobRequest(id=job_id, workflow=load_document(OVEN_WF)) for job_id in ("a", "b")],
-        OVEN_ENV,
+        str(FIXTURES / "one_tray_oven.env.yaml"),
         poll_interval=None,
         random_seed=0,
         backend_factory=_refusing(_OwnRefusal("the arm will not take it")),

@@ -1,20 +1,52 @@
+# One job, two independent branches: a small plate and a big one.
+#
+# 🔴 The two branches are deliberately *not* interchangeable. The tests that use
+# this stage "one branch is still baking when the other branch's move fails", and
+# they inject the failure at a named route -- so the route the failing branch takes
+# has to be the laboratory's decision rather than the scheduler's. A big plate is
+# slower to prepare and fits only the big tray, which pins both: the big branch's
+# move is always `bench.* -> oven.tray_1`, and being the slower of the two to
+# prepare it is the one the objective puts second, after the small branch is in the
+# oven.
+#
+# (Before `ofplang-schedule` 0.11.0 the two branches were identical and it happened
+# to come out that way. 0.11.0 collapses interchangeable bays and hands them out
+# after the solve, which swapped them -- the tests were reading a coincidence.)
+
 spec_version: "0.0"
+
 types:
   Plate: { domain: object }
+
 processes:
+
   make_plate:
     kind: atomic
     outputs: { plate: { type: Plate, phase: data } }
     objects: { create: [outputs.plate] }
+
+  make_wide_plate:
+    kind: atomic
+    outputs: { plate: { type: Plate, phase: data } }
+    objects: { create: [outputs.plate] }
+
   assay:
     kind: atomic
     inputs: { plate: { type: Plate, phase: data } }
     outputs: { out: { type: Plate, phase: data } }
     objects: { map: { outputs.out: inputs.plate } }
+
+  assay_wide:
+    kind: atomic
+    inputs: { plate: { type: Plate, phase: data } }
+    outputs: { out: { type: Plate, phase: data } }
+    objects: { map: { outputs.out: inputs.plate } }
+
   discard:
     kind: atomic
     inputs: { plate: { type: Plate, phase: data } }
     objects: { consume: [inputs.plate] }
+
   main:
     kind: composite
     body:
@@ -22,7 +54,7 @@ processes:
         - { id: MakeA, process: make_plate }
         - { id: AssayA, process: assay, state: { plate: { from: MakeA.plate } } }
         - { id: DropA, process: discard, state: { plate: { from: AssayA.out } } }
-        - { id: MakeB, process: make_plate }
-        - { id: AssayB, process: assay, state: { plate: { from: MakeB.plate } } }
+        - { id: MakeB, process: make_wide_plate }
+        - { id: AssayB, process: assay_wide, state: { plate: { from: MakeB.plate } } }
         - { id: DropB, process: discard, state: { plate: { from: AssayB.out } } }
 entry: main
