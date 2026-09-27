@@ -78,8 +78,15 @@ def test_consumption_travels_with_each_fixed_activity():
 
 def test_too_little_stock_is_infeasible():
     """Not enough to run the workflow is a planning failure, not a runtime one: the
-    run never starts."""
-    with pytest.raises(RunnerError, match="infeasible"):
+    run never starts.
+
+    Either name is the same refusal. A stock no replenisher reaches only falls, so
+    from schedule 0.12 the shortfall is counted before the solve and named
+    `stock_cannot_last`; before that the solver had to prove `infeasible` to reach
+    the same place. The pin admits both, so this asks for the refusal and not for
+    the argument that produced it.
+    """
+    with pytest.raises(RunnerError, match="infeasible|stock_cannot_last"):
         RollingRunner(WF, CONSUMABLE_ENV, boundary=_boundary(0), random_seed=0).run()
 
 
@@ -283,7 +290,13 @@ def test_a_down_replenisher_is_scheduled_around():
     """A replenisher can go down like any other machine, and the reduction drops the
     refills it would have performed. With no other way to top the stock up the replan
     is infeasible -- which is the honest answer, and the first time this path has been
-    reachable at all (nothing used to report a replenisher down)."""
+    reachable at all (nothing used to report a replenisher down).
+
+    With the dispenser down the reduction leaves the stock with no replenisher that
+    reaches it, which is exactly the shape schedule 0.12 counts before solving, so
+    the refusal arrives as `stock_cannot_last` rather than as a proof. Both names
+    are accepted, the pin admitting either.
+    """
     from ofplang.run.simulator import DeviceDown, VirtualTimeSimulator
 
     def factory(environment):
@@ -294,7 +307,7 @@ def test_a_down_replenisher_is_scheduled_around():
     runner = RollingRunner(
         WF, REFILL_ENV, boundary=_boundary(0), backend_factory=factory, random_seed=0
     )
-    with pytest.raises(RunnerError, match="infeasible"):
+    with pytest.raises(RunnerError, match="infeasible|stock_cannot_last"):
         runner.run()
     assert DeviceDown is not None  # the injection API this test drives
 
