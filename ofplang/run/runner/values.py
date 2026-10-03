@@ -168,8 +168,9 @@ def record_outputs(store: ValueStore, node, outputs: dict) -> None:
 def collect_outputs(dataflow, store: ValueStore) -> dict:
     """Assemble the whole-workflow outputs from the store, following each `main`
     output port back to its producing `(node, port)`. A return whose producer has
-    not been recorded is omitted (it never ran)."""
-    result: dict[str, Any] = {}
+    not been recorded is omitted (it never ran). A return of a static literal has no
+    producer and is always present."""
+    result: dict[str, Any] = dict(dataflow.return_literals)
     for name, (node, port) in dataflow.returns.items():
         if store.has(node, port):
             result[name] = store.get(node, port)

@@ -400,32 +400,84 @@ def test_deep_nesting_flattens_paths_and_splices_data_arc(tmp_path):
     assert df.input_source[(("Ou", "In", "A"), "i")] == (("G",), "o")
 
 
-def test_pure_data_entry_fan_out_is_a_known_v0_lite_limitation(tmp_path):
-    # KNOWN LIMITATION (design.md D26 scope ledger): a boundary entry input is
-    # recorded in a dict keyed by port name, so a Pure Data entry consumed by two
-    # nodes keeps only the last consumer as a boundary source; the other falls back
-    # to a dummy at assemble time. (Object entries cannot fan out -- linearity --
-    # so only Pure Data entries hit this.) Pinning current behavior so a v0-full fix
-    # (list-valued boundaries) is a deliberate, noticed change.
-    df = _write(
-        tmp_path,
+def test_pure_data_entry_fan_out_reaches_every_consumer(tmp_path):
+    # A Pure Data entry input consumed by two nodes feeds both. This used to be a
+    # known limitation (design.md D26 scope ledger): the boundary was recorded in a
+    # dict keyed by port name, so only the last consumer got a source and the other
+    # was silently given a typed default. The scheduler's flattener now records one
+    # boundary data arc per consumer, with `()` as the source. (Object entries cannot
+    # fan out -- linearity -- so only Pure Data entries ever hit this.)
+    wf_text = (
         "spec_version: \"0.0\"\n"
-        "types: {R: {domain: data}}\n"
         "processes:\n"
-        "  u: {kind: atomic, inputs: {a: {type: R, phase: data}}}\n"
+        "  u: {kind: atomic, inputs: {a: {type: Int, phase: data}}}\n"
         "  main:\n"
         "    kind: composite\n"
-        "    inputs: {cfg: {type: R, phase: data}}\n"
+        "    inputs: {cfg: {type: Int, phase: data}}\n"
         "    body:\n"
         "      nodes:\n"
         "        - {id: U1, process: u, bind: {a: {from: inputs.cfg}}}\n"
         "        - {id: U2, process: u, bind: {a: {from: inputs.cfg}}}\n"
         "      returns: {}\n"
-        "entry: main\n",
+        "entry: main\n"
     )
-    fed = [key for key in df.input_source if df.input_source[key] == ((), "cfg")]
-    assert len(fed) == 1  # only one of U1/U2 -- the limitation
+    df = _write(tmp_path, wf_text)
+    fed = {key for key in df.input_source if df.input_source[key] == ((), "cfg")}
+    assert fed == {(("U1",), "a"), (("U2",), "a")}
     assert df.entry_ports == ("cfg",)
+
+    # And at the value layer: both consumers read the value that came in, not a default.
+    contracts = Contracts.from_workflow(tmp_path / "wf.yaml")
+    store = ValueStore()
+    seed_entry(df, contracts, store, {"cfg": 7})
+    assert assemble_inputs(df, contracts, store, ("U1",)) == {"a": 7}
+    assert assemble_inputs(df, contracts, store, ("U2",)) == {"a": 7}
+
+
+# Outputs that have no producing activity: `t_echo` returns the entry input verbatim,
+# `t_wrapped` returns it through a composite that passes it straight back, and `k`
+# returns the literal a nested composite was bound to. Until the scheduler's flattener
+# recorded them, all three silently went missing from the run's outputs.
+_NO_PRODUCER_RETURNS_WF = """\
+spec_version: "0.0"
+processes:
+  echo:
+    kind: composite
+    inputs: {k: {type: Float, phase: run}}
+    outputs: {k: {type: Float, phase: run}}
+    body:
+      nodes: []
+      returns: {k: {from: inputs.k}}
+  main:
+    kind: composite
+    inputs: {t: {type: Float, phase: run}}
+    outputs:
+      t_echo: {type: Float, phase: run}
+      t_wrapped: {type: Float, phase: run}
+      k: {type: Float, phase: run}
+    body:
+      nodes:
+        - {id: E, process: echo, bind: {k: {from: inputs.t}}}
+        - {id: C, process: echo, bind: {k: {value: 3.0}}}
+      returns:
+        t_echo: {from: inputs.t}
+        t_wrapped: {from: E.k}
+        k: {from: C.k}
+entry: main
+"""
+
+
+def test_pass_through_and_literal_returns_are_collected(tmp_path):
+    df = _write(tmp_path, _NO_PRODUCER_RETURNS_WF)
+    # A pass-through is produced by the boundary, where the entry input is seeded; a
+    # literal return has no producer and is held apart.
+    assert df.returns == {"t_echo": ((), "t"), "t_wrapped": ((), "t")}
+    assert df.return_literals == {"k": 3.0}
+
+    contracts = Contracts.from_workflow(tmp_path / "wf.yaml")
+    store = ValueStore()
+    seed_entry(df, contracts, store, {"t": 1.5})
+    assert collect_outputs(df, store) == {"t_echo": 1.5, "t_wrapped": 1.5, "k": 3.0}
 
 
 def test_create_process_has_no_inputs_and_no_returns():

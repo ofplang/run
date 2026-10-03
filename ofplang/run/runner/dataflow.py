@@ -24,7 +24,7 @@ job (§7) -- so no §7 / §5.7 machinery is pulled in here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .runner import RunnerError
 
@@ -86,6 +86,10 @@ class Dataflow:
     # though the composite is flattened away. The top-level entry composite `()` is
     # not here (its contracts are checked via the whole-workflow handles, D33).
     composites: dict
+    # `main`-level output port name -> the static literal it returns. Such a return
+    # has no producing (node, port), so it cannot be in `returns`; it is always
+    # available, like a literal input.
+    return_literals: dict = field(default_factory=dict)
 
 
 def from_workflow(workflow) -> Dataflow:
@@ -122,22 +126,32 @@ def from_workflow(workflow) -> Dataflow:
     # Invert every arc to a per-consumer-input source. Object (`arcs`) and Pure
     # Data (`data_arcs`) are routed identically at the value layer -- the physical
     # difference (a transport vs a precedence edge) does not matter for the value.
+    # `data_arcs` also carries one arc per atomic that a Pure Data entry input feeds,
+    # with the boundary `()` as its source -- so an entry input bound to several
+    # atomics reaches every one of them here.
     input_source: dict = {}
     for arc in workflow.arcs + workflow.data_arcs:
         input_source[(arc.dst.node, arc.dst.port)] = (arc.src.node, arc.src.port)
     # Boundary entry inputs (Object via `entry_inputs`, Pure Data via
     # `data_entry_inputs`): the consuming input is fed by the boundary `()` node.
+    # These maps hold ONE consumer per port. That is complete for an Object (linear,
+    # so consumed once) but not for Pure Data, whose complete record is the boundary
+    # arcs above; re-applying it here only rewrites one of those same sources.
     for main_port, endpoint in {**workflow.entry_inputs, **workflow.data_entry_inputs}.items():
         input_source[(endpoint.node, endpoint.port)] = ((), main_port)
 
     # Every main input port to seed at run start, and every main output port with
     # the atomic that produces it (`exit_outputs` records both Object and Pure Data
-    # returns; see D26-0).
+    # returns; see D26-0). A Pure Data entry input returned verbatim is "produced"
+    # by the boundary `()`, which is where it was seeded.
     entry_ports = tuple(workflow.entry_input_ports.keys())
     returns = {
         name: (endpoint.node, endpoint.port)
         for name, endpoint in workflow.exit_outputs.items()
     }
+    # A main output that returns a static literal (a nested composite returning an
+    # input bound to one) has no producer, so it is not in `returns`.
+    return_literals = dict(workflow.exit_literals)
 
     # Static literal bindings (v0 §11), keyed by the consuming (node, port) -- the same
     # key convention as `input_source`, so the value layer can look them up the same
@@ -171,4 +185,5 @@ def from_workflow(workflow) -> Dataflow:
         returns,
         literals,
         composites,
+        return_literals,
     )
