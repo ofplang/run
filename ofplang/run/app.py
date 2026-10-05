@@ -52,15 +52,15 @@ def _import_key_present(obj: Any) -> bool:
 
 UNEXPANDED_IMPORT = "workflow contains a $import; it must be expanded before running"
 
-# Structured node kind -> the v0 feature it requires (spec 4.3). The runner has no
-# representation for a structured node -- it reshapes dataflow, lifting an output to
-# an Array (`map`), threading a value across iterations (`fold` / `do_while`) or
-# leaving one arm unrun (`branch`) -- and the scheduler it plans through refuses them
-# for the same reason. Named here so the gate can answer with the feature, and so a
-# workflow meets that answer before anything runs rather than mid-flight.
+# Structured node kind -> the v0 feature it requires (spec 4.3), for the kinds the
+# runner cannot run. `map` and `fold` are not here: the scheduler expands each into
+# its invocations before planning (schedule D57), and the runner reads the expanded
+# graph from the same flattener, so their invocations are activities like any other.
+# `do_while` repeats a body a number of times only its values decide, and `branch`
+# leaves one arm unrun -- neither is a graph fixed before the run, and the scheduler
+# refuses them for the same reason. Named here so the gate can answer with the
+# feature, and so a workflow meets that answer before anything runs.
 _STRUCTURED_KINDS = {
-    "map": "node_map",
-    "fold": "node_fold",
     "do_while": "node_do_while",
     "branch": "node_branch",
 }
@@ -74,8 +74,8 @@ def capability_gate(document: dict | None) -> str | None:
     (see `front_door_check`), so `$import` is normally gone by the time we get here;
     the `$import` check remains as a defense for a caller that hands over an
     unexpanded document. Two features are gated: the runner neither instantiates
-    generic processes (`generic_processes`) nor executes a structured node
-    (`node_map` / `node_fold` / `node_do_while` / `node_branch`), and either would
+    generic processes (`generic_processes`) nor executes a `do_while` or `branch`
+    node (`node_do_while` / `node_branch`), and either would
     otherwise surface as a confusing deep error -- the structured node as a *failed
     run*, though nothing ever ran.
 
@@ -237,6 +237,10 @@ class RunResult:
     # single-workflow run, whose one job is unnamed and whose reason is `failure` --
     # so a caller that only knows the old field reports exactly what it always did.
     job_failures: list = field(default_factory=list)
+    # What the run itself warned about (`runner.job.RunWarning`, D59): an entry input
+    # run on its type's default, a final output it cannot report. Handed up, like the
+    # scheduler's, for the caller to print.
+    run_warnings: list = field(default_factory=list)
 
 
 def run_workflow(
@@ -347,6 +351,7 @@ def run_workflow(
         failed=runner.failed,
         failure=runner.failure,
         scheduler_warnings=runner.scheduler_warnings,
+        run_warnings=runner.warnings,
         job_failures=[
             (job.id, job.failure) for job in runner.jobs if job.id and job.failure
         ],

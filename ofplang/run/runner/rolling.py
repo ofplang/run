@@ -64,10 +64,31 @@ from .schedule_client import default_objective, derived_holds, replan
 from .values import (
     assemble_inputs,
     collect_outputs,
+    describe,
+    fixed_at_start,
+    is_available,
     record_outputs,
+    resolve,
     seed_entry,
     unproduced_inputs,
 )
+
+
+def _node_label(node) -> str:
+    """A node path as a message names it -- `Dispense/2/aspirate`, iteration indices
+    included (schedule's `format_node_path`, the one spelling) -- and the empty path,
+    the workflow boundary, as `main`. Imported lazily, like the rest of the scheduler."""
+    from ofplang.schedule.core.identifiers import format_node_path
+
+    return format_node_path(node) if node else "main"
+
+
+def _spots(binding) -> list:
+    """Every spot an `interface` binding names, in element order: one for a scalar
+    port, one per element for an Array of Objects (schedule `binding_elements`)."""
+    from ofplang.schedule.scheduler.interface import binding_elements
+
+    return [spot for _index, spot in binding_elements(binding)]
 
 
 def _accepts(func, keyword: str) -> bool:
@@ -588,7 +609,13 @@ class RollingRunner:
         for job in self._jobs:
             if job.placed or job.stopped or job.release > self.now:
                 continue
-            for _port, spot in (job.interface.get("inputs") or {}).items():
+            # One placement per Object: an Array of Objects is one per element.
+            entry_spots = [
+                spot
+                for binding in (job.interface.get("inputs") or {}).values()
+                for spot in _spots(binding)
+            ]
+            for spot in entry_spots:
                 try:
                     self.sim.place(spot)
                 except BackendRefused as exc:
@@ -713,7 +740,10 @@ class RollingRunner:
         held = {entry.get("spot") for entry in self._echo.occupied}
         held |= {entry["spot"] for entry in derived_holds(self._echo.document)}
         clash = sorted(
-            spot for spot in (job.interface.get("inputs") or {}).values() if spot in held
+            spot
+            for binding in (job.interface.get("inputs") or {}).values()
+            for spot in _spots(binding)
+            if spot in held
         )
         if clash:
             raise RunnerError(
@@ -725,11 +755,14 @@ class RollingRunner:
         # read by nobody before the job runs -- so all of it is seeded now, exactly as
         # run start does for the jobs the run began with. Where the Objects physically
         # sit is the tick's business, not this call's.
-        seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
-        # The three checks run start makes, for this job alone and in run start's
-        # order: the whole-workflow envelope (D33), the atomic preconditions knowable
-        # before any dispatch (D37), and any nested composite whose values are already
-        # available (D34).
+        seed_entry(
+            job.dataflow, job.contracts, job.values, job.entry_values,
+            spots=job.interface.get("inputs"),
+        )
+        # The checks run start makes, for this job alone and in run start's order: the
+        # whole-workflow envelope (D33), the lengths its boundary values already confirm
+        # (D59), the atomic preconditions knowable before any dispatch (D37), and any
+        # nested composite whose values are already available (D34).
         #
         # 🔴 A violation **refuses the admission** rather than stopping a newly stopped
         # job, which is why they are run while the job is still a candidate
@@ -742,6 +775,8 @@ class RollingRunner:
         self._admitting = job
         try:
             self._check_entry_requires(job)
+            if not job.stopped:
+                self._check_lengths(job)
             if not job.stopped:
                 self._preflight_job(job)
             if not job.stopped:
@@ -900,7 +935,12 @@ class RollingRunner:
         2. the job stops being one of this run's jobs.
         """
         for job in [job for job in self._jobs if job.id in self._withdrawing]:
-            for spot in sorted((job.boundary.output_spots or {}).values()):
+            bound = (
+                spot
+                for binding in (job.boundary.output_spots or {}).values()
+                for spot in _spots(binding)
+            )
+            for spot in sorted(bound):
                 self.sim.clear(spot)
             self._jobs.remove(job)
             self._by_id.pop(job.id, None)
@@ -993,6 +1033,13 @@ class RollingRunner:
         return self._only_job.outputs
 
     @property
+    def warnings(self) -> list:
+        """What the run says without failing (`job.RunWarning`, D59): an entry input
+        run on its type's default, a final output it cannot report. Every job's, in
+        roster order, each naming its job in a run of several."""
+        return [warning for job in self._jobs for warning in job.warnings]
+
+    @property
     def observations(self) -> list[dict]:
         """The accumulated observation entries (D38); empty when observation is off."""
         return self._obs.entries if self._obs is not None else []
@@ -1001,7 +1048,7 @@ class RollingRunner:
     def _fmt_node(node) -> str:
         """A node path rendered as a readable label for reasons / traces; the empty
         path (the workflow boundary) is `main`."""
-        return "/".join(node) if node else "main"
+        return _node_label(node)
 
     @staticmethod
     def _activity_subject(activity: dict) -> str:
@@ -1010,7 +1057,7 @@ class RollingRunner:
         `replenisher -> device`."""
         node = activity.get("node")
         if node is not None:
-            return "/".join(node) if node else "main"
+            return _node_label(node)
         # A refill has no node and no spots -- it is a visit, and what identifies it is
         # who filled what. Named here because a refill's failure stops every job of the
         # run, so its reason is the one a reader most needs to be able to act on; it
@@ -1133,7 +1180,10 @@ class RollingRunner:
         # `_place_released` does that, each tick, and it is exactly what a job arriving
         # mid-run (`admit`) does.
         for job in self._jobs:
-            seed_entry(job.dataflow, job.contracts, job.values, job.entry_values)
+            seed_entry(
+            job.dataflow, job.contracts, job.values, job.entry_values,
+            spots=job.interface.get("inputs"),
+        )
         # Spots the laboratory was already holding (§6.12) are occupied in the backend
         # too, so an operation that should never have been planned onto one fails loudly
         # instead of quietly succeeding against a world the plan disagrees with.
@@ -1150,6 +1200,13 @@ class RollingRunner:
         # immediately (nothing is running), so the final status is emptily terminal.
         for job in self._jobs:
             self._check_entry_requires(job)
+
+        # The lengths a `map` / `fold` was planned on that the boundary's values can
+        # already confirm (an `each` source zipped with an Array of Objects): a
+        # mismatch stops the job before any of its work is dispatched.
+        for job in self._jobs:
+            if not job.stopped:
+                self._check_lengths(job)
 
         # Atomic preconditions that are knowable at run start -- `requires` referencing
         # only run/graph-phase inputs (D37) -- are checked now, before any dispatch, so a
@@ -1235,6 +1292,16 @@ class RollingRunner:
             # failure that is the first one's shadow.
             if job.stopped:
                 continue
+            # A job that did not stop ran all of its work, so every final output it
+            # has a source for has its value. One without is a runner bug -- an output
+            # never recorded -- and is said, rather than left out of `outputs` and the
+            # result boundary as though the workflow had nothing to return there.
+            missing = sorted(set(job.dataflow.returns) - set(job.outputs))
+            if missing:
+                raise RunnerError(
+                    f"final output(s) {missing} of {self._subject('main', job)!r} have no "
+                    f"value although the job ran to the end"
+                )
             self._check_output_spots(job)
             # Whole-workflow postcondition contracts (v0 §9 `ensures` on the entry
             # composite, D32 Phase 1): checked once the outputs are assembled, over the
@@ -1320,13 +1387,52 @@ class RollingRunner:
             and record.activity.get("kind") == "transport"
             and self._job_of(record.activity) is job
         }
-        for port, spot in job.boundary.output_spots.items():
-            if spot not in delivered:
-                raise RunnerError(
-                    f"boundary output {self._subject(port, job)!r} was not delivered "
-                    f"to its declared spot {spot!r}: no completed move of this job "
-                    f"arrived there"
-                )
+        from ofplang.schedule.core.identifiers import format_element
+        from ofplang.schedule.scheduler.interface import binding_elements
+
+        # Each Object on its own spot: an Array of Objects is delivered element by
+        # element, so each element's spot is checked.
+        for port, binding in job.boundary.output_spots.items():
+            for index, spot in binding_elements(binding):
+                if spot not in delivered:
+                    element = format_element(port, index)
+                    raise RunnerError(
+                        f"boundary output {self._subject(element, job)!r} was not "
+                        f"delivered to its declared spot {spot!r}: no completed move of "
+                        f"this job arrived there"
+                    )
+
+    def _check_lengths(self, job: Job) -> None:
+        """Make each of `job`'s length checks whose value now exists (spec §17 / §18).
+
+        A `map` / `fold` zips its `each` sources, and the plan was built for the one
+        length it could see before the run -- an Array of Objects at the boundary, a
+        literal. A source zipped with it whose length only its value shows was assumed
+        to have that length (schedule `LengthCheck`); this is where the assumption is
+        held to the value. A mismatch is a data error of the job, not of any activity:
+        the job stops, with no activity marked failed, as for a composite's contract
+        (D34). Each check is made once, as soon as everything it reads is recorded --
+        at run start for a boundary value, on completion for a produced one, and so
+        always before an invocation reading an element of it is dispatched."""
+        for position, check in enumerate(job.dataflow.length_checks):
+            if position in job.checked_lengths or not is_available(check.source, job.values):
+                continue
+            job.checked_lengths.add(position)
+            value = resolve(check.source, job.values)
+            if isinstance(value, list) and len(value) == check.length:
+                continue
+            found = f"{len(value)} elements" if isinstance(value, list) else "no Array"
+            subject = self._subject(_node_label(check.node), job)
+            self._record_failure(
+                job,
+                "each_length_mismatch",
+                f"{subject}: `each` port {check.port!r} ({describe(check.source)}) has "
+                f"{found}, but the {_node_label(check.node)} invocations were planned "
+                f"for {check.length}, the length of the sources zipped with it",
+                subject,
+            )
+            self._stop_job(job)
+            return
 
     def _check_entry_requires(self, job: Job) -> None:
         """One job's whole-workflow precondition (v0 §9 `requires` on the entry
@@ -1375,7 +1481,10 @@ class RollingRunner:
             checkable, _deferred = self._split_preflight(job, node, process)
             if not checkable:
                 continue
-            inputs = assemble_inputs(job.dataflow, job.contracts, job.values, node)
+            # Only the inputs those expressions read: they are the ones fixed at run
+            # start, and nothing else has a value yet.
+            read = {port for _expr, ast in checkable for _s, port in referenced_ports(ast)}
+            inputs = assemble_inputs(job.dataflow, job.contracts, job.values, node, ports=read)
             if (
                 self._violated_exprs(
                     job, process, "requires_preflight", checkable, inputs, {},
@@ -1421,16 +1530,13 @@ class RollingRunner:
     def _input_available_at_start(self, job: Job, node, port: str) -> bool:
         """Whether input `port` of `node` has a value fixed at run start.
 
-        True when the port is fed by the boundary (a seeded entry input), bound to a
-        static literal, or unconnected (a typed default) -- all fixed before any work
-        runs. False when a producing node feeds it: that value is not known until the
-        producer completes, so a `requires` over it cannot be preflighted (D37 assumed
-        run-phase inputs are always boundary/literal; a legal run->run producer output
-        breaks that assumption). `input_source` uses `()` for the boundary node."""
-        source = job.dataflow.input_source.get((tuple(node), port))
-        if source is not None:
-            return source[0] == ()
-        return True  # a static literal or an unconnected input: fixed at run start
+        True when the port's value reads only the boundary (seeded entry inputs) and
+        static literals -- all fixed before any work runs. False when any producing
+        node feeds it: that value is not known until the producer completes, so a
+        `requires` over it cannot be preflighted (D37 assumed run-phase inputs are
+        always boundary/literal; a legal run->run producer output breaks that
+        assumption)."""
+        return fixed_at_start(job.dataflow.sources[(tuple(node), port)])
 
     def _split_preflight(self, job: Job, node, process: str):
         """Partition a process's preflight-candidate `requires` at `node` into those
@@ -1506,21 +1612,15 @@ class RollingRunner:
             )
         return first_violation
 
-    def _composite_ready(self, job: Job, mapping: dict) -> bool:
-        """Whether every value-store key in `mapping` (a composite's inputs or outputs,
-        port -> (node, port)) has been produced / seeded. Literal-bound ports are not
-        in `mapping`, so they never gate readiness (their value is always available)."""
-        return all(job.values.has(node, port) for (node, port) in mapping.values())
+    def _composite_ready(self, job: Job, sources: dict) -> bool:
+        """Whether every port in `sources` (a composite's inputs or outputs, port ->
+        `Source`) has its value: everything it reads has been produced / seeded. A
+        literal never gates readiness (its value is always available)."""
+        return all(is_available(source, job.values) for source in sources.values())
 
-    def _composite_values(self, job: Job, mapping: dict, literals: dict) -> dict:
-        """A composite's port -> view value map: each routed port read from the value
-        store, plus each literal-bound port's constant."""
-        store = job.values
-        values = {
-            cport: store.get(node, port) for cport, (node, port) in mapping.items()
-        }
-        values.update(literals)
-        return values
+    def _composite_values(self, job: Job, sources: dict) -> dict:
+        """A composite's port -> view value map, each port's `Source` resolved."""
+        return {port: resolve(source, job.values) for port, source in sources.items()}
 
     def _check_ready_composites(self) -> None:
         """Check each nested composite invocation's contracts (v0 §9 / D34) as soon as its
@@ -1549,7 +1649,7 @@ class RollingRunner:
                 and self._composite_ready(job, b.inputs)
             ):
                 job.checked_requires.add(path)
-                inputs = self._composite_values(job, b.inputs, b.input_literals)
+                inputs = self._composite_values(job, b.inputs)
                 if (
                     self._violated_contract(
                         job, b.process, "requires", inputs, {},
@@ -1568,8 +1668,8 @@ class RollingRunner:
                 and self._composite_ready(job, b.outputs)
             ):
                 job.checked_ensures.add(path)
-                inputs = self._composite_values(job, b.inputs, b.input_literals)
-                outputs = self._composite_values(job, b.outputs, b.output_literals)
+                inputs = self._composite_values(job, b.inputs)
+                outputs = self._composite_values(job, b.outputs)
                 if (
                     self._violated_contract(
                         job, b.process, "ensures", inputs, outputs,
@@ -1833,18 +1933,29 @@ class RollingRunner:
     def _transported_view(self, activity: dict):
         """The view value of the Object a transport leg carries: the producing arc
         endpoint's stored output (D26), passed to the backend so a transport-running
-        backend can act on what it moves. Best-effort -- None when the arc endpoint or
-        its value is not resolvable; a transport does not change the view (physical
-        move preserves identity), so this is read-only context, never written back."""
+        backend can act on what it moves -- one element of it where the arc names an
+        element `index` (an Array of Objects, each on a spot of its own). Best-effort
+        -- None when the arc endpoint or its value is not resolvable (D59 keeps this,
+        to be decided with protocol-level checks); a transport does not change the view
+        (physical move preserves identity), so this is read-only context, never
+        written back."""
+        from ofplang.schedule.scheduler.model import SourceRef
+
         job = self._job_of(activity)
         if job is None:
             return None
         arc = activity.get("arc") or {}
         src = arc.get("from") or {}
         node, port = src.get("node"), src.get("port")
-        if node is not None and port is not None and job.values.has(node, port):
-            return job.values.get(node, port)
-        return None
+        if node is None or port is None:
+            return None
+        source = SourceRef(tuple(node), port, tuple(src.get("index") or ()))
+        if not is_available(source, job.values):
+            return None
+        try:
+            return resolve(source, job.values)
+        except RunnerError:
+            return None
 
     def _record_observation(self, rec: Committed, outputs: dict | None) -> None:
         """Append a completed activity's I/O views to the observation record (D38).
@@ -2093,6 +2204,12 @@ class RollingRunner:
                 # (F4b) could emit a non-conformant value, caught here.
                 outputs = observed_state.get("outputs")
                 job = self._job_of(rec.activity)
+                # A completed processing op that reports no `outputs` at all has
+                # produced none of its declared ports: read as `{}`, so the check just
+                # below names them, rather than letting the op pass with nothing
+                # recorded and its consumers -- or a final output -- find no value.
+                if outputs is None and rec.kind == "processing":
+                    outputs = {}
                 if outputs is not None and job is not None:
                     process = rec.activity["process"]
                     # Every declared output port must carry a value. A workflow cannot
@@ -2151,6 +2268,10 @@ class RollingRunner:
                         continue
                     record_outputs(job.values, tuple(rec.activity["node"]), normalized)
                     outputs = normalized
+                    # A value just recorded may be an `each` source whose length the
+                    # plan could only assume: checked now, before any invocation
+                    # reading an element of it is dispatched.
+                    self._check_lengths(job)
                 # Postcondition contracts (v0 §9 `ensures`, D32): checked once the outputs
                 # exist, over this invocation's assembled inputs and produced outputs. A
                 # violation is a runtime contract violation (v0 §9.3): mark the (physically

@@ -74,7 +74,7 @@ def test_provenance_keys_tell_the_two_known_kinds_apart():
     ) != RollingRunner._provenance_key(processing)
     assert RollingRunner._provenance_key(transport) == (
         "transport",
-        "", (("SampleSource",), "out"), (("SampleTarget",), "in"), 0,
+        "", (("SampleSource",), "out", ()), (("SampleTarget",), "in", ()), 0,
     )
 
 

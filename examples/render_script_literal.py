@@ -32,8 +32,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from ofplang.schedule.core.identifiers import format_element
+from ofplang.schedule.scheduler.model import SourceLiteral, SourceRef
 
 from ofplang.run.runner import RollingRunner, observation
+from ofplang.run.runner.values import describe
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -50,6 +53,14 @@ def _fmt_node(node) -> str:
     """A workflow node path (tuple) as a readable dotted string; `()` is the
     workflow boundary."""
     return "/".join(node) if node else "(boundary)"
+
+
+def _fmt_source(source) -> str:
+    """Where a value comes from (a dataflow Source): the producing node and port,
+    or the literal."""
+    if isinstance(source, SourceRef):
+        return f"{_fmt_node(source.node)}.{format_element(source.port, source.index)}"
+    return describe(source)
 
 
 def main() -> None:
@@ -78,8 +89,13 @@ def main() -> None:
     # value or a typed default.
     lines.append("")
     lines.append("static value literals (embedded in the workflow):")
-    if df.literals:
-        for (node, port), value in df.literals.items():
+    literals = {
+        key: source.value
+        for key, source in df.sources.items()
+        if isinstance(source, SourceLiteral)
+    }
+    if literals:
+        for (node, port), value in literals.items():
             lines.append(f"  {_fmt_node(node)}.{port:<10} = {value!r}")
     else:
         lines.append("  (none)")
@@ -94,8 +110,8 @@ def main() -> None:
     # The whole-workflow outputs, each traced back to the producer it came from.
     lines.append("")
     lines.append("whole-workflow outputs (returns):")
-    for name, (node, port) in df.returns.items():
-        lines.append(f"  {name:<12} = {runner.outputs.get(name)!r}   <- {_fmt_node(node)}.{port}")
+    for name, source in df.returns.items():
+        lines.append(f"  {name:<12} = {runner.outputs.get(name)!r}   <- {_fmt_source(source)}")
 
     # The contracts declared on each process (§9), checked by the runner at runtime
     # against the computed view values. The run reaching here without failing means

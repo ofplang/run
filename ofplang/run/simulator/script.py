@@ -180,7 +180,9 @@ def script_device_model(process, mode, inputs, output_schema, definition):
     before. This is the simulator's default model, and it composes: a custom model
     may call it to handle its own script processes."""
     script = (definition or {}).get("script")
-    if not script:
+    # Absent, not merely empty: an empty `script: {}` is a script with no language,
+    # failed below like any other it cannot run, not a process with no script.
+    if script is None:
         # Not a script process: fall back to the type-default model. Imported lazily
         # because `core` imports this module as its default model (avoids a cycle).
         from .core import default_device_model

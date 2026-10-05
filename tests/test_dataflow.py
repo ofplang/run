@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from ofplang.schedule.scheduler.model import SourceLiteral, SourceRef, SourceSeq
 
 from ofplang.run.runner.contracts import Contracts
 from ofplang.run.runner.dataflow import from_workflow
@@ -20,6 +21,7 @@ from ofplang.run.runner.values import (
     assemble_inputs,
     collect_outputs,
     record_outputs,
+    resolve,
     seed_entry,
     unproduced_inputs,
 )
@@ -40,8 +42,8 @@ def _write(tmp_path, text):
 _WORKFLOW = """\
 spec_version: "0.0"
 types:
-  Sample: {domain: object}
-  Reading: {domain: data}
+  Sample: {domain: object, view: {id: {type: String}}}
+  Reading: {domain: data, view: {v: {type: String}}}
 processes:
   measure:
     kind: atomic
@@ -112,13 +114,13 @@ def test_input_sources_resolve_across_arcs_and_boundary(tmp_path):
     df = _dataflow(tmp_path)
     # Object arc, Pure Data arc (boundary-spliced), Pure Data arc out of the
     # composite, and the Object entry input all resolve to the right source.
-    assert df.input_source[(("F",), "plate_in")] == (("M",), "plate_out")
-    assert df.input_source[(("Az", "A"), "reading")] == (("M",), "reading")
-    assert df.input_source[(("F",), "go")] == (("Az", "A"), "score")
-    assert df.input_source[(("M",), "plate")] == ((), "sample")
+    assert df.sources[(("F",), "plate_in")] == SourceRef(("M",), "plate_out")
+    assert df.sources[(("Az", "A"), "reading")] == SourceRef(("M",), "reading")
+    assert df.sources[(("F",), "go")] == SourceRef(("Az", "A"), "score")
+    assert df.sources[(("M",), "plate")] == SourceRef((), "sample")
     # Boundary + returns.
     assert df.entry_ports == ("sample",)
-    assert df.returns == {"result": (("F",), "done")}
+    assert df.returns == {"result": SourceRef(("F",), "done")}
 
 
 def test_pure_data_entry_input_is_a_boundary_source(tmp_path):
@@ -144,8 +146,8 @@ def test_pure_data_entry_input_is_a_boundary_source(tmp_path):
         encoding="utf-8",
     )
     df = from_workflow(doc)
-    assert df.input_source[(("U",), "a")] == (("G",), "out")   # Pure Data arc
-    assert df.input_source[(("U",), "b")] == ((), "cfg")       # Pure Data entry input
+    assert df.sources[(("U",), "a")] == SourceRef(("G",), "out")   # Pure Data arc
+    assert df.sources[(("U",), "b")] == SourceRef((), "cfg")       # Pure Data entry input
     assert df.entry_ports == ("cfg",)
 
 
@@ -160,7 +162,7 @@ def test_structured_node_workflow_is_rejected(tmp_path):
         "objects: {create: [outputs.cup]}}\n"
         "  main:\n"
         "    kind: composite\n"
-        "    body: {nodes: [{id: m, kind: map, process: make, each: {x: {from: inputs.xs}}}]}\n"
+        "    body: {nodes: [{id: m, kind: do_while, process: make}]}\n"
         "entry: main\n",
         encoding="utf-8",
     )
@@ -178,35 +180,35 @@ def test_seed_assemble_record_collect_route_values(tmp_path):
     df, contracts = _dataflow_and_contracts(tmp_path)
     store = ValueStore()
 
-    # Seed the boundary: with no job, the entry input gets a typed default (Sample
-    # declares no view -> empty record).
+    # Seed the boundary: with no job, the entry input gets a typed default (Sample's
+    # one view field, defaulted).
     seed_entry(df, contracts, store)
-    assert store.get((), "sample") == {}
+    assert store.get((), "sample") == {"id": ""}
 
     # M consumes the entry input; run each node, recording distinct sentinel outputs,
     # and check each consumer assembles the right upstream value (routing).
-    assert assemble_inputs(df, contracts, store, ("M",)) == {"plate": {}}
-    record_outputs(store, ("M",), {"plate_out": "P", "reading": "R"})
+    P, R, S, D = ({"id": "P"}, {"v": "R"}, {"v": "S"}, {"id": "D"})
+    assert assemble_inputs(df, contracts, store, ("M",)) == {"plate": {"id": ""}}
+    record_outputs(store, ("M",), {"plate_out": P, "reading": R})
 
-    assert assemble_inputs(df, contracts, store, ("Az", "A")) == {"reading": "R"}
-    record_outputs(store, ("Az", "A"), {"score": "S"})
+    assert assemble_inputs(df, contracts, store, ("Az", "A")) == {"reading": R}
+    record_outputs(store, ("Az", "A"), {"score": S})
 
-    assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": "P", "go": "S"}
-    record_outputs(store, ("F",), {"done": "D"})
+    assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": P, "go": S}
+    record_outputs(store, ("F",), {"done": D})
 
     # The whole-workflow output follows the return back to F.done.
-    assert collect_outputs(df, store) == {"result": "D"}
+    assert collect_outputs(df, store) == {"result": D}
 
 
 def test_seed_entry_uses_job_values_and_checks_them(tmp_path):
     df, contracts = _dataflow_and_contracts(tmp_path)
     from ofplang.run.runner.runner import RunnerError
 
-    # A supplied job value is used verbatim (sample is an object type with no view,
-    # so its view value is an empty record).
+    # A supplied job value is used verbatim.
     store = ValueStore()
-    seed_entry(df, contracts, store, job={"sample": {}})
-    assert store.get((), "sample") == {}
+    seed_entry(df, contracts, store, job={"sample": {"id": "S1"}})
+    assert store.get((), "sample") == {"id": "S1"}
 
     # A non-conformant job value is rejected, as is an unknown entry port.
     for bad in ({"sample": {"unexpected": 1}}, {"nope": {}}):
@@ -217,15 +219,17 @@ def test_seed_entry_uses_job_values_and_checks_them(tmp_path):
         raise AssertionError(f"expected RunnerError for job {bad}")
 
 
-def test_assemble_defaults_an_input_whose_producer_has_not_run(tmp_path):
+def test_assemble_refuses_an_input_whose_producer_has_not_run(tmp_path):
+    from ofplang.run.runner.runner import RunnerError
+
     df, contracts = _dataflow_and_contracts(tmp_path)
     store = ValueStore()
-    # Before any producer has run, F's inputs have no stored source value yet, so
-    # they fall back to a typed default of the port's type (Sample / Reading here
-    # declare no view, hence empty records). Both of F's inputs are *connected*, so
-    # this default is a stand-in the runner must not compute on -- which is what
-    # `unproduced_inputs` (below) exists to detect.
-    assert assemble_inputs(df, contracts, store, ("F",)) == {"plate_in": {}, "go": {}}
+    # Before any producer has run, F's inputs have no value. They used to fall back
+    # to a typed default -- a stand-in the run would then compute on as though it
+    # were the workflow's value. Now nothing is assembled at all: a caller asks
+    # `unproduced_inputs` (below) first, and reaching this is a runner bug.
+    with pytest.raises(RunnerError, match="no value recorded for M.plate_out"):
+        assemble_inputs(df, contracts, store, ("F",))
 
 
 def test_unproduced_inputs_reports_only_connected_ports_without_a_value(tmp_path):
@@ -242,15 +246,15 @@ def test_unproduced_inputs_reports_only_connected_ports_without_a_value(tmp_path
     assert unproduced_inputs(df, store, ("M",)) == []
 
     # As each producer records its output, its consumer's port stops being reported.
-    record_outputs(store, ("M",), {"plate_out": "P", "reading": "R"})
+    record_outputs(store, ("M",), {"plate_out": {"id": "P"}, "reading": {"v": "R"}})
     assert unproduced_inputs(df, store, ("F",)) == ["go"]
-    record_outputs(store, ("Az", "A"), {"score": "S"})
+    record_outputs(store, ("Az", "A"), {"score": {"v": "S"}})
     assert unproduced_inputs(df, store, ("F",)) == []
 
 
 def test_unproduced_inputs_ignores_a_literal_bound_port(tmp_path):
-    # A static literal is a value the runner is entitled to synthesise, so a port
-    # bound to one is never "unproduced" -- there is no producer to wait for.
+    # A static literal is the workflow's own value, so a port bound to one is never
+    # "unproduced" -- there is no producer to wait for.
     doc = tmp_path / "wf.yaml"
     doc.write_text(_LITERAL_WF, encoding="utf-8")
     df = from_workflow(doc)
@@ -283,8 +287,8 @@ def test_literal_is_recorded_and_assembled(tmp_path):
     df = from_workflow(doc)
     contracts = Contracts.from_workflow(doc)
 
-    # The adapter surfaces the literal keyed by the consuming (node, port).
-    assert df.literals == {(("C",), "cfg"): 5}
+    # The adapter surfaces the literal as the consuming (node, port)'s source.
+    assert df.sources == {(("C",), "cfg"): SourceLiteral(5)}
     # assemble_inputs seeds it as the port's value (not a typed default of 0).
     assert assemble_inputs(df, contracts, ValueStore(), ("C",)) == {"cfg": 5}
 
@@ -333,7 +337,7 @@ def test_literal_spliced_across_composite_boundary(tmp_path):
     doc.write_text(_LITERAL_NESTED_WF, encoding="utf-8")
     df = from_workflow(doc)
     contracts = Contracts.from_workflow(doc)
-    assert df.literals == {(("W", "C"), "cfg"): 9}
+    assert df.sources == {(("W", "C"), "cfg"): SourceLiteral(9)}
     assert assemble_inputs(df, contracts, ValueStore(), ("W", "C")) == {"cfg": 9}
 
 
@@ -360,8 +364,8 @@ def test_internal_fan_out_one_output_feeds_many_consumers(tmp_path):
         "      returns: {}\n"
         "entry: main\n",
     )
-    assert df.input_source[(("U1",), "a")] == (("G",), "o")
-    assert df.input_source[(("U2",), "a")] == (("G",), "o")
+    assert df.sources[(("U1",), "a")] == SourceRef(("G",), "o")
+    assert df.sources[(("U2",), "a")] == SourceRef(("G",), "o")
 
 
 def test_deep_nesting_flattens_paths_and_splices_data_arc(tmp_path):
@@ -397,7 +401,7 @@ def test_deep_nesting_flattens_paths_and_splices_data_arc(tmp_path):
         "entry: main\n",
     )
     assert set(df.process_of) == {("G",), ("Ou", "In", "A")}
-    assert df.input_source[(("Ou", "In", "A"), "i")] == (("G",), "o")
+    assert df.sources[(("Ou", "In", "A"), "i")] == SourceRef(("G",), "o")
 
 
 def test_pure_data_entry_fan_out_reaches_every_consumer(tmp_path):
@@ -422,7 +426,7 @@ def test_pure_data_entry_fan_out_reaches_every_consumer(tmp_path):
         "entry: main\n"
     )
     df = _write(tmp_path, wf_text)
-    fed = {key for key in df.input_source if df.input_source[key] == ((), "cfg")}
+    fed = {key for key, source in df.sources.items() if source == SourceRef((), "cfg")}
     assert fed == {(("U1",), "a"), (("U2",), "a")}
     assert df.entry_ports == ("cfg",)
 
@@ -470,9 +474,12 @@ entry: main
 def test_pass_through_and_literal_returns_are_collected(tmp_path):
     df = _write(tmp_path, _NO_PRODUCER_RETURNS_WF)
     # A pass-through is produced by the boundary, where the entry input is seeded; a
-    # literal return has no producer and is held apart.
-    assert df.returns == {"t_echo": ((), "t"), "t_wrapped": ((), "t")}
-    assert df.return_literals == {"k": 3.0}
+    # literal return has no producer at all.
+    assert df.returns == {
+        "t_echo": SourceRef((), "t"),
+        "t_wrapped": SourceRef((), "t"),
+        "k": SourceLiteral(3.0),
+    }
 
     contracts = Contracts.from_workflow(tmp_path / "wf.yaml")
     store = ValueStore()
@@ -489,15 +496,17 @@ def test_create_process_has_no_inputs_and_no_returns():
     assert df.out_ports[("SampleTarget",)] == ()
     assert df.entry_ports == ()
     assert df.returns == {}
-    assert df.input_source[(("SampleTarget",), "target_in")] == (("SampleSource",), "source_out")
+    assert df.sources[(("SampleTarget",), "target_in")] == SourceRef(
+        ("SampleSource",), "source_out"
+    )
 
 
 def test_object_entry_and_object_return():
     # interface_load.workflow: an Object entry input and an Object return.
     df = from_workflow(FIXTURES / "interface_load.workflow.yaml")
     assert df.entry_ports == ("sample",)
-    assert df.returns == {"result": (("Heat",), "out")}
-    assert df.input_source[(("Heat",), "plate")] == ((), "sample")
+    assert df.returns == {"result": SourceRef(("Heat",), "out")}
+    assert df.sources[(("Heat",), "plate")] == SourceRef((), "sample")
 
 
 # -- value primitives edge cases --------------------------------------------
@@ -533,10 +542,10 @@ def test_fan_out_value_read_by_multiple_consumers(tmp_path):
     )
     contracts = Contracts.from_workflow(tmp_path / "wf.yaml")
     store = ValueStore()
-    record_outputs(store, ("G",), {"o": "shared"})
+    record_outputs(store, ("G",), {"o": {}})
     # Both consumers read the one produced value (values are not consumed in v0).
-    assert assemble_inputs(df, contracts, store, ("U1",)) == {"a": "shared"}
-    assert assemble_inputs(df, contracts, store, ("U2",)) == {"a": "shared"}
+    assert assemble_inputs(df, contracts, store, ("U1",)) == {"a": {}}
+    assert assemble_inputs(df, contracts, store, ("U2",)) == {"a": {}}
 
 
 def test_collect_outputs_omits_unproduced_return(tmp_path):
@@ -544,5 +553,89 @@ def test_collect_outputs_omits_unproduced_return(tmp_path):
     store = ValueStore()
     # F never produced -> its return is omitted, not defaulted.
     assert collect_outputs(df, store) == {}
-    record_outputs(store, ("F",), {"done": "D"})
-    assert collect_outputs(df, store) == {"result": "D"}
+    record_outputs(store, ("F",), {"done": {"id": "D"}})
+    assert collect_outputs(df, store) == {"result": {"id": "D"}}
+
+
+# -- Source trees (map / fold, D59) ---------------------------------------------
+
+
+def test_resolve_reads_an_element_and_assembles_a_sequence():
+    store = ValueStore()
+    store.put((), "plates", [{"id": "a"}, {"id": "b"}])
+    store.put(("Read", 0), "od", 0.5)
+    store.put(("Read", 1), "od", 0.7)
+    assert resolve(SourceRef((), "plates", (1,)), store) == {"id": "b"}
+    gathered = SourceSeq((SourceRef(("Read", 0), "od"), SourceRef(("Read", 1), "od")))
+    assert resolve(gathered, store) == [0.5, 0.7]
+    assert resolve(SourceSeq(()), store) == []
+    assert resolve(SourceLiteral(3), store) == 3
+
+
+def test_resolve_refuses_an_element_past_the_end():
+    from ofplang.run.runner.runner import RunnerError
+
+    store = ValueStore()
+    store.put((), "xs", [1.0])
+    with pytest.raises(RunnerError, match=r"main\.xs has no element at \[1\]"):
+        resolve(SourceRef((), "xs", (1,)), store)
+
+
+def test_an_unbound_input_is_refused_before_anything_runs(tmp_path):
+    # v0 binds every input (§11) and defines no default for one. A document that
+    # leaves one unbound is invalid -- and run without validation it used to get a
+    # typed default; now the dataflow refuses it.
+    from ofplang.run.runner.runner import RunnerError
+
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_LITERAL_WF.replace("bind: {cfg: {value: 5}}", "bind: {}"), encoding="utf-8")
+    with pytest.raises(RunnerError, match=r"input\(s\) C\.cfg have no source"):
+        from_workflow(doc)
+
+
+def test_seed_entry_shapes_an_array_of_objects_by_its_spots(tmp_path):
+    from ofplang.run.runner.runner import RunnerError
+
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(_ARRAY_WF, encoding="utf-8")
+    interface = {"inputs": {"plates": ["hotel.a", "hotel.b", "hotel.c"]}}
+    df = from_workflow(doc, interface=interface)
+    contracts = Contracts.from_workflow(doc)
+    spots = interface["inputs"]
+
+    # No view supplied: one default view per spot, not `[]`.
+    store = ValueStore()
+    seed_entry(df, contracts, store, spots=spots)
+    assert store.get((), "plates") == [{"id": ""}] * 3
+
+    # A supplied view is one per spot, in order.
+    views = [{"id": "x"}, {"id": "y"}, {"id": "z"}]
+    store = ValueStore()
+    seed_entry(df, contracts, store, {"plates": views}, spots=spots)
+    assert assemble_inputs(df, contracts, store, ("Heat", 1)) == {"plate": {"id": "y"}}
+
+    # One that is not is refused.
+    with pytest.raises(RunnerError, match="shape of its spots"):
+        seed_entry(df, contracts, ValueStore(), {"plates": views[:2]}, spots=spots)
+
+
+_ARRAY_WF = """\
+spec_version: "0.4"
+types:
+  Plate: {domain: object, view: {id: {type: String}}}
+processes:
+  heat:
+    kind: atomic
+    inputs: {plate: {type: Plate, phase: data}}
+    outputs: {plate: {type: Plate, phase: data}}
+    objects: {map: {outputs.plate: inputs.plate}}
+  main:
+    kind: composite
+    inputs: {plates: {type: "Array<Plate>", phase: data}}
+    outputs: {plates: {type: "Array<Plate>", phase: data}}
+    body:
+      nodes:
+        - {id: Heat, kind: map, process: heat, each: {plate: {from: inputs.plates}}}
+      returns: {plates: {from: Heat.plate}}
+entry: main
+"""

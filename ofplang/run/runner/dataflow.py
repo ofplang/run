@@ -4,20 +4,24 @@ The runner owns the *value* layer: it routes each producer output port's view
 value to the consumer input port it feeds (D26). To do that it needs the
 workflow's port-level dataflow graph -- which output feeds which input, for both
 Object-bearing (`state`) and Pure Data (`bind`) arcs, across nested composite
-boundaries.
+boundaries and the invocations of an expanded `map` / `fold`.
 
 Rather than re-parse and re-flatten the workflow here (which would risk diverging
 from the scheduler's node-path convention, and silently mis-key the value store),
 this module is a *thin adapter* over the scheduler's own flattener,
 `ofplang.schedule.scheduler.workflow.parse_workflow` (D26-0). That flattener is
 the single source of the node paths that also appear in the plan the runner
-drives, so the two always agree. The scheduler discards the port-level mapping of
-Pure Data arcs (it keeps only node-level precedence) and the static literal
-`value:` bindings entirely; D26-0 added `data_arcs` / `data_entry_inputs`, and D30
-added `data_literals`, to expose these for us here (value-independent metadata the
-scheduler itself never reads).
+drives, so the two always agree.
 
-This adapter reads only the graph *structure* (node paths, ports, arcs,
+Where a value comes from is read as the flattener's `Source` trees (schedule D57):
+`SourceRef(node, port, index)` -- the value recorded at `(node, port)`, or one
+element of it -- `SourceLiteral(value)` and `SourceSeq(items)`, an Array assembled
+element by element. They say everything the older per-kind fields (`arcs`,
+`data_arcs`, `data_literals`, `exit_outputs`, ...) say, and also what an expanded
+`map` / `fold` needs and those fields cannot: an Array gathered from several
+invocations, one element of another's Array.
+
+This adapter reads only the graph *structure* (node paths, ports, sources,
 boundary). It does not resolve types or view schemas -- that is `contracts.py`'s
 job (§7) -- so no §7 / §5.7 machinery is pulled in here.
 """
@@ -29,26 +33,23 @@ from dataclasses import dataclass, field
 from .runner import RunnerError
 
 # A node path is the scheduler's identity for an atomic activity: the node ids
-# from the entry composite's body down to the atomic, as a tuple. The empty tuple
+# from the entry composite's body down to the atomic, as a tuple -- with an
+# iteration index (an int) after each expanded `map` / `fold` node. The empty tuple
 # `()` denotes the workflow boundary (a `main`-level entry input / final output),
 # matching the plan's `node: []` boundary convention.
-NodePath = tuple  # tuple[str, ...]
+NodePath = tuple  # tuple[str | int, ...]
 
 
 @dataclass(frozen=True)
 class CompositeBoundary:
     """One nested composite invocation's value-layer boundary (D34), for its contract
-    checks. `inputs` / `outputs` map each of the composite's own ports to the value-
-    store key `(node, port)` that supplies it (a producing atomic, or the boundary
-    `((), name)`); `input_literals` / `output_literals` hold ports bound to / returning
-    a static literal. `process` is the composite process name (its contracts are keyed
-    by it)."""
+    checks. `inputs` / `outputs` map each of the composite's own ports to the
+    `Source` its value comes from. `process` is the composite process name (its
+    contracts are keyed by it)."""
 
     process: str
-    inputs: dict          # port -> (node, port) value-store key
-    input_literals: dict  # port -> literal value
-    outputs: dict         # port -> (node, port) value-store key
-    output_literals: dict  # port -> literal value
+    inputs: dict   # port -> Source
+    outputs: dict  # port -> Source
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,7 @@ class Dataflow:
     """The routing view of a workflow, derived from the scheduler's flattened graph.
 
     All node paths use the scheduler's convention (and so match the plan). A
-    "source" is a `(node, port)` pair identifying the producing output port; a
-    source whose node is `()` is a boundary entry input (seeded, not produced).
+    `SourceRef` whose node is `()` is a boundary entry input (seeded, not produced).
     """
 
     # node path -> the process it invokes (debug / provenance).
@@ -65,47 +65,53 @@ class Dataflow:
     # node path -> its input / output port names (every port, Object and Pure Data).
     in_ports: dict
     out_ports: dict
-    # (consumer node, input port) -> the source (node, port) that feeds it. An
-    # input with no entry here is unconnected (an unbound input) and is dummy-filled,
-    # unless it appears in `literals` below. A source node of `()` is a boundary
-    # entry input.
-    input_source: dict
+    # (consumer node, input port) -> the `Source` its value comes from. Every input
+    # of every activity has one: `from_workflow` refuses a workflow where one does not
+    # (v0 §11 binds every input port, and defines no default for any).
+    sources: dict
     # every `main`-level input port name (seeded at the boundary at run start).
     entry_ports: tuple
-    # `main`-level output port name -> the producing (node, port) (for the final
-    # whole-workflow outputs). Covers Object and Pure Data returns alike.
+    # `main`-level output port name -> the `Source` of the final output.
     returns: dict
-    # (consumer node, input port) -> a static literal `value:` bound to it (v0 §11,
-    # Pure Data). The runner seeds these as the port's value in place of a typed
-    # default. Recorded by the scheduler's flattener (`data_literals`, D30).
-    literals: dict
     # Nested composite invocation boundaries (D34), keyed by the composite's node
-    # path -> `CompositeBoundary`. Each maps the composite's own input / output ports
-    # to the value-store key `(node, port)` that supplies them (or a static literal),
-    # so the runner can evaluate the composite's contracts against those values even
-    # though the composite is flattened away. The top-level entry composite `()` is
-    # not here (its contracts are checked via the whole-workflow handles, D33).
+    # path -> `CompositeBoundary`, so the runner can evaluate the composite's
+    # contracts against those values even though the composite is flattened away.
+    # The top-level entry composite `()` is not here (its contracts are checked via
+    # the whole-workflow handles, D33).
     composites: dict
-    # `main`-level output port name -> the static literal it returns. Such a return
-    # has no producing (node, port), so it cannot be in `returns`; it is always
-    # available, like a literal input.
-    return_literals: dict = field(default_factory=dict)
+    # Lengths the plan was built on that only a value can confirm (schedule
+    # `LengthCheck`): an `each` source zipped with one whose length was known.
+    length_checks: tuple = ()
+    # Object-bearing final outputs the flattener records no source for: an entry
+    # Object returned unchanged (as a whole or as an element of an Array). The
+    # scheduler leaves such a return out of scope, so the runner cannot report it --
+    # and says so rather than dropping it without a word (D59 J2).
+    unreported: tuple = field(default_factory=tuple)
 
 
-def from_workflow(workflow) -> Dataflow:
+def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
     """Build the routing view by reusing the scheduler's flattener (D26-0).
 
     `workflow` is either a path to a workflow YAML file or an already-loaded document
-    (a mapping). Raises `RunnerError` if the workflow cannot be flattened (e.g. it
-    contains a structured node, which is out of v0 scope, or has no entry) -- the same
-    diagnostics the scheduler would raise.
+    (a mapping). `interface` is the run's §6.8 boundary (spots only): an Array of
+    Objects at the boundary takes its length from the spots it is bound to, so a
+    workflow traversing one expands to as many invocations as the scheduler plans --
+    the same call, with the same binding, gives the same graph.
+
+    Raises `RunnerError` if the workflow cannot be flattened (e.g. it contains a
+    structured node the scheduler does not expand, or has no entry) -- the same
+    diagnostics the scheduler would raise -- or if an input of an activity has no
+    source at all.
     """
     # Import lazily: like `schedule_client`, so importing the runner package does
     # not hard-require the scheduler to be installed until `run` actually uses it.
     from ofplang.schedule.core.diagnostics import ERROR
+    from ofplang.schedule.core.identifiers import format_node_path
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
-    workflow, diags = parse_workflow(workflow if isinstance(workflow, dict) else str(workflow))
+    workflow, diags = parse_workflow(
+        workflow if isinstance(workflow, dict) else str(workflow), interface=interface
+    )
     errors = [d for d in diags.items if d.severity == ERROR]
     if workflow is None or errors:
         codes = ", ".join(sorted({str(getattr(d, "code", d)) for d in errors}))
@@ -123,67 +129,61 @@ def from_workflow(workflow) -> Dataflow:
         for a in workflow.activities
     }
 
-    # Invert every arc to a per-consumer-input source. Object (`arcs`) and Pure
-    # Data (`data_arcs`) are routed identically at the value layer -- the physical
-    # difference (a transport vs a precedence edge) does not matter for the value.
-    # `data_arcs` also carries one arc per atomic that a Pure Data entry input feeds,
-    # with the boundary `()` as its source -- so an entry input bound to several
-    # atomics reaches every one of them here.
-    input_source: dict = {}
-    for arc in workflow.arcs + workflow.data_arcs:
-        input_source[(arc.dst.node, arc.dst.port)] = (arc.src.node, arc.src.port)
-    # Boundary entry inputs (Object via `entry_inputs`, Pure Data via
-    # `data_entry_inputs`): the consuming input is fed by the boundary `()` node.
-    # These maps hold ONE consumer per port. That is complete for an Object (linear,
-    # so consumed once) but not for Pure Data, whose complete record is the boundary
-    # arcs above; re-applying it here only rewrites one of those same sources.
-    for main_port, endpoint in {**workflow.entry_inputs, **workflow.data_entry_inputs}.items():
-        input_source[(endpoint.node, endpoint.port)] = ((), main_port)
+    # Every input of every activity, keyed by (node, port) -- the value store's key
+    # convention. An input the flattener found no source for is refused here, before
+    # anything runs: v0 binds every input port (§11) and defines no default for one,
+    # so there is no value the runner could give it that would be the workflow's.
+    # A validated workflow never reaches this; one run without validation can.
+    sources = {(ep.node, ep.port): source for ep, source in workflow.input_sources.items()}
+    unsourced = [
+        f"{format_node_path(node)}.{port}"
+        for node, ports in in_ports.items()
+        for port in ports
+        if (node, port) not in sources
+    ]
+    if unsourced:
+        raise RunnerError(
+            f"input(s) {', '.join(unsourced)} have no source: every input port must be "
+            f"bound (v0 §11), and the runner gives none a default"
+        )
 
-    # Every main input port to seed at run start, and every main output port with
-    # the atomic that produces it (`exit_outputs` records both Object and Pure Data
-    # returns; see D26-0). A Pure Data entry input returned verbatim is "produced"
-    # by the boundary `()`, which is where it was seeded.
-    entry_ports = tuple(workflow.entry_input_ports.keys())
-    returns = {
-        name: (endpoint.node, endpoint.port)
-        for name, endpoint in workflow.exit_outputs.items()
-    }
-    # A main output that returns a static literal (a nested composite returning an
-    # input bound to one) has no producer, so it is not in `returns`.
-    return_literals = dict(workflow.exit_literals)
-
-    # Static literal bindings (v0 §11), keyed by the consuming (node, port) -- the same
-    # key convention as `input_source`, so the value layer can look them up the same
-    # way. Recorded by the flattener (D30) so nested-composite literals are already
-    # spliced to the leaf atomic that consumes them.
-    literals = {
-        (endpoint.node, endpoint.port): value
-        for endpoint, value in workflow.data_literals.items()
-    }
-
-    # Nested composite boundaries (D34): convert each schedule `CompositeIO`'s
-    # Endpoints into value-store keys `(node, port)`, so the runner can read a
-    # composite port's value straight from the store (or a literal).
     composites = {
         path: CompositeBoundary(
             process=io.process,
-            inputs={port: (ep.node, ep.port) for port, ep in io.inputs.items()},
-            input_literals=dict(io.input_literals),
-            outputs={port: (ep.node, ep.port) for port, ep in io.outputs.items()},
-            output_literals=dict(io.output_literals),
+            inputs=dict(io.input_sources),
+            outputs=dict(io.output_sources),
         )
         for path, io in workflow.composites.items()
     }
 
+    # Final outputs likewise. A Pure Data one with no source is refused like an
+    # input; an Object-bearing one without is the out-of-scope pass-through above,
+    # which the run reports as unreported rather than refusing.
+    returns = dict(workflow.output_sources)
+    unreturned = [
+        name
+        for name, object_bearing in workflow.exit_output_ports.items()
+        if not object_bearing and name not in returns
+    ]
+    if unreturned:
+        raise RunnerError(
+            f"final output(s) {', '.join(unreturned)} have no source: every output of "
+            f"the entry process must be returned (v0 §11)"
+        )
+    unreported = tuple(
+        name
+        for name, object_bearing in workflow.exit_output_ports.items()
+        if object_bearing and name not in returns
+    )
+
     return Dataflow(
-        process_of,
-        in_ports,
-        out_ports,
-        input_source,
-        entry_ports,
-        returns,
-        literals,
-        composites,
-        return_literals,
+        process_of=process_of,
+        in_ports=in_ports,
+        out_ports=out_ports,
+        sources=sources,
+        entry_ports=tuple(workflow.entry_input_ports.keys()),
+        returns=returns,
+        composites=composites,
+        length_checks=tuple(workflow.length_checks),
+        unreported=unreported,
     )

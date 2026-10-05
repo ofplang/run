@@ -1,0 +1,37 @@
+# Valid portable v0 (spec §17) that this runner cannot execute -- the case spec §4.1
+# calls "valid v0 but unsupported by that implementation".
+#
+# `main` repeats `step` until its `continue` output is false, so how many times it runs
+# is something only the values decide. The scheduler plans a graph fixed before the
+# run, which a `do_while` is not, and the runner plans through it; the capability gate
+# is what says so before a run starts. (A `map` or a `fold` is expanded into its
+# invocations before planning, and runs.)
+spec_version: "0.4"
+features:
+  - node_do_while
+processes:
+  step:
+    kind: atomic
+    inputs: {n: {type: Int, phase: data}}
+    outputs:
+      n: {type: Int, phase: data}
+      continue: {type: Bool, phase: data}
+  main:
+    kind: composite
+    inputs:
+      n0: {type: Int, phase: data}
+      budget: {type: Int, phase: run}
+    body:
+      nodes:
+        - id: count_down
+          kind: do_while
+          process: step
+          carry:
+            n: {from: inputs.n0}
+          condition: {output: continue}
+          max_iterations: {from: inputs.budget}
+          outputs:
+            n: {mode: carry}
+            continue: {mode: drop}
+      returns: {}
+entry: main

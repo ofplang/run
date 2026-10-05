@@ -45,13 +45,17 @@ without real hardware; the same dispatch contract targets real hardware later.
 >     Python (not CLI flags).
 > - **Value layer** — the runner resolves each port's type and view schema (§7),
 >   routes typed view values along the workflow's arcs (producer output → consumer
->   input, across nested composites), contract-checks them, and assembles the
->   whole-workflow outputs. A caller supplies the whole-workflow I/O as a single
->   **run boundary** (`--boundary`): one document with a per-port `{spot, view}`
->   descriptor — `spot` places a boundary Object (§6.8), `view` supplies an input
->   value — for the workflow's entry inputs and final outputs. Unsupplied entry
->   views default. A workflow-embedded static literal (`bind: {port: {value: …}}`,
->   §11) is seeded as that consumer input's value in place of a default. At run end
+>   input, across nested composites and the invocations of a `map` / `fold`),
+>   contract-checks them, and assembles the whole-workflow outputs. A caller
+>   supplies the whole-workflow I/O as a single **run boundary** (`--boundary`):
+>   one document with a per-port `{spot, view}` descriptor — `spot` places a
+>   boundary Object (§6.8), `view` supplies an input value — for the workflow's
+>   entry inputs and final outputs. An Array of Objects takes a list of spots and,
+>   if supplied, a list of views in the same order. An unsupplied entry input runs
+>   on its type's default, and the run warns that it did; nothing *inside* the
+>   workflow is ever defaulted — an input with no source is refused before the run
+>   starts. A workflow-embedded static literal (`bind: {port: {value: …}}`, §11)
+>   is that consumer input's value. At run end
 >   the produced output views are echoed back into a result boundary of the same
 >   schema (`--boundary-out`). Non-script values are typed but still dummy — a real
 >   device backend plugs into the same seam later.
@@ -203,8 +207,13 @@ costs one solve per activity event rather than one per unit of its makespan; wha
 observed, and so the status produced, is the same either way. `--boundary` supplies the whole-workflow I/O as one document —
 a `boundary:` mapping with a `{spot, view}` descriptor per entry input / final
 output port. `spot` places a boundary Object on an environment spot (spec §6.8;
-Object ports only); `view` supplies an input's view value (unsupplied entry views
-default). The runner projects it into the scheduler's interface (spots only, so the
+Object ports only); `view` supplies an input's view value. An `Array` of Objects is
+one Object per element, each on a spot of its own: `spot` is a list of spots in
+element order, and `view`, if given, a list of as many views —
+`plates: {spot: [hotel.a, hotel.b], view: [{barcode: X}, {barcode: Y}]}`. An entry
+input given no `view` runs on its type's default (one per spot for an Array of
+Objects), and the run says so on stderr (`entry_input_defaulted`). The runner
+projects it into the scheduler's interface (spots only, so the
 scheduler stays value-independent) and the seeded input values. `--boundary-out`
 writes the result boundary — the same schema with each produced output's `view`
 filled in — a run-local artifact, separate from the value-free status document. On
@@ -226,7 +235,7 @@ a value that operation has not produced yet. The default is 0, which is only saf
 with a backend whose operations cannot finish later than planned (the in-process
 virtual-time simulator); against a wall-clock or real backend set it to at least
 the poll interval, or a successor is refused with `input_not_produced` rather than
-computing on a typed default. `--on-job-failure`
+computing on a value its producer has not given it. `--on-job-failure`
 decides what one job's failure does to the rest of a `--jobs` run: `continue` (the
 default) stops that job alone and lets the others finish — which is why they were
 planned together — while `stop` stops the whole run. A stopped job's remaining work is
@@ -320,7 +329,8 @@ execute it:
 | `python_script_processes` | **Supported** — the built-in device model runs the script and verifies its outputs (see above). |
 | `scheduling_policies` | Ignored, as in [`ofplang-schedule`](https://github.com/ofplang/schedule), which does the planning. |
 | `generic_processes` | **Not supported.** The front door's capability gate refuses it before anything runs, naming the process. |
-| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported.** The front door's capability gate refuses a structured node before anything runs, naming the node and the feature — a structured node reshapes dataflow (lifting an output to an `Array`, threading a value across iterations, leaving an arm unrun) in ways neither this runner nor the scheduler it plans through represents. |
+| `node_map`, `node_fold` | **Supported.** The scheduler expands each into its invocations before planning (invocation `i` of node `N` is the activity at node path `[N, i, …]`), and the runner reads the same expanded graph. How many invocations there are must be known before the run: the length of an Array of Objects bound at the boundary, or of a literal. A run-phase or produced Array zipped with one is assumed to have that length and checked once its value exists — at run start for a boundary value, on completion for a produced one — and a mismatch stops the job (`each_length_mismatch`). A `map` / `fold` whose length nothing before the run gives is refused (`array_length_unknown`). |
+| `node_do_while`, `node_branch` | **Not supported.** The front door's capability gate refuses one before anything runs, naming the node and the feature: how many times a `do_while` repeats, and which arm of a `branch` runs, are decided by values, so neither is a graph fixed before the run. |
 
 ## Examples
 

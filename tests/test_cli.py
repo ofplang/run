@@ -84,7 +84,7 @@ def test_run_structured_node_is_refused_before_running(capsys):
     code = main(
         [
             "run",
-            str(FIXTURES / "structured_node.workflow.yaml"),
+            str(FIXTURES / "do_while_node.workflow.yaml"),
             "--env",
             str(EXAMPLES / "count_chain.env.yaml"),
         ]
@@ -92,8 +92,25 @@ def test_run_structured_node_is_refused_before_running(capsys):
     assert code == EXIT_USAGE
     err = capsys.readouterr().err
     assert "unsupported" in err
-    assert "make_cups" in err
-    assert "node_map" in err
+    assert "count_down" in err
+    assert "node_do_while" in err
+
+
+def test_run_map_whose_length_nothing_gives_is_refused(capsys):
+    # A `map` over a Pure Data entry input passes the gate (it is expanded before
+    # planning), but how many invocations it makes is a value the scheduler never
+    # sees -- no Array of Objects at the boundary, no literal -- so it cannot be
+    # planned, and the run says why before anything runs.
+    code = main(
+        [
+            "run",
+            str(FIXTURES / "structured_node.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "count_chain.env.yaml"),
+        ]
+    )
+    assert code != 0
+    assert "array_length_unknown" in capsys.readouterr().err
 
 
 def test_run_malformed_contract_is_caught_by_front_door(tmp_path, capsys):

@@ -1,0 +1,81 @@
+# Structured nodes (fold + map) over an Array of plates at the workflow boundary.
+#
+# One reagent container is dispensed into each plate in turn -- a `fold`, because the
+# container is one Object every invocation shares (carried) -- and then every plate is
+# read -- a `map`, because the reads are independent. The scheduler expands both into
+# their invocations before planning (`Dispense, 0`, `Dispense, 1`, ..., `Read, 0`, ...).
+# How many there are is the number of plates, which is the length of the `plates`
+# binding in the document's `interface`: a list of spots, one per plate.
+#
+#   ofp-schedule schedule dispense_read.workflow.yaml --env dispense_read.env.yaml \
+#       --document dispense_read.document.yaml
+spec_version: "0.4"
+
+types:
+  Plate:
+    domain: object
+  Reagent:
+    domain: object
+
+processes:
+
+  dispense:                                     # one plate, from the shared container
+    kind: atomic
+    inputs:
+      reagent: { type: Reagent, phase: data }
+      plate:   { type: Plate, phase: data }
+      volume:  { type: Float, phase: run }
+    outputs:
+      reagent: { type: Reagent, phase: data }
+      plate:   { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.reagent: inputs.reagent
+        outputs.plate: inputs.plate
+
+  read:                                         # one plate, on a plate reader
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate: { type: Plate, phase: data }
+      od:    { type: Float, phase: data }
+    objects:
+      map:
+        outputs.plate: inputs.plate
+
+  main:
+    kind: composite
+    inputs:
+      reagent: { type: Reagent, phase: data }
+      plates:  { type: "Array<Plate>", phase: data }
+      volume:  { type: Float, phase: run }
+    outputs:
+      reagent: { type: Reagent, phase: data }
+      plates:  { type: "Array<Plate>", phase: data }
+      ods:     { type: "Array<Float>", phase: data }
+    body:
+      nodes:
+        - id: Dispense
+          kind: fold
+          process: dispense
+          carry:
+            reagent: { from: inputs.reagent }
+          each:
+            plate: { from: inputs.plates }
+          bind:
+            volume: { from: inputs.volume }
+          outputs:
+            reagent: { mode: carry }
+            plate:   { mode: collect }
+        - id: Read
+          kind: map
+          process: read
+          each:
+            plate: { from: Dispense.plate }
+      returns:
+        reagent: { from: Dispense.reagent }
+        plates:  { from: Read.plate }
+        ods:     { from: Read.od }
+
+entry: main

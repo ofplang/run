@@ -17,19 +17,21 @@ from dataclasses import dataclass
 # that same arc all carry the identical `arc` mapping, so this is what groups a
 # multi-leg move back together -- and it is the arc half of the provenance key
 # the rolling runner matches a committed activity against a pending one by.
-ArcKey = tuple[tuple[tuple[str, ...], object], tuple[tuple[str, ...], object]]
+ArcKey = tuple[tuple[tuple, object, tuple], tuple[tuple, object, tuple]]
 
 
 def arc_key(arc: dict | None) -> ArcKey:
-    """`arc` as a hashable `(from, to)` pair of `(node path, port)` endpoints.
+    """`arc` as a hashable `(from, to)` pair of `(node path, port, index)` endpoints.
 
     A boundary arc keys distinctly from any interior one without a special case:
-    its outside endpoint simply carries an empty node path (§6.4, §6.8).
+    its outside endpoint simply carries an empty node path (§6.4, §6.8). The element
+    `index` is part of the endpoint: each element of an Array of Objects crosses the
+    boundary on an arc of its own, and those arcs differ in nothing else on that side.
     """
 
     def endpoint(e):
         e = e or {}
-        return (tuple(e.get("node") or ()), e.get("port"))
+        return (tuple(e.get("node") or ()), e.get("port"), tuple(e.get("index") or ()))
 
     arc = arc or {}
     return (endpoint(arc.get("from")), endpoint(arc.get("to")))

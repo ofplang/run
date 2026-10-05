@@ -383,6 +383,11 @@ def _cmd_run(args) -> int:
     for diag in result.scheduler_warnings:
         where = f" ({diag.path})" if getattr(diag, "path", None) else ""
         print(f"ofp-run: scheduler: {diag.code}{where}: {diag.message}", file=sys.stderr)
+    # What the run itself warned about: a value it made up for an entry input the
+    # boundary did not supply, a final output it cannot report (D59).
+    for warning in result.run_warnings:
+        job = f" [{warning.job}]" if warning.job else ""
+        print(f"ofp-run: warning{job}: {warning.code}: {warning.message}", file=sys.stderr)
 
     # The result boundary is a run-local artifact (D28): the same schema as the
     # supplied boundary with the produced output views filled in, written separately

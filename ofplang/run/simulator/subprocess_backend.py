@@ -198,6 +198,20 @@ class SubprocessBackend(Simulator):
         default model for a *timed* op (no child ran)."""
         pending = self._pending
         if pending is _TIMED:
+            # No child ran. For a process with no `script` that is the timed no-op the
+            # default model answers; for one whose script the resolver would not run
+            # (a language other than Python) it is a runtime verification failure, as
+            # the in-process backend reports it -- never a no-op with made-up outputs.
+            script = (definition or {}).get("script")
+            if script is not None and (
+                not isinstance(script, dict) or script.get("language") != "python"
+            ):
+                language = script.get("language") if isinstance(script, dict) else None
+                raise DeviceComputationError(
+                    f"script process {process!r} declares unsupported script language "
+                    f"{language!r}",
+                    code="script_language",
+                )
             return default_device_model(process, mode, inputs, output_schema, definition)
         if "error" in pending:
             err = pending["error"]

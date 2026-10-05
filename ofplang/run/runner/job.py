@@ -29,6 +29,7 @@ from .contract_eval import referenced_ports
 from .contracts import Contracts, to_descriptor
 from .dataflow import from_workflow
 from .failure import Failure
+from .runner import RunnerError
 from .values import ValueStore
 
 
@@ -105,6 +106,15 @@ class Job:
     checked_ensures: set = field(default_factory=set)
     values: ValueStore = field(default_factory=ValueStore)
     outputs: dict = field(default_factory=dict)
+    # The `LengthCheck`s (by position in `dataflow.length_checks`) already made: each
+    # is made once, as soon as the value it is about exists.
+    checked_lengths: set = field(default_factory=set)
+
+    # What the run has to say about this job without failing it (D59): an entry input
+    # the boundary did not supply, which runs on a typed default, and a final output
+    # the run cannot report. Derived from the job's description alone, so they are
+    # known before anything runs.
+    warnings: list = field(default_factory=list)
 
     def roster_entry(self) -> dict:
         """This job as a `jobs` entry of the execution document (§6.11), *as the
@@ -176,19 +186,25 @@ def build_job(
     Called once per job at run start — and, when a job may arrive mid-run, once more
     at that point. It reads nothing but its arguments for that reason.
     """
-    dataflow = from_workflow(workflow)
     contracts = Contracts.from_workflow(workflow)
+    # Structural boundary errors (an unknown port, a missing / stray spot) surface
+    # here, up front; a supplied view value's conformance is checked when it is
+    # seeded.
+    parsed_boundary = parse_boundary(boundary, contracts)
+    # Flattened with the same `interface` the scheduler is handed, so an Array of
+    # Objects at the boundary expands to the invocations the plan names.
+    dataflow = from_workflow(workflow, interface=parsed_boundary.interface or None)
     process_defs = (workflow or {}).get("processes") or {}
+    contract_asts = parse_contracts(process_defs, contracts)
+    _check_composite_sources(dataflow, contracts, contract_asts)
     return Job(
         id=id,
         workflow=workflow,
         dataflow=dataflow,
         contracts=contracts,
-        # Structural boundary errors (an unknown port, a missing / stray spot) surface
-        # here, up front; a supplied view value's conformance is checked when it is
-        # seeded.
-        boundary=parse_boundary(boundary, contracts),
+        boundary=parsed_boundary,
         release=release,
+        warnings=_warnings(dataflow, parsed_boundary, id),
         # Resolved port types (D27 F1): the per-process output descriptors, so the
         # backend can generate typed values (F2).
         output_schemas={
@@ -198,7 +214,7 @@ def build_job(
         # The raw process definitions, passed to the device model at dispatch so it
         # can act on a process's declared structure (D27 F4b / principle A).
         process_defs=process_defs,
-        contract_asts=parse_contracts(process_defs, contracts),
+        contract_asts=contract_asts,
         # Whether the entry process is a composite (the usual case). Its contracts are
         # the whole-workflow envelope, checked at run start / run end (D33); an atomic
         # entry is instead a single activity, checked on the activity path.
@@ -206,6 +222,69 @@ def build_job(
         # Nested composite invocation boundaries, keyed by node path (D34).
         composites=dataflow.composites,
     )
+
+
+@dataclass(frozen=True)
+class RunWarning:
+    """Something a run says without failing (D59): a value it made up, or one it
+    cannot report. `job` is the job's id, empty for a single-workflow run."""
+
+    code: str
+    message: str
+    job: str = ""
+
+
+def _warnings(dataflow, boundary: Boundary, job_id: str) -> list:
+    """What a job's description alone tells the run to warn about.
+
+    - `entry_input_defaulted`: an entry input the boundary supplied no value for runs
+      on its type's default -- the one value the runner makes up, so it never does so
+      without saying (an Object's whole view as much as a Pure Data value).
+    - `output_unreported`: an Object-bearing final output the scheduler records no
+      source for (an entry Object returned unchanged). It is absent from the run's
+      outputs, and saying so is the difference between a known gap and a silent one.
+    """
+    found: list = []
+    for port in dataflow.entry_ports:
+        if port not in boundary.entry_values:
+            found.append(RunWarning(
+                "entry_input_defaulted",
+                f"entry input {port!r} was not supplied a value at the boundary; "
+                f"it runs on its type's default",
+                job_id,
+            ))
+    for port in dataflow.unreported:
+        found.append(RunWarning(
+            "output_unreported",
+            f"final output {port!r} returns an entry Object unchanged, which the "
+            f"scheduler does not record; the run cannot report its value",
+            job_id,
+        ))
+    return found
+
+
+def _check_composite_sources(dataflow, contracts: Contracts, contract_asts: dict) -> None:
+    """Refuse a nested composite with contracts whose ports are not all sourced.
+
+    A contract reads every port it names, so a port with no value would fail it with
+    a lookup error mid-run -- or, worse, be read as something it is not. v0 binds
+    every input port and returns every output (§11), so this is the unvalidated
+    document's problem, caught before anything runs."""
+    from ofplang.schedule.core.identifiers import format_node_path
+
+    for path, boundary in dataflow.composites.items():
+        if not contract_asts.get(boundary.process):
+            continue
+        declared = contracts.processes.get(boundary.process)
+        if declared is None:
+            continue
+        missing = [f"inputs.{p}" for p in declared.inputs if p not in boundary.inputs]
+        missing += [f"outputs.{p}" for p in declared.outputs if p not in boundary.outputs]
+        if missing:
+            raise RunnerError(
+                f"composite {format_node_path(path)} ({boundary.process}) has contracts "
+                f"but no source for {', '.join(missing)}"
+            )
 
 
 def parse_contracts(process_defs: dict, contracts: Contracts) -> dict:

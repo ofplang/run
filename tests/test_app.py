@@ -26,7 +26,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SIMPLE_WF = str(FIXTURES / "simple.workflow.yaml")
 SIMPLE_ENV = str(FIXTURES / "simple.env.yaml")
 # Valid v0 the runner cannot execute (spec 4.1); shared with test_cli.
-STRUCTURED_WF = str(FIXTURES / "structured_node.workflow.yaml")
+STRUCTURED_WF = str(FIXTURES / "do_while_node.workflow.yaml")
+# A `map`: the gate lets it through, since the scheduler expands it (D59).
+MAP_WF = str(FIXTURES / "structured_node.workflow.yaml")
 
 GENERIC_WF = """\
 spec_version: "0.0"
@@ -138,8 +140,16 @@ def test_front_door_rejects_structured_node():
     fd = front_door_check(STRUCTURED_WF, validate=False)  # isolate the capability gate
     assert not fd.ok
     assert fd.unsupported is not None
-    assert "make_cups" in fd.unsupported
-    assert "node_map" in fd.unsupported
+    assert "count_down" in fd.unsupported
+    assert "node_do_while" in fd.unsupported
+
+
+def test_front_door_lets_a_map_through():
+    # `map` and `fold` are expanded into their invocations before planning, so
+    # the gate no longer answers for them; whether one can be planned is the
+    # scheduler's question (its length must be known before the run).
+    fd = front_door_check(MAP_WF, validate=False)
+    assert fd.ok and fd.unsupported is None
 
 
 @pytest.mark.parametrize(

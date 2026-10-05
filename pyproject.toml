@@ -26,7 +26,14 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.12.1` floor is required, not merely tested against:
+# PyPI. The `ofplang-schedule>=0.13` floor is required, not merely tested against:
+# this runner reads where every value comes from as the flattener's `Source` trees
+# (`input_sources` / `output_sources` / `length_checks`) and flattens with the run's
+# `interface`, so a `map` / `fold` expands to the invocations the plan names -- all
+# new in 0.13. Against an older one the dataflow cannot be read at all. The
+# `ofplang-validate>=0.3` floor follows it: schedule 0.13 requires validate 0.3
+# (specification revision 0.4).
+# The `ofplang-schedule>=0.12.1` floor it replaces was required for the same kind of reason:
 # this runner reads the flattened workflow's `exit_literals` to return a final output
 # that is a static literal (a nested composite returning an input bound to one), and
 # 0.12.1 is where the flattener records it -- reading the dataflow of any workflow
@@ -44,14 +51,15 @@ classifiers = [
 # rather than refusing the document that carries one, which every plan of a job
 # needing a refill does. Against an older one the first replan is refused, and a
 # refused replan stops every job of the run.
-# 🔴 The `<0.13` bound is a bound, not a floor. Each schedule minor since 0.9 has
+# 🔴 The `<0.14` bound is a bound, not a floor. Each schedule minor from 0.9 to 0.12 had
 # changed which *documents* a run may be given and nothing about what this runner does
 # with the ones it accepts: 0.10 refuses two jobs binding one boundary spot where it
 # used to warn and let the solve decide, and 0.12 names a stock that cannot last or
 # Objects that cannot all reach the end *before* the solve, where the answer used to be
 # the `unknown` a spent budget returns. So the floor stayed at 0.9 through them -- a run
 # worked against any of them -- while the bound moved to admit each release; it moved
-# to 0.12.1 for what this runner reads, above, not for what the scheduler accepts.
+# to 0.12.1, and then 0.13, for what this runner reads, above, not for what the
+# scheduler accepts.
 # The `>=0.5` floor it replaces was required for the same kind of reason:
 # an environment may declare a route that needs no transporter (`transporter: null`,
 # spec §4.6/§5.4) and this runner dispatches such a move, but 0.5 is where the
@@ -83,7 +91,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.12.1,<0.13", "ofplang-validate>=0.2,<0.3"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.13,<0.14", "ofplang-validate>=0.3,<0.4"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"

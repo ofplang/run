@@ -183,6 +183,22 @@ def test_scriptless_op_is_timed_and_defaulted():
     assert st["outputs"] == {"z": 0}
 
 
+def test_a_script_in_another_language_fails_rather_than_running_timed():
+    # The default resolver hands a child only Python, so a script in any other
+    # language used to fall through to the timed path and complete with typed
+    # defaults, as though the process had no script. The in-process backend fails it
+    # (`script_language`); this one now does too, rather than making up its outputs.
+    backend = _backend(_computing_spawn())
+    other = {"script": {"language": "julia", "code": "z = x + y"}}
+    uid = backend.dispatch_processing(
+        "add", "v0", output_schema={"z": INT}, inputs={"x": 1, "y": 2}, definition=other
+    )
+    backend.advance(2)
+    st = backend.state(uid)
+    assert st["status"] == "failed"
+    assert st["reason"][0] == "script_language"
+
+
 def test_close_terminates_running_children():
     seen = {}
 

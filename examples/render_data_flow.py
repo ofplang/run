@@ -29,7 +29,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ofplang.schedule.core.identifiers import format_element
+from ofplang.schedule.scheduler.model import SourceRef
+
 from ofplang.run.runner import RollingRunner, observation
+from ofplang.run.runner.values import describe
 
 HERE = Path(__file__).parent
 OUT = HERE / "outputs"
@@ -46,6 +50,14 @@ def _fmt_node(node) -> str:
     """A workflow node path (tuple) as a readable dotted string; `()` is the
     workflow boundary."""
     return "/".join(node) if node else "(boundary)"
+
+
+def _fmt_source(source) -> str:
+    """Where a value comes from (a dataflow Source): the producing node and port,
+    or the literal."""
+    if isinstance(source, SourceRef):
+        return f"{_fmt_node(source.node)}.{format_element(source.port, source.index)}"
+    return describe(source)
 
 
 def main() -> None:
@@ -79,8 +91,8 @@ def main() -> None:
     # The whole-workflow outputs, each traced back to the producer it came from.
     lines.append("")
     lines.append("whole-workflow outputs (returns):")
-    for name, (node, port) in df.returns.items():
-        lines.append(f"  {name:<12} = {runner.outputs.get(name)}   <- {_fmt_node(node)}.{port}")
+    for name, source in df.returns.items():
+        lines.append(f"  {name:<12} = {runner.outputs.get(name)}   <- {_fmt_source(source)}")
 
     text = "\n".join(lines) + "\n"
     (OUT / "data_flow.trace.txt").write_text(text, encoding="utf-8")

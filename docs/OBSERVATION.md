@@ -126,7 +126,8 @@ outputs:                                      # value: one entry per output port
 ```
 
 - `inputs.<port>.view` is the value actually consumed (as assembled by the runner —
-  connected producer, literal, or typed default; `runner/values.py:assemble_inputs`).
+  from its producer, a literal, or the boundary, where an entry input the boundary
+  did not supply is its type's default; `runner/values.py:assemble_inputs`).
 - `outputs.<port>.view` is the value the runner records at completion from the
   backend's `state()` report (normalized and contract-checked; backend-independent —
   see §9), not a simulator internal.
@@ -153,9 +154,14 @@ moved:                                         # value: the moved Object's view
   view: {barcode: ABC}
 ```
 
-- `moved.view` is the `.view` of the Object carried by this leg.
+- `moved.view` is the `.view` of the Object carried by this leg -- one element's,
+  where the arc names an element `index` (below).
 - A **boundary** transport (spec §6.8) uses an empty node path `[]` on the interface
   side of `arc`, exactly as in the plan.
+- An invocation of an expanded `map` / `fold` (schedule spec §6.3) has an iteration
+  index in its node path, `node: [Read, 1]`, and an arc endpoint that is one element of
+  an Array of Objects carries its `index`, `{node: [], port: plates, index: [1]}` --
+  both exactly as in the plan, integers included.
 
 ### 4.3 Empty views
 

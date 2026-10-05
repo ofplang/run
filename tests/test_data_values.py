@@ -294,6 +294,28 @@ def test_device_model_that_omits_a_declared_output_fails_gracefully():
     )
 
 
+def test_a_completion_that_reports_no_outputs_at_all_fails_gracefully():
+    # A backend reporting a processing op `completed` with no `outputs` key at all
+    # used to pass unchecked: nothing was recorded, the missing-output check sat
+    # behind the key's presence, and a final output fed by the op went missing
+    # without a word. It is now the same `backend_output_missing` as a partial one.
+    from ofplang.run.simulator import VirtualTimeSimulator
+
+    class Silent(VirtualTimeSimulator):
+        def state(self, uid):
+            observed = dict(super().state(uid))
+            observed.pop("outputs", None)
+            return observed
+
+    runner = RollingRunner(
+        COUNT_WF, COUNT_ENV, poll_interval=1, random_seed=0,
+        backend_factory=lambda env, **kw: Silent(env, **kw),
+    )
+    runner.run()  # must not raise
+    assert runner.failed
+    assert runner.failure is not None and runner.failure.kind == "backend_output_missing"
+
+
 def test_dispatch_with_an_unproduced_input_fails_gracefully():
     # An activity started while a predecessor is still running would be handed a
     # typed default for the value that predecessor owes it, and would compute on it.

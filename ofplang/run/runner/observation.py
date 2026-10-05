@@ -154,7 +154,8 @@ def format_text(entries: list[dict]) -> str:
     for entry in entries:
         if entry.get("kind") != "processing":
             continue
-        node = "/".join(entry.get("node") or ()) or "main"
+        # An iteration index is an int in the path; render it as its number.
+        node = "/".join(str(element) for element in entry.get("node") or ()) or "main"
         job = entry.get("job")
         lines.append(f"  {f'{job}:' if job else ''}{node} [{entry.get('process')}]")
         lines.append(f"      in : {_ports_repr(entry.get('inputs'))}")

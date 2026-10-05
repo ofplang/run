@@ -10,16 +10,19 @@ loop just calls them.
 
 Values are typed view values (D27): a supplied job's entry values (contract-
 checked, F4) or the backend's generated outputs (F2), routed along the workflow's
-arcs. Where the runner must synthesise a value it is responsible for -- an entry
-input the job did not supply, or an unconnected input -- it uses a typed default
-(`contracts.default_value`), so every value conforms.
+`Source` trees. The one value the runner synthesises is an entry input the
+boundary did not supply: a typed default (`contracts.default_value`), which the
+run reports (D59). Nothing inside the workflow is ever defaulted -- every input
+has a source (`dataflow.from_workflow` refuses one that does not), and an input
+whose source has no value yet is not assembled at all.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
-from .contracts import conforms, default_value, with_static_views
+from .contracts import ArrayType, conforms, default_value, with_static_views
 from .runner import RunnerError
 
 
@@ -58,102 +61,204 @@ class ValueStore:
         return dict(self._values)
 
 
-def seed_entry(dataflow, contracts, store: ValueStore, job: dict | None = None) -> None:
+# -- Source trees -------------------------------------------------------------
+#
+# A `Source` (schedule D57) says where one port's value comes from: a recorded value
+# or one element of it (`SourceRef`), a literal, or an Array assembled element by
+# element (`SourceSeq`). Matched by class name rather than imported, so importing
+# the runner package does not pull the scheduler in before a run needs it.
+
+
+def source_refs(source) -> Iterator:
+    """Every `SourceRef` a source reads, in element order."""
+    kind = type(source).__name__
+    if kind == "SourceRef":
+        yield source
+    elif kind == "SourceSeq":
+        for item in source.items:
+            yield from source_refs(item)
+
+
+def is_available(source, store: ValueStore) -> bool:
+    """Whether every value `source` reads has been recorded (a literal always has)."""
+    return all(store.has(ref.node, ref.port) for ref in source_refs(source))
+
+
+def fixed_at_start(source) -> bool:
+    """Whether `source` is known before anything runs: it reads only the boundary
+    (seeded at run start) and literals."""
+    return all(tuple(ref.node) == () for ref in source_refs(source))
+
+
+def resolve(source, store: ValueStore) -> Any:
+    """The value `source` describes, read from `store`.
+
+    The caller asks `is_available` first; reading an unrecorded value is a runner
+    bug and raises. So does an element index past the end of its Array: the plan
+    was built for that many elements, and the length checks (`LengthCheck`) stop a
+    job whose values disagree before any consumer of the missing element runs."""
+    kind = type(source).__name__
+    if kind == "SourceLiteral":
+        return source.value
+    if kind == "SourceSeq":
+        return [resolve(item, store) for item in source.items]
+    if kind != "SourceRef":
+        raise RunnerError(f"unknown value source {source!r}")
+    if not store.has(source.node, source.port):
+        raise RunnerError(f"no value recorded for {describe(source)}")
+    value = store.get(source.node, source.port)
+    for depth, i in enumerate(source.index):
+        if not isinstance(value, list) or not 0 <= i < len(value):
+            whole = type(source)(source.node, source.port)
+            raise RunnerError(
+                f"{describe(whole)} has no element at "
+                f"{''.join(f'[{j}]' for j in source.index[: depth + 1])}"
+            )
+        value = value[i]
+    return value
+
+
+def describe(source) -> str:
+    """A source as a message names it: `Dispense/2.plate`, `main.plates[1]`, ..."""
+    from ofplang.schedule.core.identifiers import format_element, format_node_path
+
+    kind = type(source).__name__
+    if kind == "SourceRef":
+        node = format_node_path(source.node) if source.node else "main"
+        return f"{node}.{format_element(source.port, tuple(source.index))}"
+    if kind == "SourceLiteral":
+        return f"the literal {source.value!r}"
+    return "[" + ", ".join(describe(item) for item in source.items) + "]"
+
+
+# -- the boundary ---------------------------------------------------------------
+
+
+def _spot_shaped(spots, resolved, port: str, make):
+    """Walk an Array port's spot binding (a spot, or lists of them as deep as the
+    port nests Arrays) and build a value of the same shape, `make(element_type)`
+    at each spot. The binding is what fixes how many Objects there are, so a
+    default for an Array of Objects has one element per spot -- not `[]`, which
+    would say there are none."""
+    if isinstance(spots, list):
+        if not isinstance(resolved, ArrayType):
+            raise RunnerError(f"boundary input {port!r} binds a list of spots to a non-Array")
+        return [_spot_shaped(item, resolved.element, port, make) for item in spots]
+    return make(resolved)
+
+
+def _matches_spots(value, spots) -> bool:
+    """Whether a supplied view value has exactly the shape of its spot binding: a
+    list of the same length wherever the binding has a list, at every depth."""
+    if isinstance(spots, list):
+        return (
+            isinstance(value, list)
+            and len(value) == len(spots)
+            and all(_matches_spots(v, s) for v, s in zip(value, spots, strict=True))
+        )
+    return True
+
+
+def seed_entry(
+    dataflow, contracts, store: ValueStore, job: dict | None = None, spots: dict | None = None
+) -> None:
     """Seed every `main`-level entry input at `((), port)` with a typed view value.
 
     A value supplied by `job` is used (and contract-checked against the entry
-    input's type); an entry input the job omits gets a typed default (F4). A job key
-    that is not an entry input is an error (a typo / wrong port). Object entries are
-    seeded here too (their value is a view record); their physical placement on an
-    interface spot is separate (§6.8)."""
+    input's type); an entry input the job omits gets a typed default (F4) -- the
+    one place the runner makes a value up, and reported by the run (`Job.warnings`).
+    A job key that is not an entry input is an error (a typo / wrong port).
+
+    Object entries are seeded here too (their value is a view record); their
+    physical placement on an interface spot is separate (§6.8). `spots` is that
+    placement (`{port: spot | [spot, ...]}`): an Array of Objects has one element
+    per spot, so its default has that many elements, and a supplied view must have
+    exactly that shape."""
     job = job or {}
+    spots = spots or {}
     entry_inputs = contracts.processes[contracts.entry].inputs if contracts.entry else {}
     for port in job:
         if port not in entry_inputs:
             raise RunnerError(f"job supplies unknown entry input {port!r}")
     for port in dataflow.entry_ports:
         resolved = entry_inputs.get(port)
+        if resolved is None:
+            # The flattener and the contract resolver read the same entry process, so
+            # this is a runner bug, not a document problem -- and a value made up for
+            # a port with no type could only be a guess.
+            raise RunnerError(f"entry input {port!r} has no resolved type")
+        bound = spots.get(port)
         if port in job:
             value = job[port]
-            if resolved is not None and not conforms(value, resolved):
+            if not conforms(value, resolved):
                 raise RunnerError(
                     f"job value for entry input {port!r} does not conform to its type"
                 )
+            if bound is not None and not _matches_spots(value, bound):
+                raise RunnerError(
+                    f"boundary input {port!r}: its view does not have the shape of its "
+                    f"spots (one view per spot, in the same order)"
+                )
+        elif bound is not None:
+            value = _spot_shaped(bound, resolved, port, default_value)
         else:
-            value = default_value(resolved) if resolved is not None else {}
+            value = default_value(resolved)
         # Project any type-level static view values onto the seeded value (D35), so a
         # supplied job value with a stale static field is corrected and a default
         # already carries them. The value store then always holds the static value.
-        if resolved is not None:
-            value = with_static_views(value, resolved)
-        store.put((), port, value)
+        store.put((), port, with_static_views(value, resolved))
 
 
-def assemble_inputs(dataflow, contracts, store: ValueStore, node) -> dict:
-    """Build a node's input values by following each input port back to its source.
+# -- routing ---------------------------------------------------------------------
 
-    For each input port of `node`, in precedence order (these are mutually exclusive
-    per binding, v0 §11):
-      1. a connected producer (`from:`) that has a stored value -> use it (the
-         producer -> consumer routing);
-      2. a static literal (`value:`, D30) bound to the port -> use it, contract-checked
-         against the port type (a non-conformant literal is a `RunnerError`);
-      3. otherwise -> a typed default of the port's type.
 
-    Case 3 covers two situations this function cannot tell apart: a genuinely
-    unconnected input (no `from:`, legitimately synthesised) and a *connected* one
-    whose producer has not recorded its value yet. Substituting a default for the
-    second would compute on a value that is not the workflow's, so a caller that
-    needs real values asks `unproduced_inputs` first and refuses to proceed --
-    which the runner does before every dispatch. The leniency is kept here for the
-    one caller that wants it: the run-start preflight (D37), which assembles every
-    port but reads only the ones its phase-hoisted `requires` reference.
+def assemble_inputs(dataflow, contracts, store: ValueStore, node, ports=None) -> dict:
+    """Build a node's input values by resolving each input port's `Source`.
 
-    Every assembled value conforms. This is the routing primitive the dataflow unit
-    tests exercise and the rolling loop passes to the backend (F4)."""
+    Every port has a source (`dataflow.from_workflow` refuses a workflow where one
+    does not), and every source must already be available: a caller dispatching an
+    activity asks `unproduced_inputs` first and refuses to proceed. `ports` limits
+    the result to those ports -- the run-start preflight (D37) assembles only the
+    inputs its phase-hoisted `requires` read, which are the ones fixed at run start.
+
+    Every assembled value is checked against its port's type. A routed value was
+    checked when it was recorded, but a literal, or an Array assembled from several
+    sources, is first seen whole here."""
     node = tuple(node)
     process = dataflow.process_of.get(node)
+    if process is None:
+        raise RunnerError(f"no activity at node {node!r}")
     result: dict[str, Any] = {}
     for port in dataflow.in_ports.get(node, ()):
-        source = dataflow.input_source.get((node, port))
-        if source is not None and store.has(source[0], source[1]):
-            result[port] = store.get(source[0], source[1])
+        if ports is not None and port not in ports:
             continue
-        resolved = contracts.input_type(process, port) if process is not None else None
-        if (node, port) in dataflow.literals:
-            # A static literal supplies the value directly; check it like a job value
-            # (the runner assumes valid v0, but a cheap conformance check catches an
-            # ill-typed constant that would otherwise flow on unnoticed).
-            value = dataflow.literals[(node, port)]
-            if resolved is not None and not conforms(value, resolved):
+        source = dataflow.sources[(node, port)]
+        value = resolve(source, store)
+        resolved = contracts.input_type(process, port)
+        if not conforms(value, resolved):
+            if type(source).__name__ == "SourceLiteral":
                 raise RunnerError(f"static literal for input {port!r} does not conform to its type")
-            # A literal bound to a static-view type gets its static fields projected (D35).
-            result[port] = with_static_views(value, resolved) if resolved is not None else value
-        else:
-            # `default_value` already carries static view values (D35).
-            result[port] = default_value(resolved) if resolved is not None else {}
+            raise RunnerError(
+                f"value for input {port!r} ({describe(source)}) does not conform to its type"
+            )
+        # A value bound to a static-view type gets its static fields projected (D35).
+        result[port] = with_static_views(value, resolved)
     return result
 
 
 def unproduced_inputs(dataflow, store: ValueStore, node) -> list[str]:
-    """The input ports of `node` that are *connected* to a producer which has not
-    recorded a value yet -- the case `assemble_inputs` would silently fill with a
-    typed default (see its case 3).
-
-    Only a port with an `input_source` is considered, so an unconnected input and a
-    static literal are never reported: both are values the runner is entitled to
-    synthesise. A boundary source (node `()`) never appears either -- `seed_entry`
-    seeds every entry port at run start, before anything is dispatched.
+    """The input ports of `node` whose source has not recorded a value yet.
 
     A non-empty result at dispatch time means the activity was started while a
     predecessor was still running, which the plan's precedence is supposed to
-    prevent; see the caller for how that arises and why it is an error."""
+    prevent; see the caller for how that arises and why it is an error. A boundary
+    source never appears -- `seed_entry` seeds every entry port before anything is
+    dispatched -- nor does a literal."""
     node = tuple(node)
     return [
         port
         for port in dataflow.in_ports.get(node, ())
-        if (source := dataflow.input_source.get((node, port))) is not None
-        and not store.has(source[0], source[1])
+        if not is_available(dataflow.sources[(node, port)], store)
     ]
 
 
@@ -166,12 +271,12 @@ def record_outputs(store: ValueStore, node, outputs: dict) -> None:
 
 
 def collect_outputs(dataflow, store: ValueStore) -> dict:
-    """Assemble the whole-workflow outputs from the store, following each `main`
-    output port back to its producing `(node, port)`. A return whose producer has
-    not been recorded is omitted (it never ran). A return of a static literal has no
-    producer and is always present."""
-    result: dict[str, Any] = dict(dataflow.return_literals)
-    for name, (node, port) in dataflow.returns.items():
-        if store.has(node, port):
-            result[name] = store.get(node, port)
-    return result
+    """Assemble the whole-workflow outputs from the store, resolving each `main`
+    output port's `Source`. A return whose source is not yet available is omitted:
+    only a job that stopped can end with one, and the caller holds every other job
+    to having them all."""
+    return {
+        name: resolve(source, store)
+        for name, source in dataflow.returns.items()
+        if is_available(source, store)
+    }

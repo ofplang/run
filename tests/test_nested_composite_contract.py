@@ -20,6 +20,8 @@ import pytest
 
 pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
 
+from ofplang.schedule.scheduler.model import SourceRef  # noqa: E402
+
 from ofplang.run.runner import RollingRunner  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -47,8 +49,8 @@ def test_nested_composite_boundary_is_exposed_to_the_runner():
     assert ("W",) in runner.dataflow.composites
     boundary = runner.dataflow.composites[("W",)]
     assert boundary.process == "wrap"
-    assert boundary.inputs == {"inp": (("Pre",), "p")}
-    assert boundary.outputs == {"out": (("W", "Inc"), "y")}
+    assert boundary.inputs == {"inp": SourceRef(("Pre",), "p")}
+    assert boundary.outputs == {"out": SourceRef(("W", "Inc"), "y")}
 
 
 @pytest.mark.parametrize("poll_interval", [None, 1])
