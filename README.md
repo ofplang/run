@@ -58,7 +58,10 @@ without real hardware; the same dispatch contract targets real hardware later.
 >   is that consumer input's value. At run end
 >   the produced output views are echoed back into a result boundary of the same
 >   schema (`--boundary-out`). Non-script values are typed but still dummy — a real
->   device backend plugs into the same seam later.
+>   device backend plugs into the same seam later. Those dummies are the built-in
+>   simulator's, a mock device's answer: the runner itself fills no output, and a
+>   backend that leaves a declared output unset stops the job
+>   (`backend_output_missing`).
 > - **Device-local consumables** (`ofplang-schedule` §4.7) — a device may declare a
 >   stock it holds and a process mode what it draws per run. What each stock holds
 >   *at the start of the run* is a property of the run, so it goes in the run
