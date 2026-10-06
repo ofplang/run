@@ -343,7 +343,6 @@ execute it:
 | v0 feature | `ofplang-run` |
 |---|---|
 | `python_script_processes` | **Supported** — the built-in device model runs the script and verifies its outputs (see above). |
-| `scheduling_policies` | Ignored, as in [`ofplang-schedule`](https://github.com/ofplang/schedule), which does the planning. |
 | `generic_processes` | **Not supported.** The front door's capability gate refuses it before anything runs, naming the process. |
 | `node_map`, `node_fold` | **Supported.** The scheduler expands each into its invocations before planning (invocation `i` of node `N` is the activity at node path `[N, i, …]`), and the runner reads the same expanded graph. How many invocations there are must be known before the run: the length of an Array of Objects bound at the boundary, or of a literal. A run-phase or produced Array zipped with one is assumed to have that length and checked once its value exists — at run start for a boundary value, on completion for a produced one — and a mismatch stops the job (`each_length_mismatch`). A `map` / `fold` whose length nothing before the run gives is refused (`array_length_unknown`). |
 | `node_do_while`, `node_branch` | **Not supported.** The front door's capability gate refuses one before anything runs, naming the node and the feature: how many times a `do_while` repeats, and which arm of a `branch` runs, are decided by values, so neither is a graph fixed before the run. |
