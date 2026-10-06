@@ -238,8 +238,8 @@ class RunResult:
     # so a caller that only knows the old field reports exactly what it always did.
     job_failures: list = field(default_factory=list)
     # What the run itself warned about (`runner.job.RunWarning`, D59): an entry input
-    # run on its type's default, a final output it cannot report. Handed up, like the
-    # scheduler's, for the caller to print.
+    # run on its type's default. Handed up, like the scheduler's, for the caller to
+    # print.
     run_warnings: list = field(default_factory=list)
 
 

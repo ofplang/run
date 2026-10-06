@@ -226,8 +226,8 @@ def build_job(
 
 @dataclass(frozen=True)
 class RunWarning:
-    """Something a run says without failing (D59): a value it made up, or one it
-    cannot report. `job` is the job's id, empty for a single-workflow run."""
+    """Something a run says without failing (D59): a value it made up. `job` is the
+    job's id, empty for a single-workflow run."""
 
     code: str
     message: str
@@ -240,9 +240,11 @@ def _warnings(dataflow, boundary: Boundary, job_id: str) -> list:
     - `entry_input_defaulted`: an entry input the boundary supplied no value for runs
       on its type's default -- the one value the runner makes up, so it never does so
       without saying (an Object's whole view as much as a Pure Data value).
-    - `output_unreported`: an Object-bearing final output the scheduler records no
-      source for (an entry Object returned unchanged). It is absent from the run's
-      outputs, and saying so is the difference between a known gap and a silent one.
+
+    (A final output with no source used to be warned about here, as
+    `output_unreported`: an entry Object returned untouched, which the scheduler left
+    out of scope. It records one now, so a missing one is refused as the defect it
+    is -- `dataflow.from_workflow`.)
     """
     found: list = []
     for port in dataflow.entry_ports:
@@ -253,13 +255,6 @@ def _warnings(dataflow, boundary: Boundary, job_id: str) -> list:
                 f"it runs on its type's default",
                 job_id,
             ))
-    for port in dataflow.unreported:
-        found.append(RunWarning(
-            "output_unreported",
-            f"final output {port!r} returns an entry Object unchanged, which the "
-            f"scheduler does not record; the run cannot report its value",
-            job_id,
-        ))
     return found
 
 

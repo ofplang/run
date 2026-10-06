@@ -1035,8 +1035,8 @@ class RollingRunner:
     @property
     def warnings(self) -> list:
         """What the run says without failing (`job.RunWarning`, D59): an entry input
-        run on its type's default, a final output it cannot report. Every job's, in
-        roster order, each naming its job in a run of several."""
+        run on its type's default. Every job's, in roster order, each naming its job in
+        a run of several."""
         return [warning for job in self._jobs for warning in job.warnings]
 
     @property

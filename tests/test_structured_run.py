@@ -133,13 +133,21 @@ def test_no_plates_is_no_invocation():
     assert runner.warnings == []
 
 
-def test_no_plates_through_a_fold_carrying_an_object_is_refused():
-    # With no plates the fold hands its carried reagent straight through, so the
-    # final `reagent` is the entry Object returned unchanged. The scheduler leaves
-    # that out of scope and refuses the binding rather than planning around it --
-    # refused, not dropped. (Recording it is the follow-up D59 J2 keeps open.)
-    with pytest.raises(RunnerError, match="interface_unknown_port"):
-        _run(_workflow(), _boundary(spots=[], views=[], rack=None))
+def test_no_plates_through_a_fold_carrying_an_object_returns_it_untouched():
+    # With no plates the fold hands its carried reagent straight through: the final
+    # `reagent` is the entry Object returned as it came, which the scheduler plans as a
+    # through arc (schedule D60 J2) -- it used to refuse the whole run for it. The
+    # run reports it with the view it came in with, and nothing is warned about.
+    boundary = _boundary(spots=[], views=[], rack=None)
+    boundary["boundary"]["inputs"]["reagent"]["view"] = {}
+    boundary["boundary"]["outputs"]["reagent"] = {"spot": "shelf.r"}
+    runner, status = _run(_workflow(), boundary)
+    assert not runner.failed, runner.failure
+    assert runner.outputs == {"reagent": {}, "plates": [], "ods": []}
+    assert runner.warnings == []
+    assert runner.result_boundary["boundary"]["outputs"]["reagent"] == {
+        "spot": "shelf.r", "view": {}
+    }
 
 
 def test_views_left_out_are_one_default_per_spot_and_said():
@@ -264,3 +272,62 @@ def test_the_elements_of_one_boundary_port_are_distinct_arcs():
 
     assert activity_key(leg(0)) != activity_key(leg(1))
     assert activity_key(same_consumer(0)) != activity_key(same_consumer(1))
+
+
+# -- an entry Object returned untouched (schedule D60 J2) --------------------------------
+
+_PASS_WF = """\
+spec_version: "0.5"
+types: {Plate: {domain: object, view: {id: {type: String}}}}
+processes:
+  heat:
+    kind: atomic
+    inputs: {plate: {type: Plate, phase: data}}
+    outputs: {plate: {type: Plate, phase: data}}
+    objects: {map: {outputs.plate: inputs.plate}}
+  main:
+    kind: composite
+    inputs: {a: {type: Plate, phase: data}, b: {type: Plate, phase: data}}
+    outputs: {a: {type: Plate, phase: data}, b: {type: Plate, phase: data}}
+    body:
+      nodes:
+        - {id: H, process: heat, state: {plate: {from: inputs.a}}}
+      returns: {a: {from: H.plate}, b: {from: inputs.b}}
+entry: main
+"""
+
+_PASS_ENV = """\
+time: {unit: second}
+devices:
+  - {id: hotel, spots: [a, b]}
+  - {id: oven, spots: [tray]}
+  - {id: rack, spots: [a, b]}
+transporters: [{id: arm}]
+transports:
+  - {transporter: arm, from: hotel.a, to: oven.tray, duration: 2}
+  - {transporter: arm, from: oven.tray, to: rack.a, duration: 2}
+  - {transporter: arm, from: hotel.b, to: rack.b, duration: 3}
+processes:
+  heat:
+    modes:
+      - {devices: [oven], duration: 5, input_spots: {plate: oven.tray},
+         output_spots: {plate: oven.tray}}
+"""
+
+
+def test_an_object_returned_untouched_is_moved_and_reported(tmp_path):
+    env = tmp_path / "env.yaml"
+    env.write_text(_PASS_ENV, encoding="utf-8")
+    boundary = {"boundary": {
+        "inputs": {"a": {"spot": "hotel.a", "view": {"id": "A"}},
+                   "b": {"spot": "hotel.b", "view": {"id": "B"}}},
+        "outputs": {"a": {"spot": "rack.a"}, "b": {"spot": "rack.b"}},
+    }}
+    runner, _ = _run(yaml.safe_load(_PASS_WF), boundary, env=str(env))
+    assert not runner.failed, runner.failure
+    # `b` crossed the boundary in and out untouched: carried to its output spot (the
+    # delivery check found it there), with the view it came in with.
+    assert runner.outputs == {"a": {"id": "A"}, "b": {"id": "B"}}
+    moved = [e["moved"]["view"] for e in runner.observations
+             if e.get("kind") == "transport" and e["arc"]["to"] == {"node": [], "port": "b"}]
+    assert moved == [{"id": "B"}]

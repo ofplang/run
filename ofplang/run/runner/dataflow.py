@@ -28,7 +28,7 @@ job (§7) -- so no §7 / §5.7 machinery is pulled in here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .runner import RunnerError
 
@@ -82,11 +82,6 @@ class Dataflow:
     # Lengths the plan was built on that only a value can confirm (schedule
     # `LengthCheck`): an `each` source zipped with one whose length was known.
     length_checks: tuple = ()
-    # Object-bearing final outputs the flattener records no source for: an entry
-    # Object returned unchanged (as a whole or as an element of an Array). The
-    # scheduler leaves such a return out of scope, so the runner cannot report it --
-    # and says so rather than dropping it without a word (D59 J2).
-    unreported: tuple = field(default_factory=tuple)
 
 
 def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
@@ -133,7 +128,8 @@ def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
     # convention. An input the flattener found no source for is refused here, before
     # anything runs: v0 binds every input port (§11) and defines no default for one,
     # so there is no value the runner could give it that would be the workflow's.
-    # A validated workflow never reaches this; one run without validation can.
+    # The flattener refuses such a document itself (its guards, schedule D60), so
+    # this holds it to that rather than catching anything new.
     sources = {(ep.node, ep.port): source for ep, source in workflow.input_sources.items()}
     unsourced = [
         f"{format_node_path(node)}.{port}"
@@ -156,25 +152,18 @@ def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
         for path, io in workflow.composites.items()
     }
 
-    # Final outputs likewise. A Pure Data one with no source is refused like an
-    # input; an Object-bearing one without is the out-of-scope pass-through above,
-    # which the run reports as unreported rather than refusing.
+    # Final outputs likewise, Object-bearing and Pure Data alike. v0 has a composite
+    # return every output it declares (spec 12.3, revision 0.5), and the scheduler
+    # records a source for every one -- an Object returned untouched included (its
+    # D60) -- so one without is the flattener's to explain, and the run would
+    # otherwise end without a value it was asked for.
     returns = dict(workflow.output_sources)
-    unreturned = [
-        name
-        for name, object_bearing in workflow.exit_output_ports.items()
-        if not object_bearing and name not in returns
-    ]
+    unreturned = [name for name in workflow.exit_output_ports if name not in returns]
     if unreturned:
         raise RunnerError(
-            f"final output(s) {', '.join(unreturned)} have no source: every output of "
-            f"the entry process must be returned (v0 §11)"
+            f"final output(s) {', '.join(unreturned)} have no source: a composite returns "
+            f"every output it declares (v0 12.3)"
         )
-    unreported = tuple(
-        name
-        for name, object_bearing in workflow.exit_output_ports.items()
-        if object_bearing and name not in returns
-    )
 
     return Dataflow(
         process_of=process_of,
@@ -185,5 +174,4 @@ def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
         returns=returns,
         composites=composites,
         length_checks=tuple(workflow.length_checks),
-        unreported=unreported,
     )

@@ -74,6 +74,7 @@ processes:
   main:
     kind: composite
     inputs: {sample: {type: Sample, phase: data}}
+    outputs: {result: {type: Sample, phase: data}}
     body:
       nodes:
         - {id: M, process: measure, state: {plate: {from: inputs.sample}}}
@@ -584,12 +585,13 @@ def test_resolve_refuses_an_element_past_the_end():
 def test_an_unbound_input_is_refused_before_anything_runs(tmp_path):
     # v0 binds every input (§11) and defines no default for one. A document that
     # leaves one unbound is invalid -- and run without validation it used to get a
-    # typed default; now the dataflow refuses it.
+    # typed default; now it is refused before anything runs, by the scheduler's
+    # reader with validate's code for it (schedule D60).
     from ofplang.run.runner.runner import RunnerError
 
     doc = tmp_path / "wf.yaml"
     doc.write_text(_LITERAL_WF.replace("bind: {cfg: {value: 5}}", "bind: {}"), encoding="utf-8")
-    with pytest.raises(RunnerError, match=r"input\(s\) C\.cfg have no source"):
+    with pytest.raises(RunnerError, match="data_indegree"):
         from_workflow(doc)
 
 
