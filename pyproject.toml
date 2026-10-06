@@ -26,13 +26,18 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.13` floor is required, not merely tested against:
+# PyPI. The `ofplang-schedule>=0.13.1` floor is required, not merely tested against:
+# this runner treats a final output with no recorded source as the flattener's defect
+# and refuses it, and 0.13.1 is where the flattener records one for an entry Object
+# returned untouched (a through arc) and refuses an unbound input with validate's
+# code before the runner's own check. Against 0.13.0 such a workflow is refused here
+# rather than run. The `ofplang-validate>=0.4` floor follows it: schedule 0.13.1
+# requires validate 0.4 (specification revision 0.5).
+# The `ofplang-schedule>=0.13` floor it replaces was required for the same kind of reason:
 # this runner reads where every value comes from as the flattener's `Source` trees
 # (`input_sources` / `output_sources` / `length_checks`) and flattens with the run's
 # `interface`, so a `map` / `fold` expands to the invocations the plan names -- all
-# new in 0.13. Against an older one the dataflow cannot be read at all. The
-# `ofplang-validate>=0.3` floor follows it: schedule 0.13 requires validate 0.3
-# (specification revision 0.4).
+# new in 0.13. Against an older one the dataflow cannot be read at all.
 # The `ofplang-schedule>=0.12.1` floor it replaces was required for the same kind of reason:
 # this runner reads the flattened workflow's `exit_literals` to return a final output
 # that is a static literal (a nested composite returning an input bound to one), and
@@ -91,7 +96,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.13,<0.14", "ofplang-validate>=0.3,<0.4"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.13.1,<0.14", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
