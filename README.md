@@ -182,6 +182,19 @@ already-loaded workflow document, so an embedding caller holding one in memory i
 checked the same way a CLI is. The runner *library* never imports validate (and the
 replans never re-validate), so it stays a one-shot front door.
 
+**Who checks what.** Across the toolchain there are three kinds of check and one owner
+for each. Whether a workflow is **valid v0** is `ofplang-validate`'s alone, asked once
+at the front door. Whether it can be **planned** -- the supported subset, lengths
+known before the run, the boundary bindings -- is `ofplang-schedule`'s. Whether the
+**values** are right at run time -- a value's type, a contract, an `each` length only a
+value shows, a backend that returned every output -- is this runner's, being the only
+one that sees values. Neither the scheduler nor the runner re-validates; both read the
+workflow assuming it is valid v0, and refuse only where their own reading would
+otherwise drop or make up a value (an input with no source, a final output with no
+source), answering with the code validate gives the same document where there is one.
+That is what a run without validation (`--no-validate`, `validate=False`) can still
+rely on.
+
 For development, install editable with the test extra from a clone:
 
 ```sh
