@@ -196,16 +196,15 @@ def _zipped(source: str) -> dict:
     return doc
 
 
-def test_a_boundary_value_of_the_wrong_length_stops_the_job_before_it_starts():
+def test_a_boundary_value_of_the_wrong_length_refuses_the_run_before_it_starts():
+    # The run states the gains' length (`expansion`, schedule D62), so the scheduler
+    # sees three plates zipped with two gains before anything is planned: the boundary
+    # contradicts itself, and the run is refused before it starts (D62 H1). Until then
+    # this stopped the job at its first preflight.
     boundary = _boundary(views=[{"id": "x"}] * 3)
     boundary["boundary"]["inputs"]["gains"] = {"view": [1.0, 2.0]}
-    runner, status = _run(_zipped("boundary"), boundary)
-    assert runner.failed
-    assert runner.failure.kind == "each_length_mismatch"
-    assert "2 elements" in runner.failure.detail and "planned for 3" in runner.failure.detail
-    # Nothing ran.
-    assert not [a for a in status["activities"] if a.get("status") == "completed"
-                and a.get("kind") == "processing"]
+    with pytest.raises(RunnerError, match="each_length_mismatch"):
+        _run(_zipped("boundary"), boundary)
 
 
 def test_a_boundary_value_of_the_right_length_runs():

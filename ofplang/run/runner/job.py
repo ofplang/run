@@ -26,7 +26,7 @@ from typing import Any
 from .boundary import Boundary, parse_boundary
 from .contract_eval import parse as parse_contract
 from .contract_eval import referenced_ports
-from .contracts import Contracts, to_descriptor
+from .contracts import ArrayType, Contracts, is_object_bearing, to_descriptor
 from .dataflow import from_workflow
 from .failure import Failure
 from .runner import RunnerError
@@ -54,6 +54,11 @@ class Job:
     contracts: Contracts
     boundary: Boundary
     release: int = 0
+    # What this job's values say about how its workflow expands (schedule SPEC §6.13):
+    # the length of every Pure Data Array entry input, counted off the value the run
+    # was given. The scheduler is never given values, so this is how a `map` / `fold`
+    # over one is planned (`expansion_of`). None where there is nothing to state.
+    expansion: dict | None = None
 
     # 🔴 What the scheduler promised this job (`bound`) and the digest of the workflow
     # it was planned for (`fingerprint`) are deliberately NOT here. They used to be:
@@ -120,8 +125,9 @@ class Job:
         """This job as a `jobs` entry of the execution document (§6.11), *as the
         runner states it* -- when the run opens, and when the job arrives.
 
-        Three fields, and they are the three the runner knows: who the job is, the
-        earliest it may start, and where its boundary material sits.
+        Four fields, and they are the four the runner knows: who the job is, the
+        earliest it may start, where its boundary material sits, and how long the lists
+        of values it was given are.
 
         🔴 What the **scheduler** decides is not here. A job's promise (`bound`) and the
         digest of the workflow it was planned for (`fingerprint`) are written by the
@@ -138,6 +144,8 @@ class Job:
         entry: dict = {"id": self.id, "release": self.release}
         if self.interface:
             entry["interface"] = self.interface
+        if self.expansion:
+            entry["expansion"] = self.expansion
         return entry
 
     @property
@@ -191,9 +199,13 @@ def build_job(
     # here, up front; a supplied view value's conformance is checked when it is
     # seeded.
     parsed_boundary = parse_boundary(boundary, contracts)
-    # Flattened with the same `interface` the scheduler is handed, so an Array of
-    # Objects at the boundary expands to the invocations the plan names.
-    dataflow = from_workflow(workflow, interface=parsed_boundary.interface or None)
+    # Flattened with the same `interface` and `expansion` the scheduler is handed, so
+    # an Array at the boundary -- of Objects, or of values -- expands to the
+    # invocations the plan names.
+    expansion = expansion_of(contracts, parsed_boundary)
+    dataflow = from_workflow(
+        workflow, interface=parsed_boundary.interface or None, expansion=expansion
+    )
     process_defs = (workflow or {}).get("processes") or {}
     contract_asts = parse_contracts(process_defs, contracts)
     _check_composite_sources(dataflow, contracts, contract_asts)
@@ -204,6 +216,7 @@ def build_job(
         contracts=contracts,
         boundary=parsed_boundary,
         release=release,
+        expansion=expansion,
         warnings=_warnings(dataflow, parsed_boundary, id),
         # Resolved port types (D27 F1): the per-process output descriptors, so the
         # backend can generate typed values (F2).
@@ -222,6 +235,32 @@ def build_job(
         # Nested composite invocation boundaries, keyed by node path (D34).
         composites=dataflow.composites,
     )
+
+
+def expansion_of(contracts: Contracts, boundary: Boundary) -> dict | None:
+    """The `expansion` section (schedule SPEC §6.13) this job's values give: the
+    length of every Pure Data Array entry input, in declaration order.
+
+    **Every one**, not only those a `map` / `fold` traverses: which ones are traversed
+    is known once the workflow is expanded, which is the scheduler's to do, and it
+    passes over a length nothing reads (design.md D62 H2). An Array of Objects is left
+    out -- its length is its `interface` binding's -- and so is everything that is not
+    an Array.
+
+    The length is the value's that will be seeded: the one supplied, or the empty list
+    an unsupplied Array defaults to (`contracts.default_value`; `entry_input_defaulted`
+    says so). A supplied value that is not a list has no length to state; seeding it
+    refuses it as not conforming to its type, before anything runs."""
+    entry = contracts.entry
+    entry_inputs = contracts.processes[entry].inputs if entry is not None else {}
+    lengths = []
+    for port, resolved in entry_inputs.items():
+        if not isinstance(resolved, ArrayType) or is_object_bearing(resolved):
+            continue
+        value = boundary.entry_values.get(port, [])
+        if isinstance(value, list):
+            lengths.append({"node": [], "port": port, "length": len(value)})
+    return {"lengths": lengths} if lengths else None
 
 
 @dataclass(frozen=True)

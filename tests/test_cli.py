@@ -96,21 +96,57 @@ def test_run_structured_node_is_refused_before_running(capsys):
     assert "node_do_while" in err
 
 
-def test_run_map_whose_length_nothing_gives_is_refused(capsys):
-    # A `map` over a Pure Data entry input passes the gate (it is expanded before
-    # planning), but how many invocations it makes is a value the scheduler never
-    # sees -- no Array of Objects at the boundary, no literal -- so it cannot be
-    # planned, and the run says why before anything runs.
-    code = main(
-        [
-            "run",
-            str(FIXTURES / "structured_node.workflow.yaml"),
-            "--env",
-            str(EXAMPLES / "count_chain.env.yaml"),
-        ]
+_MAKER_ENV = """\
+time: {unit: second}
+devices:
+  - {id: maker, spots: [out]}
+  - {id: shelf, spots: [a, b, c]}
+transporters: [{id: arm}]
+transports:
+  - {transporter: arm, from: maker.out, to: shelf.a, duration: 1}
+  - {transporter: arm, from: maker.out, to: shelf.b, duration: 1}
+  - {transporter: arm, from: maker.out, to: shelf.c, duration: 1}
+processes:
+  make:
+    modes:
+      - {devices: [maker], duration: 2, output_spots: {cup: maker.out}}
+"""
+
+
+def _made(status_path) -> list:
+    import yaml
+
+    status = yaml.safe_load(status_path.read_text(encoding="utf-8"))
+    return sorted(
+        a["node"] for a in status["activities"]
+        if a["kind"] == "processing" and a.get("status") == "completed"
     )
-    assert code != 0
-    assert "array_length_unknown" in capsys.readouterr().err
+
+
+def test_run_map_over_a_list_of_values_runs_once_per_element(tmp_path, capsys):
+    # A `map` over a Pure Data entry input: how many invocations it makes is the
+    # length of the list, which the scheduler never sees. The run counts it and
+    # states it (`expansion`, schedule design.md D62), so it is planned and run.
+    pytest.importorskip("ofplang.schedule", reason="ofplang-schedule not installed")
+    env = tmp_path / "maker.env.yaml"
+    env.write_text(_MAKER_ENV, encoding="utf-8")
+    boundary = tmp_path / "boundary.yaml"
+    boundary.write_text("boundary:\n  inputs:\n    labels: {view: [a, b, c]}\n",
+                        encoding="utf-8")
+    out = tmp_path / "status.yaml"
+    workflow = str(FIXTURES / "structured_node.workflow.yaml")
+    code = main(["run", workflow, "--env", str(env), "--boundary", str(boundary),
+                 "-o", str(out)])
+    assert code == EXIT_OK, capsys.readouterr().err
+    assert _made(out) == [["make_cups", i] for i in range(3)]
+    assert "expansion:" in out.read_text(encoding="utf-8")
+
+    # Not supplied, the list is its type's default -- empty -- and said to be; the
+    # map then runs no invocation at all.
+    code = main(["run", workflow, "--env", str(env), "-o", str(out)])
+    assert code == EXIT_OK
+    assert "entry_input_defaulted" in capsys.readouterr().err
+    assert _made(out) == []
 
 
 def test_run_malformed_contract_is_caught_by_front_door(tmp_path, capsys):

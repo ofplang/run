@@ -1,11 +1,12 @@
-# Valid portable v0 (spec §17) that cannot be planned.
+# A `map` over a Pure Data list (spec §17).
 #
 # `main` invokes `make` once per element of `labels`, so the node's `cup` output leaves
 # it as `Array<Cup>` rather than `Cup`. The scheduler expands a `map` into its
 # invocations before planning, which needs their count before the run -- and
-# `labels` is Pure Data, whose length only its value shows. Nothing else here gives
-# the count (no Array of Objects at the boundary, no literal), so the run is refused
-# with `array_length_unknown` before anything runs.
+# `labels` is Pure Data, whose length only its value shows. The run counts the list it
+# was given and states the length in the document's `expansion` (schedule design.md
+# D62); flattened without one, as a bare `from_workflow` call does, the map is refused
+# with `array_length_unknown`.
 #
 # The `cups` output port and its `returns` entry are what make the document valid:
 # a map node's exposed Object output is subject to linearity (spec 12.2), so the

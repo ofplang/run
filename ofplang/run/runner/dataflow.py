@@ -84,14 +84,18 @@ class Dataflow:
     length_checks: tuple = ()
 
 
-def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
+def from_workflow(
+    workflow, interface: dict | None = None, expansion: dict | None = None
+) -> Dataflow:
     """Build the routing view by reusing the scheduler's flattener (D26-0).
 
     `workflow` is either a path to a workflow YAML file or an already-loaded document
     (a mapping). `interface` is the run's §6.8 boundary (spots only): an Array of
     Objects at the boundary takes its length from the spots it is bound to, so a
     workflow traversing one expands to as many invocations as the scheduler plans --
-    the same call, with the same binding, gives the same graph.
+    the same call, with the same binding, gives the same graph. `expansion` (§6.13)
+    does the same for a Pure Data Array at the boundary: the lengths the run counted
+    off its values (`job.expansion_of`).
 
     Raises `RunnerError` if the workflow cannot be flattened (e.g. it contains a
     structured node the scheduler does not expand, or has no entry) -- the same
@@ -105,7 +109,9 @@ def from_workflow(workflow, interface: dict | None = None) -> Dataflow:
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
     workflow, diags = parse_workflow(
-        workflow if isinstance(workflow, dict) else str(workflow), interface=interface
+        workflow if isinstance(workflow, dict) else str(workflow),
+        interface=interface,
+        expansion=expansion,
     )
     errors = [d for d in diags.items if d.severity == ERROR]
     if workflow is None or errors:

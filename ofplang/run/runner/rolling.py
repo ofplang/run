@@ -485,6 +485,7 @@ class RollingRunner:
         # here, and so never lost by failing to rewrite them.
         self._echo = Echo(
             interface=None if self._named else (self._only_job.interface or None),
+            expansion=None if self._named else self._only_job.expansion,
             inventories=declared_inventories or None,
             occupied=declared_occupied or None,
             jobs=[job.roster_entry() for job in self._jobs] if self._named else None,

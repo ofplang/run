@@ -54,17 +54,20 @@ class Echo:
         self,
         *,
         interface: dict | None = None,
+        expansion: dict | None = None,
         inventories: dict | None = None,
         occupied: list[dict] | None = None,
         jobs: list[dict] | None = None,
     ) -> None:
         """Open a run's document, before anything has happened.
 
-        `now` at 0 and no activities, plus the four things the caller said about the
-        run: where the boundary material sits (`interface`, §6.8 -- the single-workflow
-        form, since a run of named jobs carries one per roster entry instead), what the
-        stocks hold to begin with (`inventories`, §6.10), what the laboratory was
-        already holding (`occupied`, §6.12), and the roster (`jobs`, §6.11).
+        `now` at 0 and no activities, plus the five things the caller said about the
+        run: where the boundary material sits (`interface`, §6.8) and how long the
+        lists of values it was given are (`expansion`, §6.13) -- both the
+        single-workflow form, since a run of named jobs carries them per roster entry
+        instead -- what the stocks hold to begin with (`inventories`, §6.10), what the
+        laboratory was already holding (`occupied`, §6.12), and the roster (`jobs`,
+        §6.11).
 
         🔴 This is the only document the runner ever builds. Every one after it is a
         plan the scheduler wrote.
@@ -73,14 +76,16 @@ class Echo:
         stay a valid §6 execution document, so the reason is exposed out of band through
         `RollingRunner.failure` and the CLI's stderr.
         """
-        # Readable top-level order: now, jobs, interface, inventories, occupied,
-        # activities -- the order a rendered plan uses, so the opening document and
-        # every plan after it read the same way.
+        # Readable top-level order: now, jobs, interface, expansion, inventories,
+        # occupied, activities -- the order a rendered plan uses, so the opening
+        # document and every plan after it read the same way.
         doc: dict = {"now": 0}
         if jobs:
             doc["jobs"] = copy.deepcopy(jobs)
         if interface:
             doc["interface"] = copy.deepcopy(interface)
+        if expansion:
+            doc["expansion"] = copy.deepcopy(expansion)
         if inventories:
             doc["inventories"] = copy.deepcopy(inventories)
         if occupied:
