@@ -61,7 +61,7 @@ classifiers = [
 # rather than refusing the document that carries one, which every plan of a job
 # needing a refill does. Against an older one the first replan is refused, and a
 # refused replan stops every job of the run.
-# 🔴 The `<0.14` bound is a bound, not a floor. Each schedule minor from 0.9 to 0.12 had
+# 🔴 The upper bound is a bound, not a floor. Each schedule minor from 0.9 to 0.12 had
 # changed which *documents* a run may be given and nothing about what this runner does
 # with the ones it accepts: 0.10 refuses two jobs binding one boundary spot where it
 # used to warn and let the solve decide, and 0.12 names a stock that cannot last or
