@@ -3,7 +3,7 @@ one plate cracks in the oven; what happens to the other two
 
 --on-job-failure continue
 -------------------------
-    0 ->   2  job1   completed  slot_b  make_plate
+    0 ->   2  job1   completed  slot_a  make_plate
     2 ->   3  job1   completed          oven.tray_1
     3 ->   5  job2   completed  slot_a  make_plate
     3 ->  23  job1   failed     tray_1  assay
@@ -23,7 +23,7 @@ one plate cracks in the oven; what happens to the other two
 
 --on-job-failure stop
 ---------------------
-    0 ->   2  job1   completed  slot_b  make_plate
+    0 ->   2  job1   completed  slot_a  make_plate
     2 ->   3  job1   completed          oven.tray_1
     3 ->   5  job2   completed  slot_a  make_plate
     3 ->  23  job1   failed     tray_1  assay

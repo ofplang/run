@@ -22,7 +22,9 @@ observation document the run streamed (`<name>.observation.yaml` — what
 `ofp-run run --observation-out FILE` writes), the result boundary where the example
 supplies one (`<name>.boundary.yaml` — what `--boundary-out FILE` writes), and
 rendered SVG Gantt charts. Re-running an example reproduces its committed files
-byte for byte.
+byte for byte (line endings aside), and `tests/test_examples.py` holds them to it:
+a change that moves an example's output fails there until the file is regenerated
+(`PYTHONHASHSEED=0 python examples/render_<name>.py`) and committed.
 
 ## `job_run` — supplied inputs, computed outputs
 

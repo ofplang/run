@@ -12,8 +12,8 @@ one job: 2 units needed, 2 in stock
 
 two jobs: 4 units needed, 2 in stock
 ------------------------------------
-    0 ->   3  morning    processing     make_plate
     0 ->   4             replenishment  reader
+    1 ->   4  morning    processing     make_plate
     4 ->   6  morning    transport      transport
     6 ->   9  afternoon  processing     make_plate
     6 ->  16  morning    processing     assay
