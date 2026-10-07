@@ -26,8 +26,13 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.13.1` floor is required, not merely tested against:
-# this runner treats a final output with no recorded source as the flattener's defect
+# PyPI. The `ofplang-schedule>=0.14` floor is required, not merely tested against:
+# this runner states the length of every list of values a job is given as the
+# document's `expansion` (schedule SPEC 6.13) and flattens its own copy of the
+# workflow with it (`parse_workflow(expansion=...)`), both new in 0.14. Against 0.13
+# the flattener does not take the argument and no job can be built.
+# The `ofplang-schedule>=0.13.1` floor it replaces was required for the same kind of
+# reason: this runner treats a final output with no recorded source as the flattener's defect
 # and refuses it, and 0.13.1 is where the flattener records one for an entry Object
 # returned untouched (a through arc) and refuses an unbound input with validate's
 # code before the runner's own check. Against 0.13.0 such a workflow is refused here
@@ -96,7 +101,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.13.1,<0.14", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.14,<0.15", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
