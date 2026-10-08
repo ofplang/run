@@ -56,13 +56,14 @@ UNEXPANDED_IMPORT = "workflow contains a $import; it must be expanded before run
 # runner cannot run. `map` and `fold` are not here: the scheduler expands each into
 # its invocations before planning (schedule D57), and the runner reads the expanded
 # graph from the same flattener, so their invocations are activities like any other.
-# `do_while` repeats a body a number of times only its values decide, and `branch`
-# leaves one arm unrun -- neither is a graph fixed before the run, and the scheduler
-# refuses them for the same reason. Named here so the gate can answer with the
-# feature, and so a workflow meets that answer before anything runs.
+# Nor is `branch`: one whose arm is known before the run is expanded with that arm
+# (schedule D63) -- the runner decides it from the boundary and states it -- and one
+# decided during the run is refused by the scheduler, by name. `do_while` repeats a
+# body a number of times only its values decide, so it is no graph fixed before the
+# run. Named here so the gate can answer with the feature, and so a workflow meets
+# that answer before anything runs.
 _STRUCTURED_KINDS = {
     "do_while": "node_do_while",
-    "branch": "node_branch",
 }
 
 
@@ -74,8 +75,8 @@ def capability_gate(document: dict | None) -> str | None:
     (see `front_door_check`), so `$import` is normally gone by the time we get here;
     the `$import` check remains as a defense for a caller that hands over an
     unexpanded document. Two features are gated: the runner neither instantiates
-    generic processes (`generic_processes`) nor executes a `do_while` or `branch`
-    node (`node_do_while` / `node_branch`), and either would
+    generic processes (`generic_processes`) nor executes a `do_while` node
+    (`node_do_while`), and either would
     otherwise surface as a confusing deep error -- the structured node as a *failed
     run*, though nothing ever ran.
 

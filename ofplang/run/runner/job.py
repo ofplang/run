@@ -26,7 +26,7 @@ from typing import Any
 from .boundary import Boundary, parse_boundary
 from .contract_eval import parse as parse_contract
 from .contract_eval import referenced_ports
-from .contracts import ArrayType, Contracts, is_object_bearing, to_descriptor
+from .contracts import ArrayType, Contracts, default_value, is_object_bearing, to_descriptor
 from .dataflow import from_workflow
 from .failure import Failure
 from .runner import RunnerError
@@ -202,7 +202,7 @@ def build_job(
     # Flattened with the same `interface` and `expansion` the scheduler is handed, so
     # an Array at the boundary -- of Objects, or of values -- expands to the
     # invocations the plan names.
-    expansion = expansion_of(contracts, parsed_boundary)
+    expansion = expansion_of(contracts, parsed_boundary, workflow)
     dataflow = from_workflow(
         workflow, interface=parsed_boundary.interface or None, expansion=expansion
     )
@@ -237,9 +237,13 @@ def build_job(
     )
 
 
-def expansion_of(contracts: Contracts, boundary: Boundary) -> dict | None:
+def expansion_of(
+    contracts: Contracts, boundary: Boundary, workflow: dict | None = None
+) -> dict | None:
     """The `expansion` section (schedule SPEC §6.13) this job's values give: the
-    length of every Pure Data Array entry input, in declaration order.
+    length of every Pure Data Array entry input, in declaration order, and -- given
+    the `workflow` -- the arm of every branch whose condition the boundary holds
+    (`_decided_arms`).
 
     **Every one**, not only those a `map` / `fold` traverses: which ones are traversed
     is known once the workflow is expanded, which is the scheduler's to do, and it
@@ -260,7 +264,69 @@ def expansion_of(contracts: Contracts, boundary: Boundary) -> dict | None:
         value = boundary.entry_values.get(port, [])
         if isinstance(value, list):
             lengths.append({"node": [], "port": port, "length": len(value)})
-    return {"lengths": lengths} if lengths else None
+    expansion: dict = {"lengths": lengths} if lengths else {}
+    if workflow is not None:
+        arms = _decided_arms(workflow, entry_inputs, boundary, expansion)
+        if arms:
+            expansion["arms"] = arms
+    return expansion or None
+
+
+# More rounds than any workflow nests branches. Each round decides at least one branch
+# or stops, so this is a guard against a defect, never a limit a workflow meets.
+_MAX_ARM_ROUNDS = 1000
+
+
+def _decided_arms(workflow: dict, entry_inputs: dict, boundary: Boundary,
+                  expansion: dict) -> list[dict]:
+    """The arm of every branch the expansion reaches whose condition is an entry
+    input -- or one element of one, for a branch inside a `map` (schedule D63).
+
+    Asked of the scheduler's expansion rather than worked out here, so the runner
+    never reads the workflow's structure a second way: `undecided_branches` names the
+    branches it reached without an arm and where each condition comes from. Those the
+    boundary holds are decided -- `true` is `then` -- and the expansion is asked
+    again, since a branch inside an arm appears only once that arm is decided. A
+    condition produced during the run is not the runner's to decide yet; it is left,
+    and the scheduler refuses the workflow by name.
+
+    The value is the one that will be seeded: supplied, or the type's default --
+    `false`, the `else` arm -- for an entry input the boundary leaves out
+    (`entry_input_defaulted` says so). A supplied value that is not a Boolean is
+    refused here, as seeding would refuse it, since it cannot decide an arm."""
+    from ofplang.schedule.scheduler.model import SourceRef
+    from ofplang.schedule.scheduler.workflow import undecided_branches
+
+    interface = boundary.interface or None
+    arms: list[dict] = []
+    for _round in range(_MAX_ARM_ROUNDS):
+        undecided = undecided_branches(
+            workflow, interface=interface, expansion={**expansion, "arms": arms}
+        )
+        decided = []
+        for path, source in undecided.items():
+            if not (isinstance(source, SourceRef) and source.node == ()):
+                continue  # produced during the run: not decidable before it
+            port = source.port
+            if port in boundary.entry_values:
+                value = boundary.entry_values[port]
+            elif port in entry_inputs:
+                value = default_value(entry_inputs[port])
+            else:
+                continue
+            for i in source.index:
+                value = value[i] if isinstance(value, list) and i < len(value) else None
+            if not isinstance(value, bool):
+                raise RunnerError(
+                    f"job value for entry input {port!r} does not conform to its type: "
+                    f"it decides branch {'/'.join(str(step) for step in path)} and is "
+                    "not a Boolean"
+                )
+            decided.append({"node": list(path), "arm": "then" if value else "else"})
+        if not decided:
+            return arms
+        arms.extend(decided)
+    raise RunnerError("deciding the branches' arms did not settle")  # pragma: no cover
 
 
 @dataclass(frozen=True)
