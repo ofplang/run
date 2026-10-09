@@ -111,8 +111,10 @@ class Job:
     checked_ensures: set = field(default_factory=set)
     values: ValueStore = field(default_factory=ValueStore)
     outputs: dict = field(default_factory=dict)
-    # The `LengthCheck`s (by position in `dataflow.length_checks`) already made: each
-    # is made once, as soon as the value it is about exists.
+    # The `LengthCheck`s already made, by what they check -- the structured node and
+    # its `each` port -- and not by their position in `dataflow.length_checks`, which
+    # moves when the dataflow is rebuilt. Each is made once, as soon as the value it
+    # is about exists.
     checked_lengths: set = field(default_factory=set)
 
     # What the run has to say about this job without failing it (D59): an entry input

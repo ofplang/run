@@ -1415,10 +1415,11 @@ class RollingRunner:
         (D34). Each check is made once, as soon as everything it reads is recorded --
         at run start for a boundary value, on completion for a produced one, and so
         always before an invocation reading an element of it is dispatched."""
-        for position, check in enumerate(job.dataflow.length_checks):
-            if position in job.checked_lengths or not is_available(check.source, job.values):
+        for check in job.dataflow.length_checks:
+            key = (tuple(check.node), check.port)
+            if key in job.checked_lengths or not is_available(check.source, job.values):
                 continue
-            job.checked_lengths.add(position)
+            job.checked_lengths.add(key)
             value = resolve(check.source, job.values)
             if isinstance(value, list) and len(value) == check.length:
                 continue
