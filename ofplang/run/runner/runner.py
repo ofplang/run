@@ -85,6 +85,18 @@ class Runner:
         `SimulatorError` propagates if the backend rejects a dispatch (the plan is
         physically inconsistent)."""
         activities = self.plan.get("activities") or []
+        # A plan made on an arm the scheduler assumed (schedule SPEC §6.14) runs that
+        # arm whatever the condition turns out to be: only a run that replans can
+        # decide it, and replaying one would run a guess. One whose arm was stated is a
+        # plan like any other, and its decision a mark nothing runs.
+        assumed = [a for a in activities if a.get("kind") == "decision" and a.get("assumed")]
+        if assumed:
+            branches = ", ".join("/".join(map(str, a.get("node") or [])) for a in assumed)
+            raise RunnerError(
+                f"this plan assumes the arm of branch(es) {branches}, decided only during "
+                "the run; replay cannot decide them -- use `run`, which replans"
+            )
+        activities = [a for a in activities if a.get("kind") != "decision"]
         self._records = [
             _Record(activity=a, kind=a.get("kind"), start=int(a["start"]), end=int(a["end"]))
             for a in activities

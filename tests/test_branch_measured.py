@@ -307,3 +307,107 @@ def test_a_decision_is_neither_dispatched_nor_stamped():
     echo.stamp([], 1, {""})  # the only job has stopped: its pending work is cancelled
     decision, inspect = echo.document["activities"]
     assert "status" not in decision and inspect["status"] == "cancelled"
+
+
+# --- replay ----------------------------------------------------------------------------
+
+
+def _plan(expansion=None):
+    from ofplang.schedule import schedule
+
+    document = {"interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}},
+                "activities": []}
+    if expansion:
+        document["expansion"] = expansion
+    report = schedule(yaml.safe_load(MEASURED), copy.deepcopy(ENV), document_path=document)
+    assert report.ok, report.diagnostics
+    return report.plan
+
+
+def test_replay_refuses_a_plan_made_on_an_assumed_arm():
+    from ofplang.run.runner.runner import Runner
+
+    with pytest.raises(RunnerError, match="assumes the arm of branch"):
+        Runner(_plan(), copy.deepcopy(ENV)).run()
+
+
+def test_replay_runs_a_plan_whose_arm_was_stated():
+    from ofplang.run.runner.runner import Runner
+
+    plan = _plan({"arms": [{"node": ["H"], "arm": "else"}]})
+    assert [a["assumed"] for a in plan["activities"] if a["kind"] == "decision"] == [False]
+    status = Runner(plan, copy.deepcopy(ENV)).run()
+    assert _done(status) == [(["H"], "polish"), (["I"], "inspect")]
+    assert not [a for a in status["activities"] if a["kind"] == "decision"]
+
+
+# --- a check the branch has not settled -------------------------------------------------
+
+# A sample is inspected; the cup is washed if it was dirty -- by a composite whose
+# `requires` says the cup must be stained -- and polished if not. Every input of the
+# wash is at the boundary, so its `requires` could be evaluated before the sample is.
+REQUIRES_ON_THEN = """\
+spec_version: "0.5"
+types:
+  Cup: {domain: object}
+processes:
+""" + PROCESSES + """\
+  stained_wash:
+    kind: composite
+    inputs: {cup: {type: Cup, phase: data}, stained: {type: Bool, phase: run}}
+    outputs: {cup: {type: Cup, phase: data}}
+    contracts:
+      requires:
+        - expr: "inputs.stained.view == true"
+    body:
+      nodes:
+        - {id: W, process: wash, state: {cup: {from: inputs.cup}}}
+      returns: {cup: {from: W.cup}}
+  plain_polish:
+    kind: composite
+    inputs: {cup: {type: Cup, phase: data}, stained: {type: Bool, phase: run}}
+    outputs: {cup: {type: Cup, phase: data}}
+    body:
+      nodes:
+        - {id: P, process: polish, state: {cup: {from: inputs.cup}}}
+      returns: {cup: {from: P.cup}}
+  main:
+    kind: composite
+    inputs:
+      cup: {type: Cup, phase: data}
+      sample: {type: Cup, phase: data}
+      stained: {type: Bool, phase: run}
+    outputs: {cup: {type: Cup, phase: data}, sample: {type: Cup, phase: data}}
+    body:
+      nodes:
+        - {id: I, process: inspect, state: {cup: {from: inputs.sample}}}
+        - id: H
+          kind: branch
+          condition: {from: I.dirty}
+          args: {cup: {from: inputs.cup}, stained: {from: inputs.stained}}
+          then: {process: stained_wash}
+          else: {process: plain_polish}
+      returns: {cup: {from: H.cup}, sample: {from: I.cup}}
+entry: main
+"""
+
+
+def _cup_and_sample(stained):
+    return {"boundary": {
+        "inputs": {"cup": {"spot": "tray.a"}, "sample": {"spot": "tray.b"},
+                   "stained": {"view": stained}},
+        "outputs": {"cup": {"spot": "rack.a"}, "sample": {"spot": "rack.b"}},
+    }}
+
+
+def test_the_contract_of_an_arm_assumed_is_not_held_against_the_arm_taken():
+    # Clean sample, so `else`: the wash's `requires` -- false here -- is never the
+    # run's to check. Checked on the arm assumed, it would have stopped the job.
+    runner, status = _run(REQUIRES_ON_THEN, _cup_and_sample(False))
+    assert not runner.failed, runner.failure
+    assert _done(status) == [(["H", "P"], "polish"), (["I"], "inspect")]
+
+
+def test_the_contract_of_the_arm_taken_is_checked_once_it_is_taken():
+    runner, _status = _run(REQUIRES_ON_THEN, _cup_and_sample(False), device_model=found_dirty)
+    assert runner.failed and runner.failure.kind == "contract_requires"
