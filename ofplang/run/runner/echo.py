@@ -13,13 +13,15 @@ what the runner adds to it is only:
   - the history it has made since (`stamp`): a status and the times it observed;
   - the clock (`now`);
   - the facts about the world the plan cannot contain -- a job that has arrived
-    (`admit`), a spot someone has loaded or cleared (`freeze` / `free_spot`).
+    (`admit`), a spot someone has loaded or cleared (`freeze` / `free_spot`);
+  - what a value it was handed decides about the workflow's shape (`state_arm`): the
+    arm a branch takes, once the condition it waited for has been produced.
 
 Everything else is echoed untouched, which is what makes the round trips disappear:
 a promise the runner never rewrites is a promise it cannot lose.
 
 🔴 **The document is not handed out.** Everything above is a method, and the one
-accessor returns a copy, so "what the runner may edit" is a list of five operations
+accessor returns a copy, so "what the runner may edit" is a list of six operations
 rather than an unwritten rule about a dict. That list is the invariant; see
 `Echo.stamp` for the one part of it that is not obvious.
 """
@@ -29,6 +31,10 @@ from __future__ import annotations
 import copy
 
 from .provenance import Committed, activity_key
+
+# Entries of a plan nothing runs: a relay is a junction between two legs, a decision
+# the moment a branch waits for (§6.4.1, §6.14). Neither is dispatched or stamped.
+_NOT_RUN = frozenset({"relay", "decision"})
 
 
 def _job_of(activity: dict) -> str:
@@ -138,12 +144,14 @@ class Echo:
 
         🔴 **A relay is never stamped.** The runner does not dispatch one, so it has no
         record of one; the junctions are in the plan this carries, and the scheduler
-        regenerates them from the committed legs either way (§6.4.1, §7).
+        regenerates them from the committed legs either way (§6.4.1, §7). Nor is a
+        `decision` (§6.14): it marks a wait, nothing the runner does, and the scheduler
+        derives it from the workflow on every plan and never reads it back.
         """
         self._doc["now"] = now
         history: dict = {activity_key(record.activity): record for record in records}
         for activity in self._doc.get("activities") or []:
-            if activity.get("kind") == "relay":
+            if activity.get("kind") in _NOT_RUN:
                 continue
             ran = history.get(activity_key(activity))
             if ran is not None:
@@ -225,6 +233,36 @@ class Echo:
             del self._doc["occupied"]
         return True
 
+    def state_arm(self, job: str, node: tuple, arm: str) -> dict:
+        """Say which arm a branch takes, now that its condition has a value (schedule
+        SPEC §6.13, design.md D64), and return the job's `expansion` as it now stands.
+
+        Written where the scheduler reads it: the document's own `expansion` for a
+        single workflow (`job` is ""), the job's roster entry in a joint plan.
+
+        🔴 **In a joint plan the entry's `bound` and `fingerprint` go with it.** Both
+        were made for the arm the plan assumed. The fingerprint digests the expanded
+        workflow, which another arm changes, so a replan would refuse the job as a
+        different workflow; and the promise was the completion of the assumed arm,
+        which the arm taken may not reach -- held to it, every job would stop with a
+        plan nobody could make. Dropped, the next plan writes both again: the job is
+        promised what can be done from here, and every other job keeps its promise.
+        """
+        if job:
+            entry = next(
+                (e for e in self._doc.get("jobs") or [] if e.get("id") == job), None
+            )
+            if entry is None:
+                raise KeyError(f"job {job!r} is not on the roster")
+            entry.pop("bound", None)
+            entry.pop("fingerprint", None)
+        else:
+            entry = self._doc
+        expansion = entry.setdefault("expansion", {})
+        arms = expansion.setdefault("arms", [])
+        arms.append({"node": list(node), "arm": arm})
+        return copy.deepcopy(expansion)
+
     # -- what the runner reads -------------------------------------------------
 
     @property
@@ -255,12 +293,13 @@ class Echo:
 
         Pending is what carries no status. A relay is excluded whatever its status: it
         is an instantaneous junction with no physical operation behind it, so there is
-        nothing to dispatch and nothing to commit.
+        nothing to dispatch and nothing to commit. So is a `decision`: the moment a
+        branch waits for, which nothing dispatches (§6.14).
         """
         return [
             copy.deepcopy(activity)
             for activity in self._doc.get("activities") or []
-            if activity.get("status") in (None, "pending") and activity.get("kind") != "relay"
+            if activity.get("status") in (None, "pending") and activity.get("kind") not in _NOT_RUN
         ]
 
     def result(self) -> dict:

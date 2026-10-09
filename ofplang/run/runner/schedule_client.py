@@ -71,6 +71,7 @@ def replan(
     environment_source: str | None = None,
     ignore_resources: bool = False,
     max_transport_legs: int = 1,
+    check_arms: bool = True,
 ):
     """Run the scheduler on `status_document` and return its `ScheduleReport`.
 
@@ -107,6 +108,12 @@ def replan(
     reaches at one position only, or a plate that has to cross a hand-off station,
     needs. Raising it can only find routes a lower setting reported unreachable.
 
+    `check_arms` asks the scheduler to check, without a solve, the arm of every branch
+    it planned on an assumed arm (schedule design.md D64, `arm_unplannable`). Its
+    answer changes only with what the check reads -- the workflows, the machines --
+    so the runner asks at its first plan, on an arrival, and when a machine goes down
+    or comes back, not on every replan.
+
     Raises `RunnerError` with guidance if `ofplang.schedule` is not importable.
     """
     try:
@@ -136,6 +143,7 @@ def replan(
             environment_source=environment_source,
             ignore_resources=ignore_resources,
             max_transport_legs=max_transport_legs,
+            check_arms=check_arms,
         )
 
     # A single workflow has no roster to leave, so `withdraw` cannot apply; the
@@ -152,4 +160,5 @@ def replan(
         environment_source=environment_source,
         ignore_resources=ignore_resources,
         max_transport_legs=max_transport_legs,
+        check_arms=check_arms,
     )

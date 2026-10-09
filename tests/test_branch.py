@@ -305,9 +305,12 @@ def test_each_job_takes_its_own_arm():
     assert [e["expansion"]["arms"][0]["arm"] for e in status["jobs"]] == ["then", "else"]
 
 
-def test_a_condition_produced_during_the_run_is_refused_before_it_starts():
-    with pytest.raises(RunnerError, match="branch_arm_unknown"):
-        build_job(yaml.safe_load(MEASURED), one_cup())
+def test_a_condition_produced_during_the_run_is_left_for_the_run():
+    # Read on the arm assumed until the value exists (schedule D64); see
+    # test_branch_measured.py for running one.
+    job = build_job(yaml.safe_load(MEASURED), one_cup())
+    assert list(job.undecided()) == [("H",)]
+    assert job.expansion is None
 
 
 def test_a_flag_that_is_not_a_boolean_is_refused():

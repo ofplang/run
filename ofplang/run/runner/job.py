@@ -156,6 +156,47 @@ class Job:
         view values (D9/D26)."""
         return self.boundary.interface
 
+    def undecided(self) -> dict:
+        """Branch node path -> `BranchGate`, for every branch read on an assumed arm:
+        its condition is produced during the run and has no value yet (schedule
+        design.md D64)."""
+        return {path: gate for path, gate in self.dataflow.branch_gates.items() if gate.assumed}
+
+    def waits(self, node, gates=frozenset()) -> bool:
+        """Whether a check at `node` reading values that wait for `gates` has to wait
+        too (design.md D64): `node` is inside a branch not decided yet -- what is there
+        belongs to the arm assumed, which may not be the one taken -- or one of `gates`
+        has not produced, so the value it reads may still be routed elsewhere."""
+        node = tuple(node)
+        if any(node[: len(path)] == path for path in self.undecided()):
+            return True
+        return any(not self._produced(producer) for producer in gates)
+
+    def _produced(self, node) -> bool:
+        return any(self.values.has(node, port) for port in self.dataflow.out_ports.get(node, ()))
+
+    def rebuild(self, expansion: dict, decided: list[tuple]) -> None:
+        """Read the workflow again with `expansion`, now stating the arms of `decided`
+        (design.md D64), and drop what was recorded about the arm that was assumed.
+
+        Nothing of a branch runs before it is decided, so nothing under it can have
+        been checked; the records under it are cleared anyway, since a composite arm sits
+        at the branch's own path whichever arm it is, and a record left from the arm
+        assumed would pass for the one taken."""
+        self.expansion = expansion
+        self.dataflow = from_workflow(
+            self.workflow, interface=self.boundary.interface or None, expansion=expansion
+        )
+        self.composites = self.dataflow.composites
+        _check_composite_sources(self.dataflow, self.contracts, self.contract_asts)
+
+        def under(node) -> bool:
+            return any(tuple(node)[: len(path)] == tuple(path) for path in decided)
+
+        self.checked_requires = {path for path in self.checked_requires if not under(path)}
+        self.checked_ensures = {path for path in self.checked_ensures if not under(path)}
+        self.checked_lengths = {key for key in self.checked_lengths if not under(key[0])}
+
     @property
     def entry_values(self) -> dict:
         """The whole-workflow input values seeded at run start: `{entry_port: view}`.
@@ -296,14 +337,18 @@ def _decided_arms(workflow: dict, entry_inputs: dict, boundary: Boundary,
     `false`, the `else` arm -- for an entry input the boundary leaves out
     (`entry_input_defaulted` says so). A supplied value that is not a Boolean is
     refused here, as seeding would refuse it, since it cannot decide an arm."""
+    from ofplang.schedule.scheduler.api import ASSUMED_ARM
     from ofplang.schedule.scheduler.model import SourceRef
     from ofplang.schedule.scheduler.workflow import undecided_branches
 
     interface = boundary.interface or None
     arms: list[dict] = []
     for _round in range(_MAX_ARM_ROUNDS):
+        # Read on the arm assumed for a condition produced during the run (D64), so a
+        # branch inside that arm whose condition the boundary holds is decided too.
         undecided = undecided_branches(
-            workflow, interface=interface, expansion={**expansion, "arms": arms}
+            workflow, interface=interface, expansion={**expansion, "arms": arms},
+            assume=ASSUMED_ARM,
         )
         decided = []
         for path, source in undecided.items():
@@ -328,6 +373,48 @@ def _decided_arms(workflow: dict, entry_inputs: dict, boundary: Boundary,
         if not decided:
             return arms
         arms.extend(decided)
+    raise RunnerError("deciding the branches' arms did not settle")  # pragma: no cover
+
+
+def settle_arms(job: Job) -> list[dict]:
+    """The arms the run can state now, during the run (schedule design.md D64): of
+    every branch the job's expansion reaches without an arm, those whose condition has
+    a value -- produced, or at the boundary -- in `{node, arm}` form, `true` being
+    `then`. Asked again after each round, since an arm taken can reveal a branch
+    inside it, and its condition may already be there. Empty when nothing is decided.
+
+    The scheduler's expansion is asked rather than the workflow read here, as before
+    the run (`_decided_arms`), so the runner never reads the structure a second way.
+    A value that is not a Boolean is refused: every recorded output conforms to its
+    type, so one here is a defect, and it must not choose an arm."""
+    from ofplang.schedule.scheduler.api import ASSUMED_ARM
+    from ofplang.schedule.scheduler.workflow import undecided_branches
+
+    from .values import is_available, resolve
+
+    interface = job.boundary.interface or None
+    stated = list((job.expansion or {}).get("arms") or [])
+    decided: list[dict] = []
+    for _round in range(_MAX_ARM_ROUNDS):
+        undecided = undecided_branches(
+            job.workflow, interface=interface,
+            expansion={**(job.expansion or {}), "arms": stated + decided},
+            assume=ASSUMED_ARM,
+        )
+        found = []
+        for path, source in undecided.items():
+            if source is None or not is_available(source, job.values):
+                continue
+            value = resolve(source, job.values)
+            if not isinstance(value, bool):
+                raise RunnerError(
+                    f"the condition of branch {'/'.join(str(step) for step in path)} is "
+                    f"not a Boolean ({value!r}), so it cannot decide an arm"
+                )
+            found.append({"node": list(path), "arm": "then" if value else "else"})
+        if not found:
+            return decided
+        decided.extend(found)
     raise RunnerError("deciding the branches' arms did not settle")  # pragma: no cover
 
 

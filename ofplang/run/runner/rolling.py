@@ -55,7 +55,7 @@ from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
 from .echo import Echo
 from .failure import Failure
-from .job import Job, JobRequest, build_job
+from .job import Job, JobRequest, build_job, settle_arms
 from .loader import load_document
 from .observation import ObservationRecorder
 from .provenance import CommitLog, Committed, UnknownActivityKind, activity_key
@@ -539,6 +539,11 @@ class RollingRunner:
         # so a machine going down (or coming back) shows up as a difference.
         self._observed_change = True
         self._down_at_replan: set[str] = set()
+        # Whether the next replan asks the scheduler to check the arms it did not plan
+        # (schedule design.md D64). Its answer moves only with the workflows and the
+        # machines: so at the first plan, after an arrival, and when the set of machines
+        # down changes -- not on every replan, which would repeat it per completion.
+        self._check_arms_next = True
 
         # Failure handling (D25). When an operation is observed `failed`, the runner
         # stops: it dispatches no more work and only waits for what is still running
@@ -804,6 +809,7 @@ class RollingRunner:
         # There is a job more to plan, so the scheduler's answer differs and the plan
         # from the last replan must not be carried into the next tick (D41).
         self._observed_change = True
+        self._check_arms_next = True
 
     def free_spot(self, spot: str) -> None:
         """Say that a spot this run was keeping frozen may be used again (SPEC §6.12).
@@ -1419,6 +1425,8 @@ class RollingRunner:
             key = (tuple(check.node), check.port)
             if key in job.checked_lengths or not is_available(check.source, job.values):
                 continue
+            if job.waits(check.node, check.gates):
+                continue  # not settled before a branch is decided (D64)
             job.checked_lengths.add(key)
             value = resolve(check.source, job.values)
             if isinstance(value, list) and len(value) == check.length:
@@ -1435,6 +1443,46 @@ class RollingRunner:
             )
             self._stop_job(job)
             return
+
+    def _decide_branches(self, job: Job) -> None:
+        """State the arm of every branch of `job` whose condition now has a value
+        (schedule design.md D64), and read the workflow again with it.
+
+        The plan the arm goes into is the next one: this is called as a value is
+        recorded, and no dispatch happens before the replan that follows. The arm is
+        written into the carried document (`Echo.state_arm`) -- where the scheduler
+        reads it, so the next plan expands the branch that way -- and the job's own
+        reading is rebuilt to match, since the activities under the branch are now the
+        arm's that was taken.
+
+        🔴 Nothing of a branch may have started before it was decided: the plan holds
+        all of it back until the condition exists. Something under it in the history
+        means the two disagree, and carrying on would run an arm against records of
+        the other -- so it is refused, as the defect it would be."""
+        decided = settle_arms(job)
+        if not decided:
+            return
+        paths = [tuple(entry["node"]) for entry in decided]
+
+        def under(node) -> bool:
+            return node is not None and any(tuple(node)[: len(p)] == p for p in paths)
+
+        for record in self.log.records():
+            activity = record.activity
+            if self._job_of(activity) is not job:
+                continue
+            arc = activity.get("arc") or {}
+            if under(activity.get("node")) or under((arc.get("to") or {}).get("node")):
+                raise RunnerError(
+                    f"{self._activity_subject(activity)} started before the branch it "
+                    "belongs to was decided"
+                )
+        expansion: dict = {}
+        for entry in decided:
+            expansion = self._echo.state_arm(job.id, tuple(entry["node"]), entry["arm"])
+        job.rebuild(expansion, paths)
+        # The workflow this job runs now reads differently: the next tick replans.
+        self._observed_change = True
 
     def _check_entry_requires(self, job: Job) -> None:
         """One job's whole-workflow precondition (v0 §9 `requires` on the entry
@@ -1643,6 +1691,11 @@ class RollingRunner:
             asts = job.contract_asts.get(b.process)
             if not asts:
                 continue  # this composite declares no contracts
+            if job.waits(path, b.gates):
+                # Inside a branch not decided yet, or reading a value one may still
+                # route elsewhere (D64): checked once the branch is decided, against
+                # the values of the arm taken rather than of the arm assumed.
+                continue
             # `requires`: over the composite's inputs, checked before its body's
             # input-dependent activities can run (they wait on the same values).
             if (
@@ -1798,6 +1851,8 @@ class RollingRunner:
         # anything the scheduler reads has moved (D41).
         self.replans += 1
         self._observed_change = False
+        if down != self._down_at_replan:
+            self._check_arms_next = True
         self._down_at_replan = down
         environment = (
             _reduce_environment(self._environment, down, self._down_scope)
@@ -1848,7 +1903,9 @@ class RollingRunner:
             environment_source=self.environment_path,
             ignore_resources=self._ignore_resources,
             max_transport_legs=self._max_transport_legs,
+            check_arms=self._check_arms_next,
         )
+        self._check_arms_next = False
         self._collect_warnings(report)
         if not report.ok:
             # 🔴 A run of one workflow raises, as it always has: there is one job, its
@@ -2309,6 +2366,10 @@ class RollingRunner:
                 # it to `failed` just above and discarded its outputs).
                 if self._obs is not None and rec.status == "completed":
                     self._record_observation(rec, outputs)
+                # A value that stands may be a branch's condition: decide it now,
+                # before the next plan dispatches anything of the branch (D64).
+                if job is not None and not job.stopped and rec.status == "completed":
+                    self._decide_branches(job)
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now

@@ -28,7 +28,7 @@ job (§7) -- so no §7 / §5.7 machinery is pulled in here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .runner import RunnerError
 
@@ -50,6 +50,10 @@ class CompositeBoundary:
     process: str
     inputs: dict   # port -> Source
     outputs: dict  # port -> Source
+    # The producers its values wait for besides their own (schedule design.md D64):
+    # handed on untouched by a branch whose condition is produced during the run, they
+    # are not settled -- and neither are its contracts -- before those have finished.
+    gates: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,11 @@ class Dataflow:
     # Lengths the plan was built on that only a value can confirm (schedule
     # `LengthCheck`): an `each` source zipped with one whose length was known.
     length_checks: tuple = ()
+    # Branch node path -> its `BranchGate`, for every branch whose condition is
+    # produced during the run (schedule design.md D64). One `assumed` is still to be
+    # decided: it was read on the arm the scheduler assumes, and the run states its
+    # arm once the condition has a value.
+    branch_gates: dict = field(default_factory=dict)
 
 
 def from_workflow(
@@ -106,12 +115,17 @@ def from_workflow(
     # not hard-require the scheduler to be installed until `run` actually uses it.
     from ofplang.schedule.core.diagnostics import ERROR
     from ofplang.schedule.core.identifiers import format_node_path
+    from ofplang.schedule.scheduler.api import ASSUMED_ARM
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
+    # Read on the arm the scheduler assumes for a branch the run has not decided yet,
+    # as the scheduler reads it, so the two expansions name the same activities. The
+    # runner dispatches nothing of such a branch before deciding it (D64).
     workflow, diags = parse_workflow(
         workflow if isinstance(workflow, dict) else str(workflow),
         interface=interface,
         expansion=expansion,
+        assume=ASSUMED_ARM,
     )
     errors = [d for d in diags.items if d.severity == ERROR]
     if workflow is None or errors:
@@ -154,6 +168,7 @@ def from_workflow(
             process=io.process,
             inputs=dict(io.input_sources),
             outputs=dict(io.output_sources),
+            gates=io.gates,
         )
         for path, io in workflow.composites.items()
     }
@@ -180,4 +195,5 @@ def from_workflow(
         returns=returns,
         composites=composites,
         length_checks=tuple(workflow.length_checks),
+        branch_gates=dict(workflow.branch_gates),
     )
