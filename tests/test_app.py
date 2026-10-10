@@ -133,15 +133,12 @@ def test_front_door_rejects_generics(tmp_path):
     assert "generic" in fd.unsupported
 
 
-def test_front_door_rejects_structured_node():
-    # A structured node is valid v0 this runner cannot execute (spec 4.1). Without the
-    # gate it reached the scheduler and came back as a *failed run*, though nothing had
-    # run; the gate answers before the run starts, naming the node and the feature.
+def test_front_door_lets_a_do_while_through():
+    # A `do_while` used to be refused here, before the run (spec 4.1's "valid v0 but
+    # unsupported"). It is expanded invocation by invocation now (schedule D65), and
+    # whether one can be planned is the scheduler's question.
     fd = front_door_check(STRUCTURED_WF, validate=False)  # isolate the capability gate
-    assert not fd.ok
-    assert fd.unsupported is not None
-    assert "count_down" in fd.unsupported
-    assert "node_do_while" in fd.unsupported
+    assert fd.ok and fd.unsupported is None
 
 
 def test_front_door_lets_a_map_through():

@@ -75,12 +75,10 @@ def test_run_no_validate_bypasses_front_door_on_malformed(tmp_path, capsys):
     assert "wrong_value_kind" in capsys.readouterr().err
 
 
-def test_run_structured_node_is_refused_before_running(capsys):
-    # A structured node is valid portable v0 (so validate has nothing to say) that this
-    # runner cannot execute -- spec 4.1's "valid v0 but unsupported". The capability
-    # gate refuses it up front, which makes it a usage error (exit 2) like any other
-    # workflow that never ran, rather than the failed *run* (exit 1) it used to report
-    # from inside the scheduler. The reason names the node and the v0 feature.
+def test_run_a_do_while_is_not_refused_by_the_gate(capsys):
+    # A `do_while` used to be refused up front as "valid v0 but unsupported" (exit 2).
+    # It is run now (schedule D65): this one reaches the scheduler, which refuses it for
+    # what the laboratory lacks -- nothing can run `step` -- as a failed run (exit 1).
     code = main(
         [
             "run",
@@ -89,11 +87,10 @@ def test_run_structured_node_is_refused_before_running(capsys):
             str(EXAMPLES / "count_chain.env.yaml"),
         ]
     )
-    assert code == EXIT_USAGE
+    assert code == 1
     err = capsys.readouterr().err
-    assert "unsupported" in err
-    assert "count_down" in err
-    assert "node_do_while" in err
+    assert "no_capability" in err
+    assert "unsupported" not in err
 
 
 _MAKER_ENV = """\

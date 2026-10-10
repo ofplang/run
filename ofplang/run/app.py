@@ -56,15 +56,10 @@ UNEXPANDED_IMPORT = "workflow contains a $import; it must be expanded before run
 # runner cannot run. `map` and `fold` are not here: the scheduler expands each into
 # its invocations before planning (schedule D57), and the runner reads the expanded
 # graph from the same flattener, so their invocations are activities like any other.
-# Nor is `branch`: one whose arm is known before the run is expanded with that arm
-# (schedule D63) -- the runner decides it from the boundary and states it -- and one
-# decided during the run is refused by the scheduler, by name. `do_while` repeats a
-# body a number of times only its values decide, so it is no graph fixed before the
-# run. Named here so the gate can answer with the feature, and so a workflow meets
-# that answer before anything runs.
-_STRUCTURED_KINDS = {
-    "do_while": "node_do_while",
-}
+# Nor is `branch` (schedule D63, D64) or `do_while` (D65): each is expanded with what
+# is decided so far, and the runner decides the rest as the values come in. Nothing
+# structured is refused here any more; the table stays for a kind a later revision adds.
+_STRUCTURED_KINDS: dict[str, str] = {}
 
 
 def capability_gate(document: dict | None) -> str | None:

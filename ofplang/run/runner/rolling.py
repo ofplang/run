@@ -55,7 +55,7 @@ from .contract_eval import evaluate, referenced_ports
 from .contracts import ArrayType, conforms, with_static_views
 from .echo import Echo
 from .failure import Failure
-from .job import Job, JobRequest, build_job, settle_arms
+from .job import Job, JobRequest, RunWarning, build_job, settle
 from .loader import load_document
 from .observation import ObservationRecorder
 from .provenance import CommitLog, Committed, UnknownActivityKind, activity_key
@@ -806,6 +806,8 @@ class RollingRunner:
         # release a job admitted at 23 at 24 -- the moment of the next replan, which is
         # not when it arrived.
         self._echo.admit(job.roster_entry())
+        # What its boundary settles, recorded now that it is on the roster (D65).
+        self._decide(job)
         # There is a job more to plan, so the scheduler's answer differs and the plan
         # from the last replan must not be carried into the next tick (D41).
         self._observed_change = True
@@ -1191,6 +1193,9 @@ class RollingRunner:
             job.dataflow, job.contracts, job.values, job.entry_values,
             spots=job.interface.get("inputs"),
         )
+            # What the boundary settles -- a loop a literal decided, whose `exhausted`
+            # is now known -- is recorded before anything runs (D65).
+            self._decide(job)
         # Spots the laboratory was already holding (§6.12) are occupied in the backend
         # too, so an operation that should never have been planned onto one fails loudly
         # instead of quietly succeeding against a world the plan disagrees with.
@@ -1444,45 +1449,81 @@ class RollingRunner:
             self._stop_job(job)
             return
 
-    def _decide_branches(self, job: Job) -> None:
-        """State the arm of every branch of `job` whose condition now has a value
-        (schedule design.md D64), and read the workflow again with it.
+    def _decide(self, job: Job) -> None:
+        """Make every decision `job`'s values now allow (schedule design.md D64, D65):
+        a branch's arm, whether a loop goes on -- and read the workflow again with them.
 
-        The plan the arm goes into is the next one: this is called as a value is
-        recorded, and no dispatch happens before the replan that follows. The arm is
-        written into the carried document (`Echo.state_arm`) -- where the scheduler
-        reads it, so the next plan expands the branch that way -- and the job's own
-        reading is rebuilt to match, since the activities under the branch are now the
-        arm's that was taken.
+        The plan they go into is the next one: this is called as a value is recorded
+        (and once the boundary is seeded), and no dispatch happens before the replan
+        that follows. Each is written into the carried document (`Echo.state_arm`,
+        `Echo.state_loop`) -- where the scheduler reads it, so the next plan expands that
+        way -- and the job's own reading is rebuilt to match.
 
-        🔴 Nothing of a branch may have started before it was decided: the plan holds
-        all of it back until the condition exists. Something under it in the history
-        means the two disagree, and carrying on would run an arm against records of
-        the other -- so it is refused, as the defect it would be."""
-        decided = settle_arms(job)
-        if not decided:
-            return
-        paths = [tuple(entry["node"]) for entry in decided]
+        🔴 Nothing a decision governs may have started before it: the plan holds a
+        branch's arm, and a loop's next invocation, back until the condition is
+        settled. Something there in the history means the two disagree, and carrying on
+        would run it against records of what was not chosen -- so it is refused, as the
+        defect it would be."""
+        arms, loops = settle(job)
+        if arms or loops:
+            branches = [tuple(entry["node"]) for entry in arms]
+            # A loop that goes on gains invocation `count`; nothing may be there yet.
+            fresh = [
+                tuple(entry["node"]) + (job.dataflow.loops[tuple(entry["node"])].count,)
+                for entry in loops
+                if tuple(entry["node"]) in job.dataflow.loops
+            ]
+            held = branches + fresh
 
-        def under(node) -> bool:
-            return node is not None and any(tuple(node)[: len(p)] == p for p in paths)
+            def under(node) -> bool:
+                return node is not None and any(tuple(node)[: len(p)] == p for p in held)
 
-        for record in self.log.records():
-            activity = record.activity
-            if self._job_of(activity) is not job:
-                continue
-            arc = activity.get("arc") or {}
-            if under(activity.get("node")) or under((arc.get("to") or {}).get("node")):
-                raise RunnerError(
-                    f"{self._activity_subject(activity)} started before the branch it "
-                    "belongs to was decided"
+            for record in self.log.records():
+                activity = record.activity
+                if self._job_of(activity) is not job:
+                    continue
+                arc = activity.get("arc") or {}
+                if under(activity.get("node")) or under((arc.get("to") or {}).get("node")):
+                    raise RunnerError(
+                        f"{self._activity_subject(activity)} started before the decision "
+                        "it waits for was made"
+                    )
+            expansion: dict = {}
+            for entry in arms:
+                expansion = self._echo.state_arm(job.id, tuple(entry["node"]), entry["arm"])
+            for entry in loops:
+                expansion = self._echo.state_loop(
+                    job.id, tuple(entry["node"]), entry["count"], entry["ended"]
                 )
-        expansion: dict = {}
-        for entry in decided:
-            expansion = self._echo.state_arm(job.id, tuple(entry["node"]), entry["arm"])
-        job.rebuild(expansion, paths)
-        # The workflow this job runs now reads differently: the next tick replans.
-        self._observed_change = True
+            job.rebuild(expansion, branches)
+            # The workflow this job runs now reads differently: the next tick replans.
+            self._observed_change = True
+        self._record_exhausted(job)
+
+    def _record_exhausted(self, job: Job) -> None:
+        """Record each ended loop's `exhausted` (v0 19.3) once its last condition is
+        settled: `true` where that condition still said go on -- the loop stopped at
+        `max_iterations` -- and `false` where it said stop. Recorded at the loop's own
+        path, where a consumer reads it. Reaching the limit is reported, never failed
+        (bounded termination, v0 19): `loop_exhausted`."""
+        from .values import is_available, resolve
+
+        for path, loop in job.dataflow.loops.items():
+            if not loop.ended or job.values.has(path, "exhausted"):
+                continue
+            if loop.condition is None or not is_available(loop.condition, job.values):
+                continue
+            if not all(job._produced(node) for node in loop.waits):
+                continue
+            exhausted = resolve(loop.condition, job.values) is True
+            job.values.put(path, "exhausted", exhausted)
+            if exhausted:
+                job.warnings.append(RunWarning(
+                    "loop_exhausted",
+                    f"loop {self._fmt_node(path)} stopped at max_iterations "
+                    f"({loop.count} invocation(s)) with its condition still true",
+                    job.id,
+                ))
 
     def _check_entry_requires(self, job: Job) -> None:
         """One job's whole-workflow precondition (v0 §9 `requires` on the entry
@@ -2369,7 +2410,7 @@ class RollingRunner:
                 # A value that stands may be a branch's condition: decide it now,
                 # before the next plan dispatches anything of the branch (D64).
                 if job is not None and not job.stopped and rec.status == "completed":
-                    self._decide_branches(job)
+                    self._decide(job)
             elif observed == "failed":
                 rec.status = "failed"
                 rec.end = self.now

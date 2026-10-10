@@ -14,14 +14,15 @@ what the runner adds to it is only:
   - the clock (`now`);
   - the facts about the world the plan cannot contain -- a job that has arrived
     (`admit`), a spot someone has loaded or cleared (`freeze` / `free_spot`);
-  - what a value it was handed decides about the workflow's shape (`state_arm`): the
-    arm a branch takes, once the condition it waited for has been produced.
+  - what a value it was handed decides about the workflow's shape (`state_arm`,
+    `state_loop`): the arm a branch takes, and how far a loop goes, once the condition
+    it waited for has been produced.
 
 Everything else is echoed untouched, which is what makes the round trips disappear:
 a promise the runner never rewrites is a promise it cannot lose.
 
 🔴 **The document is not handed out.** Everything above is a method, and the one
-accessor returns a copy, so "what the runner may edit" is a list of six operations
+accessor returns a copy, so "what the runner may edit" is a list of seven operations
 rather than an unwritten rule about a dict. That list is the invariant; see
 `Echo.stamp` for the one part of it that is not obvious.
 """
@@ -261,6 +262,28 @@ class Echo:
         expansion = entry.setdefault("expansion", {})
         arms = expansion.setdefault("arms", [])
         arms.append({"node": list(node), "arm": arm})
+        return copy.deepcopy(expansion)
+
+    def state_loop(self, job: str, node: tuple, count: int, ended: bool) -> dict:
+        """Say how many invocations of a loop are decided, and whether that is all of
+        them (schedule SPEC §6.13, design.md D65); return the job's `expansion` as it
+        now stands. One entry per loop, replaced as the loop goes on. Written where
+        `state_arm` writes, and in a joint plan it drops the entry's `bound` and
+        `fingerprint` for the same reason: both were made for the count assumed."""
+        if job:
+            entry = next(
+                (e for e in self._doc.get("jobs") or [] if e.get("id") == job), None
+            )
+            if entry is None:
+                raise KeyError(f"job {job!r} is not on the roster")
+            entry.pop("bound", None)
+            entry.pop("fingerprint", None)
+        else:
+            entry = self._doc
+        expansion = entry.setdefault("expansion", {})
+        loops = [e for e in expansion.get("loops") or [] if e.get("node") != list(node)]
+        loops.append({"node": list(node), "count": count, "ended": ended})
+        expansion["loops"] = loops
         return copy.deepcopy(expansion)
 
     # -- what the runner reads -------------------------------------------------

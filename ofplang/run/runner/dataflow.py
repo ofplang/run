@@ -91,6 +91,9 @@ class Dataflow:
     # decided: it was read on the arm the scheduler assumes, and the run states its
     # arm once the condition has a value.
     branch_gates: dict = field(default_factory=dict)
+    # Loop node path -> its `LoopGate` (schedule design.md D65): how many invocations
+    # were expanded, whether that is all of them, and what its last condition waits for.
+    loops: dict = field(default_factory=dict)
 
 
 def from_workflow(
@@ -196,4 +199,5 @@ def from_workflow(
         composites=composites,
         length_checks=tuple(workflow.length_checks),
         branch_gates=dict(workflow.branch_gates),
+        loops=dict(workflow.loops),
     )
