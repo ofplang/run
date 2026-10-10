@@ -437,9 +437,18 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
         if read is None:
             break
         decided = False
+
+        def settled(path, read=read) -> bool:
+            # A branch or loop the value passed through: decided in this reading?
+            if path in read.loops:
+                return read.loops[path].ended
+            return path not in read.undecided_branches
+
         for path, condition in read.undecided_branches.items():
             gate = read.branch_gates.get(path)
             waits = gate.waits if gate is not None else ()
+            if gate is not None and not all(settled(p) for p in gate.after):
+                continue  # not the value to decide on until those are decided
             if condition is None or not values.available(condition):
                 continue
             if not all(values.produced(node) for node in waits):
@@ -454,7 +463,8 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
             decided = True
         pending = {
             path: (loop.count, loop.condition, loop.waits, loop.limit)
-            for path, loop in read.loops.items() if not loop.ended
+            for path, loop in read.loops.items()
+            if not loop.ended and all(settled(p) for p in loop.after)
         }
         pending.update({
             path: (count, condition, (), limit)
