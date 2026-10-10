@@ -26,8 +26,14 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.15` floor is required, not merely tested against:
-# this runner decides the arm of every branch whose condition the boundary holds and
+# PyPI. The `ofplang-schedule>=0.16` floor is required, not merely tested against:
+# this runner reads a workflow on the arm the scheduler assumes for a branch whose
+# condition is produced during the run (`assume`, `ASSUMED_ARM`), decides it once the
+# value is recorded, and reads the waits the scheduler puts on it (`branch_gates`, the
+# `gates` of a composite and a length check) -- all new in 0.16 (schedule design.md
+# D64). Against 0.15 the import fails and no job can be built.
+# The `ofplang-schedule>=0.15` floor it replaces was required for the same kind of
+# reason: this runner decides the arm of every branch whose condition the boundary holds and
 # states it as `expansion.arms` (schedule SPEC 6.13), asking the scheduler's expansion
 # which branches are undecided (`undecided_branches`) -- both new in 0.15. Against
 # 0.14 the import fails and no job can be built.
@@ -107,7 +113,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.15,<0.16", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.16,<0.17", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
