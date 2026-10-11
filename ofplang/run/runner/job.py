@@ -32,6 +32,10 @@ from .failure import Failure
 from .runner import RunnerError
 from .values import ValueStore
 
+# A gate's ports (schedule `Gate`, design.md D66): what it is given, what it passes on.
+_GATE_IN = "in"
+_GATE_OUT = "out"
+
 
 @dataclass
 class Job:
@@ -162,18 +166,62 @@ class Job:
         design.md D64)."""
         return {path: gate for path, gate in self.dataflow.branch_gates.items() if gate.assumed}
 
-    def waits(self, node, gates=frozenset()) -> bool:
-        """Whether a check at `node` reading values that wait for `gates` has to wait
-        too (design.md D64): `node` is inside a branch not decided yet -- what is there
-        belongs to the arm assumed, which may not be the one taken -- or one of `gates`
-        has not produced, so the value it reads may still be routed elsewhere."""
+    def waits(self, node) -> bool:
+        """Whether a check at `node` has to wait (design.md D64): `node` is inside a
+        branch not decided yet -- what is there belongs to the arm assumed, which may
+        not be the one taken. A value a region not yet decided hands on needs nothing
+        here: it is read through the region's gate, which has no value before the
+        decision (`settle_gates`), so a check reading it is not ready either."""
         node = tuple(node)
-        if any(node[: len(path)] == path for path in self.undecided()):
-            return True
-        return any(not self._produced(producer) for producer in gates)
+        return any(node[: len(path)] == path for path in self.undecided())
 
     def _produced(self, node) -> bool:
+        node = tuple(node)
+        if any(gate.path == node for gate in self.dataflow.gates):
+            return self.values.has(node, _GATE_OUT)
         return any(self.values.has(node, port) for port in self.dataflow.out_ports.get(node, ()))
+
+    def settle_gates(self) -> bool:
+        """Record the value of every gate whose region is decided (schedule design.md
+        D66), and say whether any was recorded.
+
+        A gate passes on what its region hands on once three things hold: what it waits
+        for -- the region's condition -- has produced; the value it passes on is there;
+        and the region is decided, so that value is the one of the arm taken (a branch
+        no longer assumed) or of the invocation that really was the last (a loop ended).
+        A loop's gate between two invocations passes its Object on whichever way the
+        loop goes, so it needs no decision of the loop's. Gates come in the order they
+        were made, so one fed by another finds its value already recorded."""
+        from .values import is_available, resolve
+
+        recorded = False
+        for gate in self.dataflow.gates:
+            path = tuple(gate.path)
+            if self.values.has(path, _GATE_OUT):
+                continue
+            if not all(self._produced(producer) for producer in gate.waits):
+                continue
+            if not self._decided(gate):
+                continue
+            source = self.dataflow.sources.get((path, _GATE_IN))
+            if source is None or not is_available(source, self.values):
+                continue
+            self.values.put(path, _GATE_OUT, resolve(source, self.values))
+            recorded = True
+        return recorded
+
+    def _decided(self, gate) -> bool:
+        """Whether `gate`'s region is decided as far as the gate is concerned."""
+        region = tuple(gate.region)
+        branch = self.dataflow.branch_gates.get(region)
+        if branch is not None:
+            return not branch.assumed
+        loop = self.dataflow.loops.get(region)
+        if loop is None:
+            return True
+        # `[L, i, "@out", port]` sits between two invocations: the same either way.
+        between = isinstance(tuple(gate.path)[len(region)], int)
+        return between or loop.ended
 
     def rebuild(self, expansion: dict, decided: list[tuple]) -> None:
         """Read the workflow again with `expansion`, now stating the arms of `decided`
@@ -400,12 +448,12 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
     """Every decision `values` can make now, as `(arms, loops)` to add to `expansion`:
     `{node, arm}` for a branch, `{node, count, ended}` for a loop (schedule SPEC §6.13).
 
-    One rule for both (design.md D64, D65): a condition is decided once its value is
-    known **and** everything it waits for has produced -- a value a branch or loop not
-    yet decided hands on untouched may still be routed elsewhere, so it is not settled
-    before that decision, even where it is the boundary's. A branch takes `then` on
-    `true`. A loop on `false` ends; on `true` it goes on, unless it has made
-    `max_iterations` invocations, when it ends anyway (`exhausted`).
+    One rule for both (design.md D64, D66): a condition is decided once its value is
+    known. A value a region not yet decided hands on comes out of that region's gate,
+    which has no value before the decision (`Job.settle_gates`) -- so a condition read
+    from it waits for that decision by itself, with nothing to check here. A branch
+    takes `then` on `true`. A loop on `false` ends; on `true` it goes on, unless it has
+    made `max_iterations` invocations, when it ends anyway (`exhausted`).
 
     The scheduler's expansion is asked rather than the workflow read here, so the
     runner never reads the structure a second way; and asked again after each round,
@@ -438,17 +486,9 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
             break
         decided = False
 
-        def settled(path, read=read) -> bool:
-            # A branch or loop the value passed through: decided in this reading?
-            if path in read.loops:
-                return read.loops[path].ended
-            return path not in read.undecided_branches
-
         for path, condition in read.undecided_branches.items():
             gate = read.branch_gates.get(path)
             waits = gate.waits if gate is not None else ()
-            if gate is not None and not all(settled(p) for p in gate.after):
-                continue  # not the value to decide on until those are decided
             if condition is None or not values.available(condition):
                 continue
             if not all(values.produced(node) for node in waits):
@@ -464,7 +504,7 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
         pending = {
             path: (loop.count, loop.condition, loop.waits, loop.limit)
             for path, loop in read.loops.items()
-            if not loop.ended and all(settled(p) for p in loop.after)
+            if not loop.ended
         }
         pending.update({
             path: (count, condition, (), limit)

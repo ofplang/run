@@ -162,6 +162,10 @@ moved:                                         # value: the moved Object's view
   index in its node path, `node: [Read, 1]`, and an arc endpoint that is one element of
   an Array of Objects carries its `index`, `{node: [], port: plates, index: [1]}` --
   both exactly as in the plan, integers included.
+- A move into or out of a **gate** (schedule spec §6.15) -- where a branch or loop
+  decided only during the run hands an Object on -- names the gate's node path on that
+  side, `{node: [Choose, "@out", cup], port: in}` / `port: out`, exactly as in the plan.
+  A gate itself runs nothing and is never recorded.
 
 ### 4.3 Empty views
 

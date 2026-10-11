@@ -50,10 +50,6 @@ class CompositeBoundary:
     process: str
     inputs: dict   # port -> Source
     outputs: dict  # port -> Source
-    # The producers its values wait for besides their own (schedule design.md D64):
-    # handed on untouched by a branch whose condition is produced during the run, they
-    # are not settled -- and neither are its contracts -- before those have finished.
-    gates: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -94,6 +90,12 @@ class Dataflow:
     # Loop node path -> its `LoopGate` (schedule design.md D65): how many invocations
     # were expanded, whether that is all of them, and what its last condition waits for.
     loops: dict = field(default_factory=dict)
+    # The gates of the regions decided only during the run (schedule `Gate`, design.md
+    # D66), in the order they were made -- an inner region's first. What such a region
+    # hands on is read through one: the runner records a gate's value once the region
+    # is decided (`Job.settle_gates`), and nothing reading past the region sees it
+    # before. Each gate's input source is in `sources`, keyed `(gate path, "in")`.
+    gates: tuple = ()
 
 
 def from_workflow(
@@ -153,6 +155,8 @@ def from_workflow(
     # so there is no value the runner could give it that would be the workflow's.
     # The flattener refuses such a document itself (its guards, schedule D60), so
     # this holds it to that rather than catching anything new.
+    # A gate's input is here too, keyed `(gate path, "in")`: it is read through the
+    # gate (`Job.settle_gates`), never assembled for an operation.
     sources = {(ep.node, ep.port): source for ep, source in workflow.input_sources.items()}
     unsourced = [
         f"{format_node_path(node)}.{port}"
@@ -171,7 +175,6 @@ def from_workflow(
             process=io.process,
             inputs=dict(io.input_sources),
             outputs=dict(io.output_sources),
-            gates=io.gates,
         )
         for path, io in workflow.composites.items()
     }
@@ -200,4 +203,5 @@ def from_workflow(
         length_checks=tuple(workflow.length_checks),
         branch_gates=dict(workflow.branch_gates),
         loops=dict(workflow.loops),
+        gates=tuple(workflow.gates),
     )

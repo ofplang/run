@@ -260,12 +260,27 @@ def test_the_arms_are_checked_only_when_the_answer_can_have_changed(monkeypatch)
 def test_a_check_inside_the_branch_waits_until_it_is_decided():
     job = build_job(yaml.safe_load(MEASURED), one_cup())
     assert job.waits(("H",)) and not job.waits(("I",))
-    assert job.waits(("X",), frozenset({("I",)}))  # waits for I, which has not produced
     assert settle(job) == ([], [])
     job.values.put(("I",), "cup", {})
     job.values.put(("I",), "dirty", False)
-    assert not job.waits(("X",), frozenset({("I",)}))
     assert settle(job) == ([{"node": ["H"], "arm": "else"}], [])
+
+
+def test_what_an_undecided_branch_hands_on_has_no_value_before_the_decision():
+    # The cup leaves H through its gate (schedule design.md D66): anything reading it
+    # -- a check, a condition, the final output -- finds nothing there until H is
+    # decided, however much of the arm assumed has produced.
+    job = build_job(yaml.safe_load(MEASURED), one_cup())
+    gate = ("H", "@out", "cup")
+    job.values.put(("I",), "cup", {})
+    job.values.put(("I",), "dirty", False)
+    job.values.put(("H",), "cup", {})  # what the arm assumed would make
+    assert not job.settle_gates() and not job.values.has(gate, "out")
+    arms, _loops = settle(job)
+    job.rebuild({"arms": arms}, [("H",)])
+    job.values.put(("H",), "cup", {"polished": True})  # the arm taken
+    assert job.settle_gates()
+    assert job.values.get(gate, "out") == {"polished": True}
 
 
 def test_a_condition_that_is_not_a_boolean_decides_nothing():

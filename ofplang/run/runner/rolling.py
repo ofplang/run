@@ -1430,7 +1430,7 @@ class RollingRunner:
             key = (tuple(check.node), check.port)
             if key in job.checked_lengths or not is_available(check.source, job.values):
                 continue
-            if job.waits(check.node, check.gates):
+            if job.waits(check.node):
                 continue  # not settled before a branch is decided (D64)
             job.checked_lengths.add(key)
             value = resolve(check.source, job.values)
@@ -1450,8 +1450,24 @@ class RollingRunner:
             return
 
     def _decide(self, job: Job) -> None:
+        """Make every decision `job`'s values now allow, and pass on what each decided
+        region hands on (schedule design.md D66): decide, record the gates the decisions
+        open, and decide again on what came out of them -- a condition a region hands on
+        is only there once its gate is -- until nothing more follows."""
+        while True:
+            decided = self._decide_once(job)
+            self._record_exhausted(job)
+            opened = job.settle_gates()
+            if opened:
+                # A gate's value may be an `each` source a length was assumed for.
+                self._check_lengths(job)
+            if job.stopped or not (decided or opened):
+                return
+
+    def _decide_once(self, job: Job) -> bool:
         """Make every decision `job`'s values now allow (schedule design.md D64, D65):
         a branch's arm, whether a loop goes on -- and read the workflow again with them.
+        Says whether anything was decided.
 
         The plan they go into is the next one: this is called as a value is recorded
         (and once the boundary is seeded), and no dispatch happens before the replan
@@ -1498,7 +1514,8 @@ class RollingRunner:
             job.rebuild(expansion, branches)
             # The workflow this job runs now reads differently: the next tick replans.
             self._observed_change = True
-        self._record_exhausted(job)
+            return True
+        return False
 
     def _record_exhausted(self, job: Job) -> None:
         """Record each ended loop's `exhausted` (v0 19.3) once its last condition is
@@ -1732,10 +1749,11 @@ class RollingRunner:
             asts = job.contract_asts.get(b.process)
             if not asts:
                 continue  # this composite declares no contracts
-            if job.waits(path, b.gates):
-                # Inside a branch not decided yet, or reading a value one may still
-                # route elsewhere (D64): checked once the branch is decided, against
-                # the values of the arm taken rather than of the arm assumed.
+            if job.waits(path):
+                # Inside a branch not decided yet (D64): checked once the branch is
+                # decided, against the values of the arm taken rather than of the arm
+                # assumed. A value a region not yet decided hands on is read through
+                # its gate, so a contract over it is not ready before the decision.
                 continue
             # `requires`: over the composite's inputs, checked before its body's
             # input-dependent activities can run (they wait on the same values).

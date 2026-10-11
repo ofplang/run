@@ -34,8 +34,9 @@ import copy
 from .provenance import Committed, activity_key
 
 # Entries of a plan nothing runs: a relay is a junction between two legs, a decision
-# the moment a branch waits for (§6.4.1, §6.14). Neither is dispatched or stamped.
-_NOT_RUN = frozenset({"relay", "decision"})
+# the moment a branch waits for, a gate where an undecided region hands something on
+# (§6.4.1, §6.14, §6.15). None is dispatched or stamped.
+_NOT_RUN = frozenset({"relay", "decision", "gate"})
 
 
 def _job_of(activity: dict) -> str:

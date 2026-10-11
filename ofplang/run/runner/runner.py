@@ -62,7 +62,9 @@ def _is_bookkeeping(activity: dict) -> bool:
     """A relay, or a zero-distance same-spot transport, has no physical operation
     to dispatch (D14/D19); the runner just tracks it."""
     kind = activity.get("kind")
-    if kind == "relay":
+    if kind in ("relay", "gate"):
+        # A gate (schedule design.md D66) is a point where a region hands something on:
+        # nothing to run, only to track.
         return True
     return bool(kind == "transport" and activity.get("from_spot") == activity.get("to_spot"))
 
