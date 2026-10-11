@@ -98,7 +98,9 @@ class Runner:
                 f"this plan assumes the arm of branch(es) {branches}, decided only during "
                 "the run; replay cannot decide them -- use `run`, which replans"
             )
-        activities = [a for a in activities if a.get("kind") != "decision"]
+        # A reservation (§6.16) is what an undecided region keeps for itself: a wait,
+        # like a decision, that nothing runs.
+        activities = [a for a in activities if a.get("kind") not in ("decision", "reservation")]
         self._records = [
             _Record(activity=a, kind=a.get("kind"), start=int(a["start"]), end=int(a["end"]))
             for a in activities

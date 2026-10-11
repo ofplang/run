@@ -381,12 +381,14 @@ def test_replay_refuses_a_plan_that_assumes_a_loop_ends():
         Runner(plan, copy.deepcopy(ENV)).run()
 
 
-def test_planning_on_an_assumption_can_lock_two_jobs():
-    # The case `_two_of_each` avoids, pinned as the behaviour it is: with one sink and
-    # one reader and nowhere to wait, the second plate is planned into the sink while
-    # the first waits on the reader for its reading; the reading says go on, and
-    # neither can move. The replan has no answer, and every job stops (as for a
-    # device going down, design.md D64).
+def test_two_loops_sharing_the_only_sink_take_turns_and_never_lock():
+    # The case `_two_of_each` avoids: one sink, one reader, nowhere to wait. Planned on
+    # the assumption that a loop ends where it is, the second plate used to be planned
+    # into the sink while the first waited on the reader for its reading -- the reading
+    # said go on, neither could move, and every job stopped. Each loop now keeps the
+    # spots it may yet need for as long as it may need them (schedule design.md D66),
+    # so the second plate waits outside until the first loop is over: the run ends,
+    # whichever way the readings go.
     workflow = rinse()
     jobs = [JobRequest("a", copy.deepcopy(workflow), copy.deepcopy(PLATE)),
             JobRequest("b", copy.deepcopy(workflow), {"boundary": {
@@ -394,8 +396,20 @@ def test_planning_on_an_assumption_can_lock_two_jobs():
                 "outputs": {"plate": {"spot": "rack.out2"}}}})]
     runner = RollingRunner(jobs, copy.deepcopy(ENV), poll_interval=None, random_seed=0,
                            device_model=reading(1))
-    runner.run()
-    assert runner.failed and runner.failure.kind == "replan_infeasible"
+    status = runner.run()
+    assert not runner.failed, runner.failure
+    counts = sorted(e["expansion"]["loops"][0]["count"] for e in status["jobs"])
+    assert counts == [1, 2]  # the first reading of the run is dirty, the rest clean
+
+    def loop_span(job):
+        into_sink = [a["start"] for a in status["activities"] if a.get("job") == job
+                     and a["kind"] == "transport" and a["to_spot"] == "sink.basin"]
+        reads = [a["end"] for a in status["activities"] if a.get("job") == job
+                 and a["kind"] == "processing" and a["node"][-1] == "Read"]
+        return min(into_sink), max(reads)
+
+    (a_from, a_to), (b_from, b_to) = loop_span("a"), loop_span("b")
+    assert a_to <= b_from or b_to <= a_from  # one loop, then the other
 
 
 # Each invocation soaks the plate when its reading says dirty: a branch per invocation,
