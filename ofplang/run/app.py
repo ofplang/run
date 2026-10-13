@@ -256,6 +256,7 @@ def run_workflow(
     inventories: dict | None = None,
     occupied: list[dict] | None = None,
     on_job_failure: str = "continue",
+    replan_max_time_seconds: float | None = None,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -290,7 +291,11 @@ def run_workflow(
     so it also bounds the makespan a fixed-interval run can reach; None lifts it.
     `max_transport_legs` is how many transport activities one Object-bearing arc may be
     carried in (SPEC §6.4.1), joined by relays; 1 is the single hop this has always
-    planned.
+    planned. `replan_max_time_seconds` is the solver's budget on every plan after the
+    first; None (the default) solves each to the end. Within a budget, a replan the
+    solver does not finish gets a schedule constructed from the plan it replaces where
+    one exists (ofplang-schedule design.md D67) -- not after a machine went down or a
+    job arrived, where such a run can stop.
 
     `ignore_resources` switches the consumable model off (SPEC §4.7.3), so an environment
     whose modes consume runs without the boundary saying what its stocks started with.
@@ -331,6 +336,7 @@ def run_workflow(
         inventories=inventories,
         occupied=occupied,
         on_job_failure=on_job_failure,
+        replan_max_time_seconds=replan_max_time_seconds,
     )
     try:
         status = runner.run()

@@ -207,7 +207,7 @@ pip install -e ".[test]"
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [--max-transport-legs N]
-    [--no-validate] [-o OUT]
+    [--replan-max-time SECONDS] [--no-validate] [-o OUT]
 ofp-run run --jobs <run doc> --env <env> [--on-job-failure continue|stop] [...]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
@@ -315,7 +315,12 @@ be carried in (schedule SPEC §6.4.1), joined by **relay** activities. It is 1 b
 default — the single hop this has always planned. Raise it for a device the
 transporter reaches at one position only, or a plate that has to cross a hand-off
 station; only the fewest possible moves are offered, so an arc one move apart is never
-sent round by way of somewhere else. `--no-validate`
+sent round by way of somewhere else. `--replan-max-time SECONDS` is the solver's
+budget on every replan (never the first plan); by default each is solved to the end.
+A replan it does not finish within the budget gets a schedule constructed from the plan
+it replaces -- after an overrun, a branch decided either way or a loop going on
+(schedule design.md D67) -- but not after a machine went down or a job arrived, where
+the run can then stop. `--no-validate`
 skips the one-shot `ofplang-validate` front-door check of the workflow — use it
 when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
 `$import` is still resolved and the capability gate still runs, since both are

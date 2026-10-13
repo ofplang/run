@@ -5,7 +5,7 @@ Thin presentation layer over the library. Subcommands:
     ofp-run run <workflow> --env <env>
         [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
         [--seed N] [--margin M] [--poll-interval D] [--max-ticks N]
-        [--max-transport-legs N] [-o OUT]
+        [--max-transport-legs N] [--replan-max-time SECONDS] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run run --jobs <run doc> --env <env> [...]
         the same, for several workflows run together (SPEC §6.11): the run
@@ -119,6 +119,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "(default 1: the single hop), joined by relays. Raise it for a device the "
         "transporter reaches at one position only, or a plate that has to cross a "
         "hand-off station; only the fewest possible moves are ever offered",
+    )
+    r.add_argument(
+        "--replan-max-time",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="the solver's budget on every replan (not the first plan); by default each "
+        "is solved to the end. A replan it does not finish gets a schedule constructed "
+        "from the plan it replaces -- after an overrun, a branch decided either way or a "
+        "loop going on -- but not after a machine went down or a job arrived, where the "
+        "run can then stop",
     )
     r.add_argument(
         "--poll-interval",
@@ -362,6 +373,7 @@ def _cmd_run(args) -> int:
             max_ticks=max_ticks,
             ignore_resources=args.ignore_resources,
             max_transport_legs=args.max_transport_legs,
+            replan_max_time_seconds=args.replan_max_time,
             inventories=run_doc.inventories if run_doc else None,
             occupied=run_doc.occupied if run_doc else None,
             on_job_failure=args.on_job_failure,

@@ -307,6 +307,7 @@ class RollingRunner:
         inventories: dict | None = None,
         occupied: list[dict] | None = None,
         on_job_failure: str = "continue",
+        replan_max_time_seconds: float | None = None,
     ):
         # The workflow as an in-memory document. `workflow` is either a path to a
         # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
@@ -366,6 +367,15 @@ class RollingRunner:
         # always planned, and raising it only finds routes a lower setting called
         # unreachable.
         self._max_transport_legs = max_transport_legs
+        # The solver's budget on a replan (ofplang-schedule design.md D67): none by
+        # default, so every replan is solved to the end, as it always was. Given, a
+        # replan the solver does not finish within it gets the schedule constructed from
+        # the plan it replaces -- which exists where only durations moved, a branch took
+        # the arm not assumed or a loop went on, but not where a machine went down or a
+        # job arrived: there the run can stop. Never on the first plan, which has
+        # nothing to construct from.
+        self._replan_max_time = replan_max_time_seconds
+        self._planned = False
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
         # outputs from inputs; without one the built-in `script_device_model` is used
@@ -1963,6 +1973,7 @@ class RollingRunner:
             ignore_resources=self._ignore_resources,
             max_transport_legs=self._max_transport_legs,
             check_arms=self._check_arms_next,
+            max_time_seconds=self._replan_max_time if self._planned else None,
         )
         self._check_arms_next = False
         self._collect_warnings(report)
@@ -1989,6 +2000,7 @@ class RollingRunner:
         # withdrawal moved, the occupancies it wrote, the shape of every grown transport
         # chain -- is simply carried, because the document carried *is* the plan.
         self._echo.adopt(plan)
+        self._planned = True
         if self._withdrawing:
             self._enact_withdrawals()
         self._last_time = plan.get("time")
