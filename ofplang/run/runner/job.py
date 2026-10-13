@@ -529,9 +529,11 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
                         f"max_iterations of loop {name(path)} is {bound!r}, not a whole "
                         "number of at least 1 (spec 19, requirement 5)"
                     )
-            if value and bound is None:
+            if not value:
+                bound = count
+            elif bound is None:
                 continue  # it goes on, but how far is not known yet
-            if not value or count >= bound:
+            if count >= bound:
                 loops[path] = {"node": list(path), "count": count, "ended": True}
             else:
                 # One invocation more -- and if that is the last one allowed, the loop
