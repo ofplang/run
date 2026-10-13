@@ -26,9 +26,14 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.17` floor is required, not merely tested against:
-# this runner runs a `do_while` (schedule design.md D65) and reads what an undecided
-# branch or loop hands on through its gates (`Workflow.gates`, D66), passing a gate's
+# PyPI. The `ofplang-schedule>=0.18` floor is required, not merely tested against:
+# `replan_max_time_seconds` budgets the solver on a replan, and only 0.18 constructs a
+# replan's schedule when a branch decided during the run took the arm not assumed or a
+# loop went on (schedule design.md D67): against 0.17 such a replan whose solver ran
+# out of budget came back with nothing, and the run stopped.
+# The `ofplang-schedule>=0.17` floor it replaces was required for the same kind of
+# reason: this runner runs a `do_while` (schedule design.md D65) and reads what an
+# undecided branch or loop hands on through its gates (`Workflow.gates`, D66), passing a gate's
 # value on only once the region is decided; it no longer reads the `gates` of a
 # composite or a length check, which 0.17 removed. Against 0.16 no job with a
 # measured condition can be built, and the plans carry no `kind: gate` or
@@ -119,7 +124,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.17,<0.18", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.18,<0.19", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
