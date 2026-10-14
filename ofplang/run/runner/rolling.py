@@ -1490,8 +1490,8 @@ class RollingRunner:
         settled. Something there in the history means the two disagree, and carrying on
         would run it against records of what was not chosen -- so it is refused, as the
         defect it would be."""
-        arms, loops = settle(job)
-        if arms or loops:
+        arms, loops, lengths = settle(job)
+        if arms or loops or lengths:
             branches = [tuple(entry["node"]) for entry in arms]
             # A loop that goes on gains invocation `count`; nothing may be there yet.
             fresh = [
@@ -1499,7 +1499,17 @@ class RollingRunner:
                 for entry in loops
                 if tuple(entry["node"]) in job.dataflow.loops
             ]
-            held = branches + fresh
+            # A traversal whose length is counted: nothing of it starts before the count
+            # (schedule design.md D70), the invocation assumed included.
+            counted = [
+                path for path, traversal in job.dataflow.lengths.items()
+                if traversal.assumed and any(
+                    (list(source.node), source.port, list(source.index))
+                    == (entry["node"], entry["port"], entry.get("index") or [])
+                    for source in traversal.sources for entry in lengths
+                )
+            ]
+            held = branches + fresh + counted
 
             def under(node) -> bool:
                 return node is not None and any(tuple(node)[: len(p)] == p for p in held)
@@ -1521,7 +1531,9 @@ class RollingRunner:
                 expansion = self._echo.state_loop(
                     job.id, tuple(entry["node"]), entry["count"], entry["ended"]
                 )
-            job.rebuild(expansion, branches)
+            for entry in lengths:
+                expansion = self._echo.state_length(job.id, entry)
+            job.rebuild(expansion, branches + counted)
             # The workflow this job runs now reads differently: the next tick replans.
             self._observed_change = True
             return True

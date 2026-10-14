@@ -96,6 +96,10 @@ class Dataflow:
     # is decided (`Job.settle_gates`), and nothing reading past the region sees it
     # before. Each gate's input source is in `sources`, keyed `(gate path, "in")`.
     gates: tuple = ()
+    # Traversal node path -> its `LengthGate` (schedule design.md D70), for every `map` /
+    # `fold` whose length is a value made during the run. One `assumed` is still to be
+    # counted: the run counts it once the value exists and states it.
+    lengths: dict = field(default_factory=dict)
 
 
 def from_workflow(
@@ -204,4 +208,5 @@ def from_workflow(
         branch_gates=dict(workflow.branch_gates),
         loops=dict(workflow.loops),
         gates=tuple(workflow.gates),
+        lengths=dict(workflow.lengths),
     )

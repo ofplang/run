@@ -216,6 +216,11 @@ class Job:
         branch = self.dataflow.branch_gates.get(region)
         if branch is not None:
             return not branch.assumed
+        traversal = self.dataflow.lengths.get(region)
+        if traversal is not None:
+            # A fold's gate (schedule design.md D70): its Object comes from the
+            # invocation that really is the last, once the length is counted.
+            return not traversal.assumed
         loop = self.dataflow.loops.get(region)
         if loop is None:
             return True
@@ -357,7 +362,7 @@ def expansion_of(
             lengths.append({"node": [], "port": port, "length": len(value)})
     expansion: dict = {"lengths": lengths} if lengths else {}
     if workflow is not None:
-        arms, loops = _settle(
+        arms, loops, made = _settle(
             workflow, boundary.interface or None, expansion,
             _AtTheBoundary(boundary, entry_inputs),
         )
@@ -365,6 +370,8 @@ def expansion_of(
             expansion["arms"] = arms
         if loops:
             expansion["loops"] = loops
+        if made:  # nothing is made before the run; kept for the shape's sake
+            expansion["lengths"] = list(expansion.get("lengths") or []) + made
     return expansion or None
 
 
@@ -445,8 +452,10 @@ class _InTheRun(_Values):
 
 
 def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
-    """Every decision `values` can make now, as `(arms, loops)` to add to `expansion`:
-    `{node, arm}` for a branch, `{node, count, ended}` for a loop (schedule SPEC §6.13).
+    """Every decision `values` can make now, as `(arms, loops, lengths)` to add to
+    `expansion`: `{node, arm}` for a branch, `{node, count, ended}` for a loop, and
+    `{node, port, index?, length}` for a value a traversal's length is read from
+    (schedule SPEC §6.13, design.md D70).
 
     One rule for both (design.md D64, D66): a condition is decided once its value is
     known. A value a region not yet decided hands on comes out of that region's gate,
@@ -461,10 +470,12 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
     invocation of a loop). A condition that is not a Boolean, or a bound that is not a
     whole number of at least 1, is refused: neither can decide anything."""
     from ofplang.schedule.scheduler.api import ASSUMED_ARM
+    from ofplang.schedule.scheduler.model import SourceRef
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
     arms: list[dict] = []
     loops: dict[tuple, dict] = {}
+    lengths: list[dict] = []
 
     def merged() -> dict:
         base = dict(expansion or {})
@@ -473,6 +484,8 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
             base["arms"] = list(base.get("arms") or []) + arms
         if loops or stated:
             base["loops"] = stated + list(loops.values())
+        if lengths:
+            base["lengths"] = list(base.get("lengths") or []) + lengths
         return base
 
     def name(path) -> str:
@@ -541,14 +554,46 @@ def _settle(workflow: dict, interface, expansion: dict | None, values: _Values):
                 loops[path] = {"node": list(path), "count": count + 1,
                                "ended": count + 1 >= bound}
             decided = True
+        # A traversal whose length is a value made during the run (schedule design.md
+        # D70): decided once every value it zips exists, by counting them -- which have
+        # to agree, as zipped sources always do (spec 17 / 18).
+        for path, traversal in read.lengths.items():
+            if not traversal.assumed:
+                continue
+            if not all(values.available(source) for source in traversal.sources):
+                continue
+            if not all(values.produced(node) for node in traversal.waits):
+                continue
+            counted = []
+            for source in traversal.sources:
+                if not isinstance(source, SourceRef):
+                    continue  # always a reference: a value made during the run
+                value = values.value(source)
+                if not isinstance(value, list):
+                    raise RunnerError(
+                        f"the value giving the length of {name(path)} does not conform to "
+                        f"its type: {value!r} is not an Array, so it has no length"
+                    )
+                counted.append((source, len(value)))
+            if len({n for _source, n in counted}) > 1:
+                raise RunnerError(
+                    f"{name(path)} traverses each sources of different lengths "
+                    f"{[n for _source, n in counted]}; they are zipped and must be equal"
+                )
+            for source, n in counted:
+                entry = {"node": list(source.node), "port": source.port, "length": n}
+                if source.index:
+                    entry["index"] = list(source.index)
+                lengths.append(entry)
+            decided = True
         if not decided:
             break
     else:  # pragma: no cover - a guard, not a limit
         raise RunnerError("deciding the branches and loops did not settle")
-    return arms, list(loops.values())
+    return arms, list(loops.values()), lengths
 
 
-def settle(job: Job) -> tuple[list[dict], list[dict]]:
+def settle(job: Job) -> tuple[list[dict], list[dict], list[dict]]:
     """The decisions the run can make now, during the run (`_settle`)."""
     return _settle(job.workflow, job.boundary.interface or None, job.expansion, _InTheRun(job))
 

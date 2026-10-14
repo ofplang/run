@@ -288,6 +288,32 @@ class Echo:
         expansion["loops"] = loops
         return copy.deepcopy(expansion)
 
+    def state_length(self, job: str, length: dict) -> dict:
+        """Say how long a value made during the run is that a traversal's length is read
+        from (schedule SPEC §6.13, design.md D70): `{node, port, index?, length}`; return
+        the job's `expansion` as it now stands. One entry per value, written where
+        `state_arm` writes, dropping a joint plan's `bound` and `fingerprint` for the
+        same reason: both were made for the length assumed."""
+        if job:
+            entry = next(
+                (e for e in self._doc.get("jobs") or [] if e.get("id") == job), None
+            )
+            if entry is None:
+                raise KeyError(f"job {job!r} is not on the roster")
+            entry.pop("bound", None)
+            entry.pop("fingerprint", None)
+        else:
+            entry = self._doc
+
+        def key(e: dict) -> tuple:
+            return (tuple(e.get("node") or ()), e.get("port"), tuple(e.get("index") or ()))
+
+        expansion = entry.setdefault("expansion", {})
+        lengths = [e for e in expansion.get("lengths") or [] if key(e) != key(length)]
+        lengths.append(dict(length))
+        expansion["lengths"] = lengths
+        return copy.deepcopy(expansion)
+
     # -- what the runner reads -------------------------------------------------
 
     @property

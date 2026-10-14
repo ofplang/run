@@ -260,10 +260,10 @@ def test_the_arms_are_checked_only_when_the_answer_can_have_changed(monkeypatch)
 def test_a_check_inside_the_branch_waits_until_it_is_decided():
     job = build_job(yaml.safe_load(MEASURED), one_cup())
     assert job.waits(("H",)) and not job.waits(("I",))
-    assert settle(job) == ([], [])
+    assert settle(job) == ([], [], [])
     job.values.put(("I",), "cup", {})
     job.values.put(("I",), "dirty", False)
-    assert settle(job) == ([{"node": ["H"], "arm": "else"}], [])
+    assert settle(job) == ([{"node": ["H"], "arm": "else"}], [], [])
 
 
 def test_what_an_undecided_branch_hands_on_has_no_value_before_the_decision():
@@ -276,7 +276,7 @@ def test_what_an_undecided_branch_hands_on_has_no_value_before_the_decision():
     job.values.put(("I",), "dirty", False)
     job.values.put(("H",), "cup", {})  # what the arm assumed would make
     assert not job.settle_gates() and not job.values.has(gate, "out")
-    arms, _loops = settle(job)
+    arms, _loops, _lengths = settle(job)
     job.rebuild({"arms": arms}, [("H",)])
     job.values.put(("H",), "cup", {"polished": True})  # the arm taken
     assert job.settle_gates()
