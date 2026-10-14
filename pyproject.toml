@@ -26,11 +26,15 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.18` floor is required, not merely tested against:
-# `replan_max_time_seconds` budgets the solver on a replan, and only 0.18 constructs a
-# replan's schedule when a branch decided during the run took the arm not assumed or a
-# loop went on (schedule design.md D67): against 0.17 such a replan whose solver ran
-# out of budget came back with nothing, and the run stopped.
+# PyPI. The `ofplang-schedule>=0.19` floor is required, not merely tested against: a
+# run's first plan with a branch or loop decided during the run is constructed where
+# the solver comes back without one (schedule design.md D68), where against 0.18 a
+# first plan that timed out came back with nothing and the run never started.
+# The `ofplang-schedule>=0.18` floor it replaces was required for the same kind of
+# reason: `replan_max_time_seconds` budgets the solver on a replan, and only 0.18
+# constructs a replan's schedule when a branch decided during the run took the arm not
+# assumed or a loop went on (schedule design.md D67): against 0.17 such a replan whose
+# solver ran out of budget came back with nothing, and the run stopped.
 # The `ofplang-schedule>=0.17` floor it replaces was required for the same kind of
 # reason: this runner runs a `do_while` (schedule design.md D65) and reads what an
 # undecided branch or loop hands on through its gates (`Workflow.gates`, D66), passing a gate's
@@ -124,7 +128,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.18,<0.19", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.19,<0.20", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
