@@ -26,7 +26,11 @@ classifiers = [
 ]
 # `ofplang-schedule` (called in-process by the rolling-horizon runner) and
 # `ofplang-validate` (CLI front door only) are sibling packages, resolved from
-# PyPI. The `ofplang-schedule>=0.19` floor is required, not merely tested against: a
+# PyPI. The `ofplang-schedule>=0.20` floor is required, not merely tested against: this
+# runner counts a length made during the run that a `map` / `fold` is planned on
+# (schedule design.md D70), reading `Workflow.lengths`, which 0.19 does not have.
+# The `ofplang-schedule>=0.19` floor it replaces was required for the same kind of
+# reason: a
 # run's first plan with a branch or loop decided during the run is constructed where
 # the solver comes back without one (schedule design.md D68), where against 0.18 a
 # first plan that timed out came back with nothing and the run never started.
@@ -128,7 +132,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.19,<0.20", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ofplang-schedule>=0.20,<0.21", "ofplang-validate>=0.4,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/run"
