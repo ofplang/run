@@ -5,7 +5,8 @@ Thin presentation layer over the library. Subcommands:
     ofp-run run <workflow> --env <env>
         [--boundary <doc>] [--boundary-out FILE] [--observation-out FILE]
         [--seed N] [--margin M] [--poll-interval D] [--max-ticks N]
-        [--max-transport-legs N] [--replan-max-time SECONDS] [-o OUT]
+        [--max-transport-legs N] [--replan-max-time SECONDS]
+        [--first-plan-max-time SECONDS] [-o OUT]
         drive a workflow to completion by replanning (rolling-horizon)
     ofp-run run --jobs <run doc> --env <env> [...]
         the same, for several workflows run together (SPEC §6.11): the run

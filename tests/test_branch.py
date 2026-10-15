@@ -1,12 +1,13 @@
 """Running a `branch` whose arm the boundary decides (schedule D63, stage 1).
 
-The scheduler expands a branch with one arm, so the arm has to be known before the
-plan. Where the condition is an entry input -- a flag, or one flag per element inside
+The scheduler expands a branch with one arm, so the arm has to be stated or assumed
+before the plan. Where the condition is an entry input -- a flag, or one flag per element inside
 a `map` -- the runner holds the value: it decides the arm, states it in the
 document's `expansion.arms`, and flattens its own copy of the workflow with the same
 arms, so the activities it runs are the ones the plan names. A branch inside an arm
 appears only once that arm is decided, so the runner asks again until nothing is
-left. A condition produced during the run is the scheduler's to refuse.
+left. A condition produced during the run is planned on an assumed `then` arm and
+decided by the run as its value is recorded (schedule D64), as the last tests here show.
 
 The scheduler is a required dependency; these tests skip if it is not installed.
 """

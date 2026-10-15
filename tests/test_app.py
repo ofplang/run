@@ -144,7 +144,7 @@ def test_front_door_lets_a_do_while_through():
 def test_front_door_lets_a_map_through():
     # `map` and `fold` are expanded into their invocations before planning, so
     # the gate no longer answers for them; whether one can be planned is the
-    # scheduler's question (its length must be known before the run).
+    # scheduler's question (its length stated, or counted during the run).
     fd = front_door_check(MAP_WF, validate=False)
     assert fd.ok and fd.unsupported is None
 

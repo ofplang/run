@@ -377,8 +377,8 @@ class RollingRunner:
         # replan the solver does not finish within it gets the schedule constructed from
         # the plan it replaces -- which exists where only durations moved, a branch took
         # the arm not assumed or a loop went on, but not where a machine went down or a
-        # job arrived: there the run can stop. Never on the first plan, which has
-        # nothing to construct from.
+        # job arrived: there the run can stop. Never on the first plan, which has a
+        # budget of its own.
         self._replan_max_time = replan_max_time_seconds
         # The solver's budget on the first plan: a minute by default, and none where it
         # is not positive. Since schedule 0.19 a first plan the solver does not finish

@@ -1,7 +1,9 @@
-"""The solver's budget on a replan (schedule design.md D67, stage 3).
+"""The solver's budget on a replan (schedule design.md D67, stage 3), and on the first plan.
 
-`replan_max_time_seconds` is handed to every plan after the first; the first plan has
-nothing to construct from and is always solved to the end. Within the budget a replan
+`replan_max_time_seconds` is handed to every plan after the first. The first plan has a
+budget of its own, `first_plan_max_time_seconds` (a minute by default): past it the first
+plan is the best schedule found or the constructed one (schedule design.md D68), and only
+where there is neither is it solved again with no budget. Within the budget a replan
 the solver does not finish gets the schedule constructed from the plan it replaces --
 after an overrun, a branch decided on the arm not assumed, a loop going on -- so a run
 whose solver keeps running out of time still runs to the end.
