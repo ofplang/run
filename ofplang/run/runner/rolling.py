@@ -114,6 +114,10 @@ def _accepts(func, keyword: str) -> bool:
 #: limit entirely, for a long virtual run against a backend whose clock does advance.
 DEFAULT_MAX_TICKS = 100_000
 
+#: The solver's budget on a run's first plan, in seconds. Past it the first plan is the
+#: schedule found so far or the constructed one; with neither, it is solved to the end.
+DEFAULT_FIRST_PLAN_MAX_TIME = 60.0
+
 
 
 def _normalize_mode_ids(environment: dict) -> dict:
@@ -308,6 +312,7 @@ class RollingRunner:
         occupied: list[dict] | None = None,
         on_job_failure: str = "continue",
         replan_max_time_seconds: float | None = None,
+        first_plan_max_time_seconds: float | None = DEFAULT_FIRST_PLAN_MAX_TIME,
     ):
         # The workflow as an in-memory document. `workflow` is either a path to a
         # workflow YAML file (loaded once here) or an already-loaded mapping (e.g. a
@@ -375,6 +380,16 @@ class RollingRunner:
         # job arrived: there the run can stop. Never on the first plan, which has
         # nothing to construct from.
         self._replan_max_time = replan_max_time_seconds
+        # The solver's budget on the first plan: a minute by default, and none where it
+        # is not positive. Since schedule 0.19 a first plan the solver does not finish
+        # in time is the constructed one (design.md D68, A2), so a run starts within the
+        # budget instead of waiting on a search that may take hours; where nothing can be
+        # constructed either, the first plan is solved to the end after all.
+        self._first_plan_max_time = (
+            first_plan_max_time_seconds
+            if first_plan_max_time_seconds is not None and first_plan_max_time_seconds > 0
+            else None
+        )
         self._planned = False
         # The backend reads the environment itself. By default it is the built-in
         # `VirtualTimeSimulator`, with an optional device model (D27 F4b) that computes
@@ -1966,27 +1981,38 @@ class RollingRunner:
         # the departing job; the workflows are what there is left to plan, and there is
         # nothing left to plan for a job that is leaving -- handing one over as well is
         # refused as a contradiction (`unknown_withdrawal`, SPEC §6.11).
-        report = replan(
-            [(job.id, job.workflow) for job in planned]
-            if self._named
-            else self._only_job.workflow,
-            environment,
-            status_doc,
-            withdraw=sorted(self._withdrawing),
-            # 🔴 Leaving no longer moves the moment the levels are stated for by itself
-            # (SPEC §6.10): the scheduler works the levels out, and whether the history
-            # before that moment may be let go of is the caller's call. A departing job
-            # drew on stocks since, so the answer here is yes -- and saying so is what
-            # keeps its draws from being handed back.
-            carry_levels_to_now=bool(self._withdrawing),
-            running_task_margin=self.margin,
-            random_seed=self.seed,
-            environment_source=self.environment_path,
-            ignore_resources=self._ignore_resources,
-            max_transport_legs=self._max_transport_legs,
-            check_arms=self._check_arms_next,
-            max_time_seconds=self._replan_max_time if self._planned else None,
-        )
+        def solve(budget: float | None):
+            return replan(
+                [(job.id, job.workflow) for job in planned]
+                if self._named
+                else self._only_job.workflow,
+                environment,
+                status_doc,
+                withdraw=sorted(self._withdrawing),
+                # 🔴 Leaving no longer moves the moment the levels are stated for by
+                # itself (SPEC §6.10): the scheduler works the levels out, and whether the
+                # history before that moment may be let go of is the caller's call. A
+                # departing job drew on stocks since, so the answer here is yes -- and
+                # saying so is what keeps its draws from being handed back.
+                carry_levels_to_now=bool(self._withdrawing),
+                running_task_margin=self.margin,
+                random_seed=self.seed,
+                environment_source=self.environment_path,
+                ignore_resources=self._ignore_resources,
+                max_transport_legs=self._max_transport_legs,
+                check_arms=self._check_arms_next,
+                max_time_seconds=budget,
+            )
+
+        budget = self._replan_max_time if self._planned else self._first_plan_max_time
+        report = solve(budget)
+        if not self._planned and budget is not None and report.outcome == "unknown":
+            # 🔴 The first plan's budget only says how long to wait before taking what
+            # there is (schedule design.md D68, A2: the constructed plan, where the solver
+            # had none). Where there is nothing -- no schedule found in time and none
+            # constructed -- the search goes on to the end, as it always did: a budget
+            # must not turn a run that would have started into one that stops.
+            report = solve(None)
         self._check_arms_next = False
         self._collect_warnings(report)
         if not report.ok:

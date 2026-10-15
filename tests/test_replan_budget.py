@@ -52,7 +52,7 @@ def _budgets(monkeypatch, give_up: bool = False) -> list:
     return asked
 
 
-def _two_loops(budget, by: int = 4):
+def _two_loops(budget, by: int = 4, **kwargs):
     workflow = rinse()
     jobs = [JobRequest("a", copy.deepcopy(workflow), copy.deepcopy(PLATE)),
             JobRequest("b", copy.deepcopy(workflow), {"boundary": {
@@ -61,25 +61,34 @@ def _two_loops(budget, by: int = 4):
     return RollingRunner(
         jobs, copy.deepcopy(RINSE_ENV), poll_interval=1, running_task_margin=1,
         random_seed=0, device_model=reading(1), duration_model=_overrun_first_rinse(by),
-        replan_max_time_seconds=budget,
+        replan_max_time_seconds=budget, **kwargs,
     )
 
 
-def test_no_budget_is_asked_by_default(monkeypatch):
+def test_by_default_the_first_plan_gets_a_minute_and_no_replan_a_budget(monkeypatch):
     asked = _budgets(monkeypatch)
     runner = _two_loops(None)
     runner.run()
     assert not runner.failed, runner.failure
-    assert asked and set(asked) == {None}
+    assert asked[0] == 60.0
+    assert len(asked) > 1 and set(asked[1:]) == {None}
 
 
-def test_the_budget_is_asked_on_every_replan_and_never_the_first_plan(monkeypatch):
+def test_the_replan_budget_is_asked_on_every_replan_and_not_the_first_plan(monkeypatch):
     asked = _budgets(monkeypatch)
     runner = _two_loops(5.0)
     runner.run()
     assert not runner.failed, runner.failure
-    assert asked[0] is None
+    assert asked[0] == 60.0
     assert len(asked) > 1 and set(asked[1:]) == {5.0}
+
+
+def test_zero_lifts_the_first_plans_budget(monkeypatch):
+    asked = _budgets(monkeypatch)
+    runner = _two_loops(None, first_plan_max_time_seconds=0)
+    runner.run()
+    assert not runner.failed, runner.failure
+    assert asked[0] is None
 
 
 def test_a_loop_going_on_runs_to_the_end_with_every_replan_constructed(monkeypatch):
@@ -105,3 +114,27 @@ def test_a_branch_off_the_arm_assumed_runs_to_the_end_with_every_replan_construc
     arms = next(e for e in status["jobs"] if e["id"] == "a")["expansion"]["arms"]
     assert arms == [{"node": ["H"], "arm": "else"}]
     assert "plan_constructed_after_solver" in [w.code for w in runner.scheduler_warnings]
+
+
+def test_a_first_plan_the_solver_does_not_finish_is_the_constructed_one(monkeypatch):
+    # The solver gives up within every budget, the first plan's included: the run
+    # starts on the constructed plan (schedule design.md D68, A2) and runs to the end.
+    asked = _budgets(monkeypatch, give_up=True)
+    runner = _two_loops(1.0)
+    runner.run()
+    assert not runner.failed, runner.failure
+    assert asked[0] == 60.0 and None not in asked  # the first plan was not asked again
+    assert "plan_constructed_after_solver" in [w.code for w in runner.scheduler_warnings]
+
+
+def test_with_nothing_constructed_the_first_plan_is_solved_to_the_end(monkeypatch):
+    # Within its budget the solver finds nothing and nothing can be built: the first
+    # plan is asked again with no budget, so a run that would have started still does.
+    from ofplang.schedule.scheduler import greedy
+
+    asked = _budgets(monkeypatch, give_up=True)
+    monkeypatch.setattr(greedy, "construct", lambda *_a, **_k: None)
+    runner = _two_loops(None)
+    runner.run()
+    assert not runner.failed, runner.failure
+    assert asked[:2] == [60.0, None]

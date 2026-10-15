@@ -207,7 +207,7 @@ pip install -e ".[test]"
 ofp-run run <workflow> --env <env>
     [--boundary DOC] [--boundary-out FILE] [--observation-out FILE]
     [--poll-interval D] [--margin M] [--seed N] [--max-transport-legs N]
-    [--replan-max-time SECONDS] [--no-validate] [-o OUT]
+    [--first-plan-max-time SECONDS] [--replan-max-time SECONDS] [--no-validate] [-o OUT]
 ofp-run run --jobs <run doc> --env <env> [--on-job-failure continue|stop] [...]
 ofp-run replay <plan> --env <env> [-o OUT]
 ```
@@ -320,7 +320,12 @@ budget on every replan (never the first plan); by default each is solved to the 
 A replan it does not finish within the budget gets a schedule constructed from the plan
 it replaces -- after an overrun, a branch decided either way or a loop going on
 (schedule design.md D67) -- but not after a machine went down or a job arrived, where
-the run can then stop. `--no-validate`
+the run can then stop. `--first-plan-max-time SECONDS` is the budget on the first plan:
+60 seconds by default, `0` for none. Past it the first plan is the best schedule the
+solver found, or the one constructed where it found none (schedule design.md D68), so
+a large run starts within a minute instead of waiting on a search that may take hours;
+where nothing could be constructed either, the first plan is solved to the end after
+all, so the budget never stops a run that would have started. `--no-validate`
 skips the one-shot `ofplang-validate` front-door check of the workflow — use it
 when the workflow was already validated upstream (e.g. by the `ofp` umbrella CLI);
 `$import` is still resolved and the capability gate still runs, since both are

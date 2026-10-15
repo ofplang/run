@@ -38,7 +38,7 @@ from ofplang.validate import EXTENSION_TOLERANT, Diagnostic, expand
 from ofplang.validate import validate as validate_workflow
 from ofplang.validate.yamlnode import YamlError
 
-from .runner import DEFAULT_MAX_TICKS, RollingRunner
+from .runner import DEFAULT_FIRST_PLAN_MAX_TIME, DEFAULT_MAX_TICKS, RollingRunner
 
 
 def _import_key_present(obj: Any) -> bool:
@@ -257,6 +257,7 @@ def run_workflow(
     occupied: list[dict] | None = None,
     on_job_failure: str = "continue",
     replan_max_time_seconds: float | None = None,
+    first_plan_max_time_seconds: float | None = DEFAULT_FIRST_PLAN_MAX_TIME,
 ) -> RunResult:
     """Drive `workflow` (against `env`, optional run `boundary`) to completion and
     return a `RunResult`.
@@ -295,7 +296,10 @@ def run_workflow(
     first; None (the default) solves each to the end. Within a budget, a replan the
     solver does not finish gets a schedule constructed from the plan it replaces where
     one exists (ofplang-schedule design.md D67) -- not after a machine went down or a
-    job arrived, where such a run can stop.
+    job arrived, where such a run can stop. `first_plan_max_time_seconds` is the budget
+    on the first plan, a minute by default and none where it is not positive: past it the
+    first plan is the schedule found so far or the constructed one (ofplang-schedule
+    design.md D68, A2), and where there is neither it is solved to the end after all.
 
     `ignore_resources` switches the consumable model off (SPEC §4.7.3), so an environment
     whose modes consume runs without the boundary saying what its stocks started with.
@@ -337,6 +341,7 @@ def run_workflow(
         occupied=occupied,
         on_job_failure=on_job_failure,
         replan_max_time_seconds=replan_max_time_seconds,
+        first_plan_max_time_seconds=first_plan_max_time_seconds,
     )
     try:
         status = runner.run()

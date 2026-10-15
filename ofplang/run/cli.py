@@ -47,6 +47,7 @@ import yaml
 
 from ofplang.run.app import FrontDoorResult, front_door_check, run_workflow
 from ofplang.run.runner import (
+    DEFAULT_FIRST_PLAN_MAX_TIME,
     DEFAULT_MAX_TICKS,
     ContractSyntaxError,
     Runner,
@@ -130,6 +131,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "from the plan it replaces -- after an overrun, a branch decided either way or a "
         "loop going on -- but not after a machine went down or a job arrived, where the "
         "run can then stop",
+    )
+    r.add_argument(
+        "--first-plan-max-time",
+        type=float,
+        default=DEFAULT_FIRST_PLAN_MAX_TIME,
+        metavar="SECONDS",
+        help="the solver's budget on the first plan (default "
+        f"{DEFAULT_FIRST_PLAN_MAX_TIME:g}; 0 for none). Past it the first plan is the "
+        "schedule found so far or the constructed one, so the run starts; where there is "
+        "neither, the first plan is solved to the end after all",
     )
     r.add_argument(
         "--poll-interval",
@@ -374,6 +385,7 @@ def _cmd_run(args) -> int:
             ignore_resources=args.ignore_resources,
             max_transport_legs=args.max_transport_legs,
             replan_max_time_seconds=args.replan_max_time,
+            first_plan_max_time_seconds=args.first_plan_max_time,
             inventories=run_doc.inventories if run_doc else None,
             occupied=run_doc.occupied if run_doc else None,
             on_job_failure=args.on_job_failure,
